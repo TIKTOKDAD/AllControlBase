@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>controller_msgs</name>
+  <version>3.17.0</version>
+  <description>
+    ROS message definitions for Universal Controller.
+    
+    Messages:
+    - DiagnosticsV2: Controller diagnostics
+    - LocalTrajectoryV4: Local trajectory with soft constraints
+    - UnifiedCmd: Unified control command
+  </description>
+  
+  <maintainer email="controller@example.com">Controller Team</maintainer>
+  <license>MIT</license>
+  
+  <buildtool_depend>catkin</buildtool_depend>
+  
+  <build_depend>message_generation</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  
+  <exec_depend>message_runtime</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  
+  <export>
+  </export>
+</package>
