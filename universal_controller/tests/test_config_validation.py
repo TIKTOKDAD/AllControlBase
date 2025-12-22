@@ -106,9 +106,10 @@ def test_get_config_value_default():
 
 
 def test_get_config_value_from_default():
-    """测试从默认配置获取缺失值"""
+    """测试从备选配置获取缺失值"""
     config = {'system': {'ctrl_freq': 100}}  # 缺少其他配置
-    value = get_config_value(config, 'mpc.horizon')
+    # 使用 fallback_config 参数显式指定备选配置
+    value = get_config_value(config, 'mpc.horizon', fallback_config=DEFAULT_CONFIG)
     assert value == 20  # 从 DEFAULT_CONFIG 获取
 
 

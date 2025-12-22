@@ -1,0 +1,45 @@
+"""系统基础配置
+
+包含控制器的基础系统参数：
+- 控制频率
+- 重力加速度
+- 暂停检测阈值
+- 诊断话题配置
+- 超时配置
+"""
+
+# 系统配置
+SYSTEM_CONFIG = {
+    'ctrl_freq': 50,              # 控制频率 (Hz)
+    'platform': 'differential',   # 默认平台类型
+    'gravity': 9.81,              # 重力加速度 (m/s²)
+    # 控制循环暂停检测
+    'long_pause_threshold': 0.5,  # 长时间暂停检测阈值 (秒)
+    'ekf_reset_threshold': 2.0,   # EKF 重置阈值 (秒)
+}
+
+# 超时配置 (Watchdog)
+WATCHDOG_CONFIG = {
+    'odom_timeout_ms': 200,       # 里程计超时 (ms)
+    'traj_timeout_ms': 200,       # 轨迹超时 (ms)
+    'traj_grace_ms': 100,         # 轨迹宽限期 (ms)
+    'imu_timeout_ms': 100,        # IMU 超时 (ms)
+    'startup_grace_ms': 1000,     # 启动宽限期 (ms)
+}
+
+# 诊断配置
+DIAGNOSTICS_CONFIG = {
+    'topic': '/controller/diagnostics',  # 诊断话题名称
+    'cmd_topic': '/cmd_unified',         # 控制命令话题名称
+}
+
+# 系统配置验证规则
+SYSTEM_VALIDATION_RULES = {
+    'system.ctrl_freq': (1, 1000, '控制频率 (Hz)'),
+    'system.gravity': (0.1, 20.0, '重力加速度 (m/s²)'),
+    'system.long_pause_threshold': (0.01, 10.0, '长时间暂停检测阈值 (秒)'),
+    'system.ekf_reset_threshold': (0.1, 60.0, 'EKF 重置阈值 (秒)'),
+    'watchdog.odom_timeout_ms': (1, 10000, '里程计超时 (ms)'),
+    'watchdog.traj_timeout_ms': (1, 10000, '轨迹超时 (ms)'),
+    'watchdog.imu_timeout_ms': (1, 10000, 'IMU 超时 (ms)'),
+}

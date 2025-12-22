@@ -155,7 +155,8 @@ def test_default_config_completeness():
     ]
     
     for path in required_paths:
-        value = get_config_value({}, path)
+        # 直接从 DEFAULT_CONFIG 获取值
+        value = get_config_value(DEFAULT_CONFIG, path)
         assert value is not None, f"Missing default for {path}"
     
     print("✓ test_default_config_completeness passed")
@@ -172,8 +173,8 @@ def test_get_config_value():
     # 测试覆盖值
     assert get_config_value(config, 'mpc.horizon') == 30
     
-    # 测试默认值回退
-    assert get_config_value(config, 'mpc.dt') == 0.02
+    # 测试使用 fallback_config 获取默认值
+    assert get_config_value(config, 'mpc.dt', fallback_config=DEFAULT_CONFIG) == 0.02
     
     # 测试不存在的路径
     assert get_config_value(config, 'nonexistent.path', 'default') == 'default'

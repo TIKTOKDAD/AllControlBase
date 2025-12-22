@@ -1,0 +1,99 @@
+"""其他模块配置
+
+包含以下模块的配置：
+- 一致性检查器
+- 坐标变换器
+- 平滑过渡
+- 备份控制器 (Pure Pursuit)
+"""
+
+# 一致性检查配置
+CONSISTENCY_CONFIG = {
+    'kappa_thresh': 0.5,              # 曲率一致性阈值
+    'v_dir_thresh': 0.8,              # 速度方向一致性阈值
+    'temporal_smooth_thresh': 0.5,    # 时序平滑度阈值
+    'low_speed_thresh': 0.1,          # 低速阈值 (m/s)
+    'alpha_min': 0.1,                 # α 最小值
+    'max_curvature': 10.0,            # 曲率计算的最大值限制 (1/m)
+    'temporal_window_size': 10,       # 时序平滑度计算的滑动窗口大小
+    'weights': {
+        'kappa': 1.0,                 # 曲率权重
+        'velocity': 1.5,              # 速度方向权重
+        'temporal': 0.8,              # 时序平滑权重
+    },
+}
+
+# 坐标变换配置
+TRANSFORM_CONFIG = {
+    'target_frame': 'odom',           # 目标坐标系
+    'source_frame': 'odom',           # 源坐标系
+    'fallback_duration_limit_ms': 500,   # 降级持续限制 (ms)
+    'fallback_critical_limit_ms': 1000,  # 临界降级限制 (ms)
+    'tf2_timeout_ms': 10,             # TF2 超时 (ms)
+    'drift_estimation_enabled': False,   # 漂移估计开关
+    'recovery_correction_enabled': False,  # 恢复校正开关
+    'drift_rate': 0.01,               # 漂移率
+    'max_drift_dt': 0.5,              # 漂移估计最大时间间隔 (秒)
+    'drift_correction_thresh': 0.01,  # 漂移校正阈值 (米/弧度)
+}
+
+# 平滑过渡配置
+TRANSITION_CONFIG = {
+    'type': 'exponential',            # 过渡类型: 'exponential' 或 'linear'
+    'tau': 0.1,                       # 指数过渡时间常数 (秒)
+    'max_duration': 0.5,              # 最大过渡时长 (秒)
+    'completion_threshold': 0.95,     # 过渡完成阈值
+    'duration': 0.2,                  # 线性过渡时长 (秒)
+}
+
+# 备份控制器配置 (Pure Pursuit)
+BACKUP_CONFIG = {
+    'lookahead_dist': 1.0,            # 前瞻距离 (m)
+    'min_lookahead': 0.5,             # 最小前瞻距离 (m)
+    'max_lookahead': 3.0,             # 最大前瞻距离 (m)
+    'lookahead_ratio': 0.5,           # 前瞻比例
+    'kp_z': 1.0,                      # Z 方向增益
+    'kp_heading': 1.5,                # 航向增益
+    'heading_mode': 'follow_velocity',  # 航向模式
+    'dt': 0.02,                       # 时间步长 (秒)
+    
+    # Pure Pursuit 控制参数
+    'heading_error_thresh': 1.047,    # 航向误差阈值 (rad, ~60°)
+    'pure_pursuit_angle_thresh': 1.047,  # Pure Pursuit 模式角度阈值
+    'heading_control_angle_thresh': 1.571,  # 航向控制模式角度阈值 (~90°)
+    'max_curvature': 5.0,             # 最大曲率限制 (1/m)
+    'min_turn_speed': 0.1,            # 阿克曼车辆最小转向速度 (m/s)
+    'default_speed_ratio': 0.5,       # 无 soft 速度时的默认速度比例
+    
+    # 低速过渡参数
+    'low_speed_transition_factor': 0.5,  # 低速过渡区域因子
+    
+    # 曲率速度限制阈值
+    'curvature_speed_limit_thresh': 0.1,  # 曲率阈值 (1/m)
+    
+    # 距离阈值
+    'min_distance_thresh': 0.1,       # 最小距离阈值 (m)
+    
+    # 角速度变化率限制
+    'omega_rate_limit': None,         # None 表示使用 alpha_max * dt
+}
+
+# 模块配置验证规则
+MODULES_VALIDATION_RULES = {
+    # 一致性配置
+    'consistency.alpha_min': (0.0, 1.0, '最小 alpha 值'),
+    'consistency.kappa_thresh': (0.0, 10.0, '曲率一致性阈值'),
+    'consistency.v_dir_thresh': (0.0, 1.0, '速度方向一致性阈值'),
+    'consistency.weights.kappa': (0.0, None, '曲率一致性权重'),
+    'consistency.weights.velocity': (0.0, None, '速度方向一致性权重'),
+    'consistency.weights.temporal': (0.0, None, '时序平滑度权重'),
+    # 过渡配置
+    'transition.tau': (0.001, 10.0, '过渡时间常数 (秒)'),
+    'transition.max_duration': (0.01, 10.0, '最大过渡时长 (秒)'),
+    'transition.completion_threshold': (0.5, 1.0, '过渡完成阈值'),
+    # 备份控制器配置
+    'backup.lookahead_dist': (0.1, 10.0, '前瞻距离 (m)'),
+    'backup.min_lookahead': (0.01, 5.0, '最小前瞻距离 (m)'),
+    'backup.max_lookahead': (0.5, 20.0, '最大前瞻距离 (m)'),
+    'backup.kp_heading': (0.1, 10.0, '航向控制增益'),
+}
