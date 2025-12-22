@@ -147,6 +147,7 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         数值稳定性考虑:
         - 当点距离过近时，返回无效
         - 当分母接近零时，返回无效
+        - 当叉积接近零时（共线情况），返回 0 曲率
         - 限制最大曲率值
         
         Returns:
@@ -179,7 +180,16 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
             # 分母过小，可能导致数值不稳定
             return 0.0, False
         
-        curvature = 2.0 * abs(cross) / denominator
+        # 检查叉积是否接近零（共线情况）
+        # 使用相对阈值：叉积相对于分母的比例
+        # 当 |cross| / denominator < MIN_RELATIVE_CROSS 时，认为是共线
+        MIN_RELATIVE_CROSS = 1e-6
+        abs_cross = abs(cross)
+        if abs_cross < MIN_RELATIVE_CROSS * denominator:
+            # 几乎共线，曲率接近 0
+            return 0.0, True
+        
+        curvature = 2.0 * abs_cross / denominator
         
         # 限制曲率最大值 (对应最小转弯半径 0.1m)
         MAX_CURVATURE = 10.0

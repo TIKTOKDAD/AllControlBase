@@ -268,8 +268,18 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         fallback_duration = current_time - self.fallback_start_time
         
         # 累积漂移估计
+        # 使用实际时间间隔而非假设的固定频率
         if self.drift_estimation_enabled:
-            self.accumulated_drift += self.drift_rate * (1.0 / 50.0)
+            # 计算自上次更新以来的时间间隔
+            if not hasattr(self, '_last_fallback_update_time'):
+                self._last_fallback_update_time = self.fallback_start_time
+            
+            dt = current_time - self._last_fallback_update_time
+            # 限制 dt 在合理范围内，避免异常值
+            dt = np.clip(dt, 0.0, 0.5)  # 最大 500ms
+            
+            self.accumulated_drift += self.drift_rate * dt
+            self._last_fallback_update_time = current_time
         
         # 确定降级状态
         if fallback_duration > self.fallback_critical_limit:
@@ -437,3 +447,6 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self._fallback_start_estimator_position = None
         self._fallback_start_estimator_theta = 0.0
         self._last_status = TransformStatus.TF2_OK
+        # 重置漂移估计时间跟踪
+        if hasattr(self, '_last_fallback_update_time'):
+            self._last_fallback_update_time = None

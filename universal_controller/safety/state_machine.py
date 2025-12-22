@@ -77,16 +77,27 @@ class StateMachine:
                 self._reset_all_counters()
             elif not mpc_success:
                 # 使用失败计数器，避免单次失败就切换
-                self.mpc_fail_count += 1
+                # 失败时增加 1.0
+                self.mpc_fail_count += 1.0
                 if self.mpc_fail_count >= self.mpc_fail_thresh:
                     self.state = ControllerState.BACKUP_ACTIVE
                     self._reset_all_counters()
             else:
                 # MPC 成功，使用衰减而非立即重置
-                # 这样可以处理间歇性失败的情况
-                # 例如：失败-成功-失败-成功-失败 不会触发切换
-                # 但：失败-失败-成功-失败-失败-失败 会触发切换
-                self.mpc_fail_count = max(0, self.mpc_fail_count - self.mpc_fail_decay)
+                # 衰减策略设计目标：
+                # - 单次失败后快速恢复（1-2 次成功即可）
+                # - 连续失败需要更多成功才能恢复
+                # - 在 70% 成功率下保持稳定（不会持续增长）
+                # 
+                # 使用非线性衰减：衰减量与当前计数成正比
+                # decay = base_decay + proportional_decay * count
+                # 这样当计数较高时，衰减更快，有助于从间歇性失败中恢复
+                base_decay = self.mpc_fail_decay  # 基础衰减 (默认 0.5)
+                proportional_decay = 0.2  # 比例衰减系数
+                actual_decay = base_decay + proportional_decay * self.mpc_fail_count
+                # 限制最大衰减量，避免过快恢复
+                actual_decay = min(actual_decay, 1.5)
+                self.mpc_fail_count = max(0, self.mpc_fail_count - actual_decay)
                 
                 if not data_valid and alpha < self.alpha_recovery_value:
                     self.state = ControllerState.SOFT_DISABLED

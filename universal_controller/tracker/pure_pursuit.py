@@ -164,6 +164,10 @@ class PurePursuitController(ITrajectoryTracker):
         # 当航向误差大于此值时，优先原地旋转
         HEADING_ERROR_THRESH = np.pi / 3  # 60 度
         
+        # 角速度变化率限制（用于平滑角速度命令）
+        # 这可以防止目标点在正后方时的角速度跳变
+        MAX_OMEGA_RATE = self.alpha_max * self.dt if hasattr(self, 'alpha_max') else 3.0 * self.dt
+        
         if L_sq > 1e-6:
             if local_x < 0:
                 # 目标点在车辆后方，使用航向误差控制
@@ -171,7 +175,20 @@ class PurePursuitController(ITrajectoryTracker):
                 target_heading = np.arctan2(dy, dx)
                 heading_error = np.arctan2(np.sin(target_heading - theta), 
                                           np.cos(target_heading - theta))
-                omega = self.kp_heading * heading_error
+                
+                # 计算期望角速度
+                omega_desired = self.kp_heading * heading_error
+                omega_desired = np.clip(omega_desired, -omega_limit, omega_limit)
+                
+                # 应用角速度变化率限制，防止跳变
+                # 特别是当目标点在正后方时（heading_error ≈ ±π）
+                if self.last_cmd is not None:
+                    omega_change = omega_desired - self.last_cmd.omega
+                    omega_change = np.clip(omega_change, -MAX_OMEGA_RATE, MAX_OMEGA_RATE)
+                    omega = self.last_cmd.omega + omega_change
+                else:
+                    omega = omega_desired
+                
                 omega = np.clip(omega, -omega_limit, omega_limit)
                 
                 # 当航向误差较大时，减速或停止前进

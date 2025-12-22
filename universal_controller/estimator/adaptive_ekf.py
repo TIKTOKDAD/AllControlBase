@@ -190,13 +190,23 @@ class AdaptiveEKFEstimator(IStateEstimator):
         vz_body = odom.twist_linear[2]
         v_body = np.sqrt(vx_body**2 + vy_body**2)
         
+        # 获取航向角用于坐标变换
+        # theta 定义: 机器人在世界坐标系中的航向角
+        # - 从世界坐标系 X 轴正方向逆时针测量
+        # - theta = 0 时，机器人朝向世界 X 轴正方向
+        # - theta = π/2 时，机器人朝向世界 Y 轴正方向
         theta = self._get_theta_for_transform()
         cos_theta = np.cos(theta)
         sin_theta = np.sin(theta)
         
+        # 机体坐标系到世界坐标系的速度变换
+        # v_world = R(theta) @ v_body
+        # 其中 R(theta) 是绕 Z 轴旋转 theta 的旋转矩阵
+        # [vx_world]   [cos(θ)  -sin(θ)] [vx_body]
+        # [vy_world] = [sin(θ)   cos(θ)] [vy_body]
         vx_world = vx_body * cos_theta - vy_body * sin_theta
         vy_world = vx_body * sin_theta + vy_body * cos_theta
-        vz_world = vz_body
+        vz_world = vz_body  # Z 轴速度不受 yaw 旋转影响
         
         self.last_world_velocity = self.current_world_velocity.copy()
         self.current_world_velocity = np.array([vx_world, vy_world])
@@ -265,18 +275,45 @@ class AdaptiveEKFEstimator(IStateEstimator):
         # 首先计算重力在机体坐标系的期望测量值（比力）
         # 对于地面车辆，假设 roll 和 pitch 接近 0
         # 对于无人机，使用 IMU 提供的姿态信息
+        g = 9.81
+        use_imu_orientation = False
+        
         if imu.orientation is not None and hasattr(imu, 'orientation'):
-            roll, pitch, _ = euler_from_quaternion(imu.orientation)
-            g = 9.81
+            # 检查四元数有效性
+            q = imu.orientation
+            if hasattr(q, '__len__') and len(q) == 4:
+                qx, qy, qz, qw = q[0], q[1], q[2], q[3]
+                norm_sq = qx*qx + qy*qy + qz*qz + qw*qw
+                
+                # 四元数有效性检查:
+                # 1. 范数不能太小（接近零向量）
+                # 2. 范数应该接近 1（单位四元数）
+                # 3. 不能是 NaN 或 Inf
+                is_valid = (
+                    norm_sq > 0.5 and  # 范数平方至少 0.5
+                    norm_sq < 2.0 and  # 范数平方不超过 2
+                    np.isfinite(norm_sq)  # 不是 NaN 或 Inf
+                )
+                
+                if is_valid:
+                    roll, pitch, _ = euler_from_quaternion(q)
+                    
+                    # 额外检查: roll 和 pitch 应该在合理范围内
+                    # 对于大多数应用，roll/pitch 不应超过 ±60 度
+                    MAX_TILT_ANGLE = np.pi / 3  # 60 度
+                    if abs(roll) < MAX_TILT_ANGLE and abs(pitch) < MAX_TILT_ANGLE:
+                        use_imu_orientation = True
+        
+        if use_imu_orientation:
             # 加速度计静止时的期望测量值 (比力 = -g_body)
             g_measured_x = g * np.sin(pitch)
             g_measured_y = -g * np.sin(roll) * np.cos(pitch)
             g_measured_z = g * np.cos(roll) * np.cos(pitch)
         else:
-            # 没有姿态信息，假设水平
+            # 没有有效姿态信息，假设水平
             g_measured_x = 0.0
             g_measured_y = 0.0
-            g_measured_z = 9.81
+            g_measured_z = g
         
         # 从 IMU 测量值中提取真实加速度（去除重力和 bias）
         # a_true_body = a_measured - g_measured - bias

@@ -308,10 +308,43 @@ class MPCController(ITrajectoryTracker):
             result.solve_time_ms = (time.time() - start_time) * 1000
             self._last_solve_time_ms = result.solve_time_ms  # 更新成员变量
             return result
-        except Exception as e:
-            print(f"MPC solve failed: {e}")
+        except ValueError as e:
+            # 输入数据错误（如 NaN、维度不匹配等）
+            # 这通常是可恢复的，下一次调用可能成功
+            print(f"[MPC] Input validation error: {e}")
             return ControlOutput(vx=0, vy=0, vz=0, omega=0,
-                               frame_id=self.output_frame, success=False)
+                               frame_id=self.output_frame, success=False,
+                               health_metrics={'error_type': 'input_validation'})
+        except RuntimeError as e:
+            # 求解器运行时错误（如数值问题、求解失败等）
+            # 可能需要重新初始化求解器
+            print(f"[MPC] Solver runtime error: {e}")
+            # 尝试使用 fallback 求解器
+            try:
+                result = self._solve_fallback(state, trajectory, consistency)
+                result.solve_time_ms = (time.time() - start_time) * 1000
+                self._last_solve_time_ms = result.solve_time_ms
+                result.health_metrics['fallback_reason'] = 'solver_runtime_error'
+                return result
+            except Exception:
+                return ControlOutput(vx=0, vy=0, vz=0, omega=0,
+                                   frame_id=self.output_frame, success=False,
+                                   health_metrics={'error_type': 'solver_runtime'})
+        except MemoryError as e:
+            # 内存错误，这是严重问题
+            print(f"[MPC] Memory error: {e}")
+            # 尝试释放资源并重新初始化
+            self._solver = None
+            self._is_initialized = False
+            return ControlOutput(vx=0, vy=0, vz=0, omega=0,
+                               frame_id=self.output_frame, success=False,
+                               health_metrics={'error_type': 'memory_error'})
+        except Exception as e:
+            # 其他未预期的错误
+            print(f"[MPC] Unexpected error: {type(e).__name__}: {e}")
+            return ControlOutput(vx=0, vy=0, vz=0, omega=0,
+                               frame_id=self.output_frame, success=False,
+                               health_metrics={'error_type': 'unexpected'})
     
     def _solve_fallback(self, state: np.ndarray, trajectory: Trajectory,
                        consistency: ConsistencyResult) -> ControlOutput:

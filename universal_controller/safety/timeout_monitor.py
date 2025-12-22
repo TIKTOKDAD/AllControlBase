@@ -15,6 +15,12 @@ def _get_monotonic_time() -> float:
     return time.monotonic()
 
 
+# 表示"从未收到消息"的超时值 (毫秒)
+# 使用大的有限值代替无穷大，避免 JSON 序列化问题
+# 1e9 ms ≈ 11.5 天，足够表示"非常长时间"
+NEVER_RECEIVED_AGE_MS = 1e9
+
+
 class TimeoutMonitor:
     """超时监控器
     
@@ -117,9 +123,7 @@ class TimeoutMonitor:
     
     def _compute_age_ms(self, last_time: Optional[float], current_time: float) -> float:
         if last_time is None:
-            # 使用大的有限值代替无穷大，避免 JSON 序列化问题
-            # 1e9 ms = 约 11.5 天，足够表示"非常长时间"
-            return 1e9
+            return NEVER_RECEIVED_AGE_MS
         return (current_time - last_time) * 1000
     
     def reset(self) -> None:

@@ -2,6 +2,7 @@
 from typing import Dict, Any, Optional
 import numpy as np
 import time
+import json
 
 from ..core.interfaces import (
     IStateEstimator, ITrajectoryTracker, IConsistencyChecker,
@@ -26,6 +27,36 @@ def _get_monotonic_time() -> float:
     （如 NTP 同步）导致的时间间隔计算错误。
     """
     return time.monotonic()
+
+
+def _numpy_json_encoder(obj: Any) -> Any:
+    """
+    自定义 JSON 编码器处理 numpy 类型
+    
+    用于将包含 numpy 类型的字典序列化为 JSON。
+    定义为模块级函数以避免每次调用时重新创建。
+    
+    Args:
+        obj: 需要编码的对象
+    
+    Returns:
+        JSON 可序列化的对象
+    
+    Raises:
+        TypeError: 如果对象无法序列化
+    """
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.integer,)):
+        return int(obj)
+    elif isinstance(obj, (np.floating,)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, (np.complex64, np.complex128)):
+        return {'real': float(obj.real), 'imag': float(obj.imag)}
+    # 对于无法处理的类型，抛出 TypeError 让 json.dumps 处理
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 class ControllerManager:
@@ -508,21 +539,10 @@ class ControllerManager:
         # ROS 环境下发布到话题
         if self._diagnostics_pub is not None:
             try:
-                import json
                 from std_msgs.msg import String
                 
-                # 自定义 JSON 编码器处理 numpy 类型
-                def numpy_encoder(obj):
-                    if isinstance(obj, np.ndarray):
-                        return obj.tolist()
-                    elif isinstance(obj, (np.integer, np.floating)):
-                        return float(obj)
-                    elif isinstance(obj, np.bool_):
-                        return bool(obj)
-                    return str(obj)
-                
                 msg = String()
-                msg.data = json.dumps(diag_dict, default=numpy_encoder)
+                msg.data = json.dumps(diag_dict, default=_numpy_json_encoder)
                 self._diagnostics_pub.publish(msg)
             except Exception as e:
                 # 非 ROS 环境或发布失败，静默处理

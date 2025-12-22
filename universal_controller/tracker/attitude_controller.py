@@ -8,13 +8,22 @@
 - F14.4: 位置-姿态解耦控制选项
 
 坐标系约定:
-- 世界坐标系: X-前, Y-右, Z-上 (ENU 或类似)
-- 机体坐标系: X-前, Y-右, Z-上
+- 世界坐标系: X-前(北), Y-左(西), Z-上 (NWU，类似 ENU 但 Y 轴相反)
+  注意: 如果使用 ENU (X-东, Y-北, Z-上)，需要调整速度命令的解释
+- 机体坐标系: X-前, Y-左, Z-上 (FLU)
 - 欧拉角约定: ZYX (先 yaw, 再 pitch, 最后 roll)
-- 姿态角符号约定 (与常见无人机控制一致):
-  - 正 roll (φ > 0): 右翼向下 -> 产生右向加速度
-  - 负 pitch (θ < 0): 机头向下 (前倾) -> 产生前向加速度
-  - 正 yaw (ψ > 0): 机头向左
+
+姿态角符号约定 (与 PX4/ArduPilot 等常见飞控一致):
+  - roll (φ):
+    - 正 roll (φ > 0): 右翼向下，机体向右倾斜
+    - 产生右向加速度 (世界坐标系 -Y 方向，如果 Y 轴向左)
+  - pitch (θ):
+    - 正 pitch (θ > 0): 机头向上，机体后仰
+    - 负 pitch (θ < 0): 机头向下，机体前倾 -> 产生前向加速度
+    - 注意: 本控制器输出的 pitch 符号已调整，使得正 pitch 命令产生前向加速度
+      这与某些飞控的约定相反，使用时需要注意接口适配
+  - yaw (ψ):
+    - 正 yaw (ψ > 0): 机头向左旋转 (从上方看逆时针)
 
 物理模型说明 (完整推导，无简化):
 四旋翼在世界坐标系下的动力学方程为:
@@ -48,7 +57,12 @@
    sin(θ) = ax_body / (T/m * cos(φ))
    cos(θ) = az_total / (T/m * cos(φ))
    θ_raw = atan2(sin(θ), cos(θ))
-   θ = -θ_raw  (取负以匹配约定: 负 pitch = 前倾 = 前向加速度)
+   θ = -θ_raw  (取负以匹配控制约定: 正 pitch 命令 = 前倾 = 前向加速度)
+   
+   注意: 这里的符号调整是为了使控制接口更直观:
+   - 正的 pitch 命令 -> 产生正的前向加速度
+   - 这与标准 ZYX 欧拉角约定相反（标准约定中正 pitch = 机头向上）
+   - 如果需要与标准约定一致，可以在配置中禁用此调整
 """
 from typing import Dict, Any, Optional
 import numpy as np
@@ -393,11 +407,12 @@ class QuadrotorAttitudeController(IAttitudeController):
         vz_current = abs(current_state[5]) if len(current_state) > 5 else 0.0
         vz_cmd = abs(velocity_cmd.vz)
         
-        # 悬停检测: 使用滞后逻辑避免频繁切换
+        # 悬停检测: 使用滞后逻辑和时间去抖动避免频繁切换
         # 进入悬停需要满足严格条件，退出悬停需要满足宽松条件
         HOVER_ENTER_FACTOR = 1.0  # 进入悬停的阈值因子
         HOVER_EXIT_FACTOR = 1.5   # 退出悬停的阈值因子（更宽松）
         CMD_EXIT_FACTOR = 2.0     # 命令速度退出悬停的阈值因子
+        HOVER_DEBOUNCE_TIME = 0.1  # 悬停状态切换去抖动时间 (秒)
         
         # 判断是否应该进入悬停状态
         # 需要当前速度和命令速度都很小
@@ -420,11 +435,59 @@ class QuadrotorAttitudeController(IAttitudeController):
         
         # 滞后逻辑：已经在悬停状态时，只有满足退出条件才退出
         # 不在悬停状态时，需要满足进入条件才进入
+        # 添加时间去抖动：状态切换需要持续一段时间才生效
         currently_hovering = self._hover_start_time is not None
+        
+        # 初始化去抖动状态（如果需要）
+        if not hasattr(self, '_hover_debounce_start'):
+            self._hover_debounce_start: Optional[float] = None
+            self._hover_debounce_target: Optional[bool] = None
+        
+        # 默认保持当前状态
+        is_hovering = currently_hovering
+        
         if currently_hovering:
-            is_hovering = not should_exit_hover
+            # 当前在悬停状态
+            if should_exit_hover:
+                # 需要退出悬停
+                if self._hover_debounce_target != False:
+                    # 开始退出悬停的去抖动计时
+                    self._hover_debounce_start = current_time
+                    self._hover_debounce_target = False
+                    is_hovering = True  # 去抖动期间保持悬停
+                elif (self._hover_debounce_start is not None and 
+                      current_time - self._hover_debounce_start >= HOVER_DEBOUNCE_TIME):
+                    # 去抖动时间已过，确认退出悬停
+                    is_hovering = False
+                else:
+                    # 去抖动中，保持悬停状态
+                    is_hovering = True
+            else:
+                # 不需要退出，重置去抖动状态
+                self._hover_debounce_start = None
+                self._hover_debounce_target = None
+                is_hovering = True
         else:
-            is_hovering = should_enter_hover
+            # 当前不在悬停状态
+            if should_enter_hover:
+                # 需要进入悬停
+                if self._hover_debounce_target != True:
+                    # 开始进入悬停的去抖动计时
+                    self._hover_debounce_start = current_time
+                    self._hover_debounce_target = True
+                    is_hovering = False  # 去抖动期间保持非悬停
+                elif (self._hover_debounce_start is not None and 
+                      current_time - self._hover_debounce_start >= HOVER_DEBOUNCE_TIME):
+                    # 去抖动时间已过，确认进入悬停
+                    is_hovering = True
+                else:
+                    # 去抖动中，保持非悬停状态
+                    is_hovering = False
+            else:
+                # 不需要进入，重置去抖动状态
+                self._hover_debounce_start = None
+                self._hover_debounce_target = None
+                is_hovering = False
         
         # 悬停 yaw 漂移补偿 (F14.3)
         if is_hovering and self.hover_yaw_compensation_enabled:
@@ -551,3 +614,6 @@ class QuadrotorAttitudeController(IAttitudeController):
         self._hover_yaw = None
         self._hover_start_time = None
         self._accumulated_yaw_drift = 0.0
+        # 重置悬停去抖动状态
+        self._hover_debounce_start = None
+        self._hover_debounce_target = None
