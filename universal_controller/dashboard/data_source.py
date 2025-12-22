@@ -307,8 +307,22 @@ class DashboardDataSource:
         if not isinstance(bias, (list, tuple)) or len(bias) < 3:
             bias = [0, 0, 0]
 
-        # 功能开关：mock 模式下全部禁用
-        features_enabled = not self._is_mock_mode
+        # 功能开关：从配置中读取，而不是简单地根据 mock 模式设置
+        ekf_config = self.config.get('ekf', {})
+        transform_config = self.config.get('transform', {})
+        adaptive_config = ekf_config.get('adaptive', {})
+        
+        # 自适应 EKF：检查是否有自适应参数配置
+        ekf_enabled = bool(adaptive_config) and adaptive_config.get('base_slip_thresh', 0) > 0
+        
+        # 打滑检测：检查打滑检测阈值是否配置
+        slip_detection_enabled = adaptive_config.get('base_slip_thresh', 0) > 0
+        
+        # 漂移校正：从 transform 配置读取
+        drift_correction_enabled = transform_config.get('recovery_correction_enabled', True)
+        
+        # 航向备选：从 ekf 配置读取
+        heading_fallback_enabled = ekf_config.get('use_odom_orientation_fallback', True)
 
         return EstimatorStatus(
             covariance_norm=est.get('covariance_norm', 0),
@@ -317,10 +331,10 @@ class DashboardDataSource:
             imu_drift_detected=est.get('imu_drift_detected', False),
             imu_bias=(bias[0], bias[1], bias[2]),
             imu_available=est.get('imu_available', False) and not self._is_mock_mode,
-            ekf_enabled=features_enabled,
-            slip_detection_enabled=features_enabled,
-            drift_correction_enabled=features_enabled,
-            heading_fallback_enabled=features_enabled,
+            ekf_enabled=ekf_enabled,
+            slip_detection_enabled=slip_detection_enabled,
+            drift_correction_enabled=drift_correction_enabled,
+            heading_fallback_enabled=heading_fallback_enabled,
         )
 
     def _build_transform_status(self, diag: Dict) -> TransformStatus:

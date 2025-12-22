@@ -232,6 +232,10 @@ class ControllerManager:
         from ..safety.safety_monitor import BasicSafetyMonitor
         from ..transition.smooth_transition import ExponentialSmoothTransition
         from ..transform.robust_transformer import RobustCoordinateTransformer
+        from ..core.data_types import TrajectoryDefaults
+        
+        # 初始化轨迹默认配置
+        TrajectoryDefaults.configure(self.config)
         
         # 基础组件
         components = {

@@ -155,6 +155,39 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str]
             errors.append(('watchdog.traj_grace_ms', 
                           f'轨迹宽限期 ({traj_grace}ms) 不应大于轨迹超时 ({traj_timeout}ms)'))
     
+    # 轨迹配置一致性
+    min_dt = get_config_value(config, 'trajectory.min_dt_sec')
+    max_dt = get_config_value(config, 'trajectory.max_dt_sec')
+    default_dt = get_config_value(config, 'trajectory.default_dt_sec')
+    if _is_numeric(min_dt) and _is_numeric(max_dt):
+        if min_dt > max_dt:
+            errors.append(('trajectory.min_dt_sec', 
+                          f'最小时间步长 ({min_dt}) 不应大于最大时间步长 ({max_dt})'))
+    if _is_numeric(default_dt) and _is_numeric(min_dt) and _is_numeric(max_dt):
+        if default_dt < min_dt or default_dt > max_dt:
+            errors.append(('trajectory.default_dt_sec', 
+                          f'默认时间步长 ({default_dt}) 应在 [{min_dt}, {max_dt}] 范围内'))
+    
+    min_points = get_config_value(config, 'trajectory.min_points')
+    max_points = get_config_value(config, 'trajectory.max_points')
+    default_points = get_config_value(config, 'trajectory.default_num_points')
+    if _is_numeric(min_points) and _is_numeric(max_points):
+        if min_points > max_points:
+            errors.append(('trajectory.min_points', 
+                          f'最小轨迹点数 ({min_points}) 不应大于最大轨迹点数 ({max_points})'))
+    if _is_numeric(default_points) and _is_numeric(min_points) and _is_numeric(max_points):
+        if default_points < min_points or default_points > max_points:
+            errors.append(('trajectory.default_num_points', 
+                          f'默认轨迹点数 ({default_points}) 应在 [{min_points}, {max_points}] 范围内'))
+    
+    # low_speed_thresh 一致性检查 (trajectory 和 consistency 应保持一致)
+    traj_low_speed = get_config_value(config, 'trajectory.low_speed_thresh')
+    consistency_low_speed = get_config_value(config, 'consistency.low_speed_thresh')
+    if _is_numeric(traj_low_speed) and _is_numeric(consistency_low_speed):
+        if abs(traj_low_speed - consistency_low_speed) > 1e-6:
+            errors.append(('trajectory.low_speed_thresh', 
+                          f'轨迹低速阈值 ({traj_low_speed}) 应与一致性检查低速阈值 ({consistency_low_speed}) 保持一致'))
+    
     return errors
 
 

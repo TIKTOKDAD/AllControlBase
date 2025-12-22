@@ -54,7 +54,7 @@ TRANSFORM_CONFIG = {
     'fallback_duration_limit_ms': 500,   # 降级持续限制 (ms)
     'fallback_critical_limit_ms': 1000,  # 临界降级限制 (ms)
     'tf2_timeout_ms': 10,             # TF2 超时 (ms)
-    'drift_estimation_enabled': True,    # 漂移估计开关
+    'drift_estimation_enabled': False,    # 漂移估计开关
     'recovery_correction_enabled': True, # 恢复校正开关
     'drift_rate': 0.01,               # 漂移率 (米/秒)
     'max_drift_dt': 0.5,              # 漂移估计最大时间间隔 (秒)

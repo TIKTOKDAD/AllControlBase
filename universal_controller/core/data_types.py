@@ -29,7 +29,7 @@
    - ControlOutput: 控制输出，frame_id 指定输出坐标系
 """
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, ClassVar
 import numpy as np
 import copy
 import time
@@ -39,6 +39,39 @@ from .enums import TrajectoryMode, ControllerState
 
 # 配置日志
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# 轨迹默认配置 (可通过 Trajectory.configure() 修改)
+# =============================================================================
+class TrajectoryDefaults:
+    """轨迹默认配置，可在运行时修改"""
+    dt_sec: float = 0.1
+    low_speed_thresh: float = 0.1
+    default_confidence: float = 0.9
+    default_frame_id: str = 'base_link'
+    
+    @classmethod
+    def configure(cls, config: Dict[str, Any]) -> None:
+        """
+        从配置字典更新默认值
+        
+        Args:
+            config: 配置字典，应包含 'trajectory' 键
+        
+        Example:
+            >>> from universal_controller.config import DEFAULT_CONFIG
+            >>> TrajectoryDefaults.configure(DEFAULT_CONFIG)
+        """
+        traj_config = config.get('trajectory', {})
+        if 'default_dt_sec' in traj_config:
+            cls.dt_sec = traj_config['default_dt_sec']
+        if 'low_speed_thresh' in traj_config:
+            cls.low_speed_thresh = traj_config['low_speed_thresh']
+        if 'default_confidence' in traj_config:
+            cls.default_confidence = traj_config['default_confidence']
+        if 'default_frame_id' in traj_config:
+            cls.default_frame_id = traj_config['default_frame_id']
 
 
 def _normalize_angle_internal(angle: float) -> float:
@@ -79,25 +112,44 @@ class Twist3D:
 
 @dataclass
 class Trajectory:
-    """轨迹数据类"""
+    """轨迹数据类
+    
+    Attributes:
+        header: 消息头，包含时间戳和坐标系
+        points: Hard 轨迹点列表
+        velocities: Soft 速度数组 [N, 4]: [vx, vy, vz, wz]
+        dt_sec: 时间步长 (秒)
+        confidence: 网络置信度 [0, 1]
+        mode: 轨迹模式
+        soft_enabled: Soft Head 是否启用
+        low_speed_thresh: 低速阈值，用于角速度计算
+    
+    Note:
+        默认值从 TrajectoryDefaults 获取，可通过 TrajectoryDefaults.configure() 修改
+    """
     header: Header
     points: List[Point3D]
     velocities: Optional[np.ndarray]  # [N, 4]: [vx, vy, vz, wz]
-    dt_sec: float
-    confidence: float
+    dt_sec: float = None  # None 表示使用默认值
+    confidence: float = None  # None 表示使用默认值
     mode: TrajectoryMode = TrajectoryMode.MODE_TRACK
     soft_enabled: bool = False
-    
-    # 类级别配置参数，可通过 Trajectory.low_speed_thresh = value 修改
-    # 用于 get_hard_velocities() 中判断是否计算角速度
-    # 注意: 默认值应与 consistency.low_speed_thresh 配置保持一致
-    low_speed_thresh: float = field(default=0.1, repr=False, compare=False)
+    low_speed_thresh: float = field(default=None, repr=False, compare=False)
     
     def __post_init__(self):
+        # 使用 TrajectoryDefaults 填充默认值
+        if self.dt_sec is None:
+            self.dt_sec = TrajectoryDefaults.dt_sec
+        if self.confidence is None:
+            self.confidence = TrajectoryDefaults.default_confidence
+        if self.low_speed_thresh is None:
+            self.low_speed_thresh = TrajectoryDefaults.low_speed_thresh
+        
+        # 验证
         self.confidence = np.clip(self.confidence, 0.0, 1.0)
         if self.dt_sec <= 0:
-            logger.warning(f"Trajectory dt_sec={self.dt_sec} invalid, using default 0.1")
-            self.dt_sec = 0.1
+            logger.warning(f"Trajectory dt_sec={self.dt_sec} invalid, using default {TrajectoryDefaults.dt_sec}")
+            self.dt_sec = TrajectoryDefaults.dt_sec
     
     def __len__(self) -> int:
         return len(self.points)

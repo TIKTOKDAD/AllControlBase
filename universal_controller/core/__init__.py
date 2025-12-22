@@ -3,7 +3,7 @@ from .enums import ControllerState, TrajectoryMode, TransformStatus, HeadingMode
 from .data_types import (
     Header, Point3D, Twist3D, Trajectory, EstimatorOutput, ControlOutput,
     ConsistencyResult, SafetyDecision, MPCHealthStatus, TimeoutStatus,
-    AttitudeCommand, DiagnosticsV2, Odometry, Imu
+    AttitudeCommand, DiagnosticsV2, Odometry, Imu, TrajectoryDefaults
 )
 from .diagnostics_input import DiagnosticsInput
 from .interfaces import (

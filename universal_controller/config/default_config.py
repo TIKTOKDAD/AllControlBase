@@ -45,6 +45,7 @@ from .modules_config import (
     BACKUP_CONFIG,
     MODULES_VALIDATION_RULES,
 )
+from .trajectory_config import TRAJECTORY_CONFIG, TRAJECTORY_VALIDATION_RULES
 
 # 导入验证模块
 from .validation import (
@@ -72,6 +73,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     'constraints': CONSTRAINTS_CONFIG.copy(),
     'ekf': EKF_CONFIG.copy(),
     'attitude': ATTITUDE_CONFIG.copy(),
+    'trajectory': TRAJECTORY_CONFIG.copy(),
 }
 
 
@@ -85,6 +87,7 @@ CONFIG_VALIDATION_RULES.update(SAFETY_VALIDATION_RULES)
 CONFIG_VALIDATION_RULES.update(EKF_VALIDATION_RULES)
 CONFIG_VALIDATION_RULES.update(ATTITUDE_VALIDATION_RULES)
 CONFIG_VALIDATION_RULES.update(MODULES_VALIDATION_RULES)
+CONFIG_VALIDATION_RULES.update(TRAJECTORY_VALIDATION_RULES)
 
 
 # =============================================================================
@@ -139,4 +142,5 @@ __all__ = [
     'BACKUP_CONFIG',
     'WATCHDOG_CONFIG',
     'DIAGNOSTICS_CONFIG',
+    'TRAJECTORY_CONFIG',
 ]

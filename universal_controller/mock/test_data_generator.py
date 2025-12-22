@@ -2,6 +2,8 @@
 测试数据生成器
 
 生成用于测试的轨迹、里程计、IMU 等数据。
+
+默认参数从 TRAJECTORY_CONFIG 获取，确保与配置一致。
 """
 import time
 import math
@@ -10,17 +12,25 @@ from typing import List, Optional, Tuple
 
 # 导入数据类型
 from ..core.data_types import (
-    Trajectory, Point3D, Header, Odometry, Imu
+    Trajectory, Point3D, Header, Odometry, Imu, TrajectoryDefaults
 )
 from ..core.enums import TrajectoryMode
 
+# 导入轨迹配置
+from ..config.trajectory_config import TRAJECTORY_CONFIG
+
+
+def _get_trajectory_default(key: str, fallback: any = None):
+    """获取轨迹配置默认值"""
+    return TRAJECTORY_CONFIG.get(key, fallback)
+
 
 def create_test_trajectory(
-    num_points: int = 20,
-    dt: float = 0.1,
+    num_points: int = None,
+    dt: float = None,
     trajectory_type: str = 'sine',
-    frame_id: str = 'base_link',
-    confidence: float = 0.9,
+    frame_id: str = None,
+    confidence: float = None,
     soft_enabled: bool = False,
     **kwargs
 ) -> Trajectory:
@@ -28,11 +38,11 @@ def create_test_trajectory(
     创建测试轨迹
     
     Args:
-        num_points: 轨迹点数
-        dt: 时间步长 (秒)
+        num_points: 轨迹点数，默认从 TRAJECTORY_CONFIG 获取
+        dt: 时间步长 (秒)，默认从 TRAJECTORY_CONFIG 获取
         trajectory_type: 轨迹类型 ('sine', 'circle', 'straight', 'figure8')
-        frame_id: 坐标系 ID，默认 'base_link' (网络输出的局部坐标系)
-        confidence: 置信度
+        frame_id: 坐标系 ID，默认从 TRAJECTORY_CONFIG 获取
+        confidence: 置信度，默认从 TRAJECTORY_CONFIG 获取
         soft_enabled: 是否启用 Soft Head
         **kwargs: 轨迹类型特定参数
     
@@ -43,6 +53,16 @@ def create_test_trajectory(
         默认 frame_id='base_link' 模拟网络输出的局部轨迹，
         轨迹点是相对于当前机器人位置的局部坐标。
     """
+    # 使用配置默认值
+    if num_points is None:
+        num_points = _get_trajectory_default('default_num_points', 20)
+    if dt is None:
+        dt = _get_trajectory_default('default_dt_sec', 0.1)
+    if frame_id is None:
+        frame_id = _get_trajectory_default('default_frame_id', 'base_link')
+    if confidence is None:
+        confidence = _get_trajectory_default('default_confidence', 0.9)
+    
     points = []
     velocities = [] if soft_enabled else None
     
@@ -212,7 +232,7 @@ def create_test_imu(
 
 def create_test_state_sequence(
     num_steps: int = 100,
-    dt: float = 0.02,
+    dt: float = None,
     trajectory_type: str = 'sine',
     initial_state: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     **kwargs
@@ -230,7 +250,7 @@ def create_test_state_sequence(
     
     Args:
         num_steps: 步数
-        dt: 时间步长
+        dt: 时间步长，默认从 TRAJECTORY_CONFIG 获取
         trajectory_type: 轨迹类型
         initial_state: 初始状态 (x, y, theta)
         **kwargs: 轨迹参数
@@ -238,16 +258,22 @@ def create_test_state_sequence(
     Returns:
         (Odometry, Trajectory) 元组列表
     """
+    if dt is None:
+        dt = _get_trajectory_default('default_dt_sec', 0.1)
+    
     sequence = []
     x, y, theta = initial_state
     vx, vy = 0.0, 0.0
+    
+    # 获取默认轨迹点数
+    default_num_points = _get_trajectory_default('default_num_points', 20)
     
     for i in range(num_steps):
         # 创建轨迹 (从当前位置开始)
         # 注意: 这里使用 frame_id='odom' 因为我们会手动偏移轨迹点
         traj = create_test_trajectory(
-            num_points=20,
-            dt=0.1,
+            num_points=default_num_points,
+            dt=dt,
             trajectory_type=trajectory_type,
             frame_id='odom',  # 偏移后的轨迹在 odom 坐标系
             **kwargs
@@ -300,8 +326,8 @@ def create_local_trajectory_with_transform(
     robot_x: float,
     robot_y: float,
     robot_theta: float,
-    num_points: int = 20,
-    dt: float = 0.1,
+    num_points: int = None,
+    dt: float = None,
     trajectory_type: str = 'straight',
     soft_enabled: bool = False,
     **kwargs
@@ -313,8 +339,8 @@ def create_local_trajectory_with_transform(
     
     Args:
         robot_x, robot_y, robot_theta: 机器人在 odom 坐标系中的位姿
-        num_points: 轨迹点数
-        dt: 时间步长
+        num_points: 轨迹点数，默认从 TRAJECTORY_CONFIG 获取
+        dt: 时间步长，默认从 TRAJECTORY_CONFIG 获取
         trajectory_type: 轨迹类型
         soft_enabled: 是否启用 Soft Head
         **kwargs: 轨迹参数
@@ -322,6 +348,12 @@ def create_local_trajectory_with_transform(
     Returns:
         (local_traj, odom_traj): 局部坐标系轨迹 (base_link) 和 odom 坐标系轨迹
     """
+    # 使用配置默认值
+    if num_points is None:
+        num_points = _get_trajectory_default('default_num_points', 20)
+    if dt is None:
+        dt = _get_trajectory_default('default_dt_sec', 0.1)
+    
     # 创建局部坐标系轨迹
     local_traj = create_test_trajectory(
         num_points=num_points,
