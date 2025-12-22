@@ -25,7 +25,23 @@ logger = logging.getLogger(__name__)
 
 
 class ControllerManager:
-    """控制器管理器"""
+    """
+    控制器管理器
+    
+    负责协调所有控制器组件，执行主控制循环。
+    
+    线程安全性说明:
+        - update() 方法不是线程安全的，应该在单个线程中调用
+        - 如果需要在多线程环境中使用，调用者需要自行加锁
+        - set_diagnostics_callback() 是线程安全的
+    
+    使用示例:
+        manager = ControllerManager(config)
+        manager.initialize_default_components()
+        
+        # 在控制循环中调用
+        cmd = manager.update(odom, trajectory, imu)
+    """
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -86,7 +102,7 @@ class ControllerManager:
         """
         初始化 ROS Publishers (向后兼容)
         
-        注意: 诊断发布已移至 DiagnosticsPublisher
+        注意: 诊断发布已移至 DiagnosticsPublisher，此方法保留用于向后兼容
         """
         from ..core.ros_compat import ROS_AVAILABLE
         
@@ -97,14 +113,17 @@ class ControllerManager:
             import rospy
             from geometry_msgs.msg import Twist
             
+            # 使用已存储的话题名称，避免重复读取配置
+            cmd_topic = self._diagnostics_publisher._cmd_topic
+            
             # 控制命令发布器
             self._cmd_pub = rospy.Publisher(
-                '/cmd_unified',
+                cmd_topic,
                 Twist,
                 queue_size=1
             )
             
-            logger.info("ROS command publisher initialized")
+            logger.info(f"ROS command publisher initialized: {cmd_topic}")
         except Exception as e:
             logger.warning(f"ROS publisher init failed: {e}")
             self._cmd_pub = None
@@ -229,34 +248,91 @@ class ControllerManager:
     
     def update(self, odom: Odometry, trajectory: Trajectory, 
                imu: Optional[Imu] = None) -> ControlOutput:
-        """主控制循环"""
-        # 使用单调时钟，避免系统时间跳变影响
+        """
+        主控制循环
+        
+        控制流程:
+        1. 时间管理和暂停检测
+        2. 超时监控
+        3. 状态估计 (EKF)
+        4. 一致性检查
+        5. 坐标变换
+        6. MPC 计算和健康监控
+        7. 控制器选择
+        8. 安全检查
+        9. 状态机更新
+        10. 平滑过渡
+        11. 诊断发布
+        """
         current_time = get_monotonic_time()
         
-        # 计算实际时间间隔，用于 EKF 预测
-        # 长时间暂停检测阈值 - 从配置读取
+        # 1. 时间管理
+        actual_dt, skip_prediction = self._compute_time_step(current_time)
+        
+        # 2. 超时监控
+        timeout_status = self._update_timeout_monitor(odom, trajectory, imu)
+        
+        # 3. 状态估计
+        state, state_output = self._update_state_estimation(
+            odom, imu, timeout_status, actual_dt, skip_prediction)
+        
+        # 4. 一致性检查
+        consistency = self._compute_consistency(trajectory)
+        
+        # 5. 坐标变换
+        transformed_traj, tf2_critical = self._transform_trajectory(trajectory, current_time)
+        
+        # 6. MPC 计算和健康监控
+        mpc_cmd, mpc_health = self._compute_mpc(state, transformed_traj, consistency)
+        
+        # 7. 构建诊断信息
+        diagnostics = self._build_diagnostics(
+            consistency, mpc_health, mpc_cmd, timeout_status, 
+            state, trajectory, tf2_critical)
+        
+        # 8. 选择控制器输出
+        cmd = self._select_controller_output(
+            state, transformed_traj, consistency, mpc_cmd)
+        
+        # 9. 计算跟踪误差
+        self._last_tracking_error = self._compute_tracking_error(state, transformed_traj)
+        
+        # 10. 安全检查
+        cmd = self._apply_safety_check(state, cmd, diagnostics)
+        
+        # 11. 状态机更新
+        self._update_state_machine(diagnostics)
+        
+        # 12. 平滑过渡
+        cmd = self._apply_smooth_transition(cmd, current_time)
+        
+        # 13. 发布诊断
+        self._publish_diagnostics(
+            state_output, timeout_status, tf2_critical, cmd)
+        
+        return cmd
+    
+    def _compute_time_step(self, current_time: float) -> tuple:
+        """
+        计算时间步长，处理暂停检测
+        
+        Returns:
+            (actual_dt, skip_prediction): 实际时间步长和是否跳过预测
+        """
         long_pause_threshold = self.config.get('system', {}).get('long_pause_threshold', 0.5)
         ekf_reset_threshold = self.config.get('system', {}).get('ekf_reset_threshold', 2.0)
-        
-        # 标记是否需要跳过预测（EKF 刚重置后）
         skip_prediction = False
         
         if self._last_update_time is not None:
             actual_dt = current_time - self._last_update_time
             
-            # 检测长时间暂停
             if actual_dt > ekf_reset_threshold:
-                # 超过重置阈值的暂停，重置 EKF 以避免累积误差
                 logger.warning(f"Long pause detected ({actual_dt:.2f}s), resetting EKF")
                 if self.state_estimator:
                     self.state_estimator.reset()
-                # 重置后跳过本次预测，只进行观测更新
-                # 这样可以让 EKF 从观测数据重新初始化状态
                 skip_prediction = True
-                actual_dt = self.dt  # 使用默认值（用于后续计算）
+                actual_dt = self.dt
             elif actual_dt > long_pause_threshold:
-                # 中等暂停，使用多步预测
-                # 将长时间间隔分解为多个小步骤，提高预测精度
                 logger.info(f"Medium pause detected ({actual_dt:.2f}s), using multi-step prediction")
                 num_steps = int(actual_dt / self.dt)
                 if self.state_estimator and num_steps > 1:
@@ -264,48 +340,69 @@ class ControllerManager:
                         self.state_estimator.predict(self.dt)
                 actual_dt = actual_dt - (num_steps - 1) * self.dt
             
-            # 限制时间间隔在合理范围内，避免异常值
-            # 最小 1ms，最大为长暂停阈值（长暂停已经处理）
             actual_dt = np.clip(actual_dt, 0.001, long_pause_threshold)
         else:
-            actual_dt = self.dt  # 首次调用使用默认值
-        self._last_update_time = current_time
+            actual_dt = self.dt
         
-        # 1. 更新超时监控
+        self._last_update_time = current_time
+        return actual_dt, skip_prediction
+    
+    def _update_timeout_monitor(self, odom: Odometry, trajectory: Trajectory,
+                                imu: Optional[Imu]) -> TimeoutStatus:
+        """更新超时监控"""
         self.timeout_monitor.update_odom(odom.header.stamp)
         self.timeout_monitor.update_trajectory(trajectory.header.stamp)
         if imu is not None:
             self.timeout_monitor.update_imu(imu.header.stamp)
-        timeout_status = self.timeout_monitor.check()  # 不传入时间，使用内部单调时钟
+        return self.timeout_monitor.check()
+    
+    def _update_state_estimation(self, odom: Odometry, imu: Optional[Imu],
+                                 timeout_status: TimeoutStatus, actual_dt: float,
+                                 skip_prediction: bool) -> tuple:
+        """
+        更新状态估计
         
-        # 2. 状态估计
+        Returns:
+            (state, state_output): 状态向量和完整估计输出
+        """
         state_output: Optional[EstimatorOutput] = None
+        
         if self.state_estimator:
-            # EKF 标准流程: 先预测，再更新
-            # 如果 EKF 刚重置，跳过预测步骤
             if not skip_prediction:
                 self.state_estimator.predict(actual_dt)
             
-            # 更新步骤: 先更新 odom，再更新 IMU
             self.state_estimator.update_odom(odom)
+            
             if timeout_status.imu_timeout:
                 self.state_estimator.set_imu_available(False)
             elif imu:
                 self.state_estimator.set_imu_available(True)
                 self.state_estimator.update_imu(imu)
+            
             state_output = self.state_estimator.get_state()
             state = state_output.state
         else:
             state = np.zeros(8)
         
-        # 3. 一致性检查
+        return state, state_output
+    
+    def _compute_consistency(self, trajectory: Trajectory) -> ConsistencyResult:
+        """计算一致性"""
         if self.consistency_checker:
             consistency = self.consistency_checker.compute(trajectory)
         else:
             consistency = ConsistencyResult(0, 1, 1, 1, True, True)
         self._last_consistency = consistency
+        return consistency
+    
+    def _transform_trajectory(self, trajectory: Trajectory, 
+                              current_time: float) -> tuple:
+        """
+        坐标变换
         
-        # 4. 坐标变换
+        Returns:
+            (transformed_traj, tf2_critical): 变换后轨迹和是否临界
+        """
         if self.coord_transformer:
             transformed_traj, tf_status = self.coord_transformer.transform_trajectory(
                 trajectory, self.transform_target_frame, current_time)
@@ -313,29 +410,43 @@ class ControllerManager:
         else:
             transformed_traj = trajectory
             tf2_critical = False
+        return transformed_traj, tf2_critical
+    
+    def _compute_mpc(self, state: np.ndarray, trajectory: Trajectory,
+                     consistency: ConsistencyResult) -> tuple:
+        """
+        MPC 计算和健康监控
         
-        # 5. MPC 计算
+        Returns:
+            (mpc_cmd, mpc_health): MPC 命令和健康状态
+        """
         mpc_cmd = None
-        if self.mpc_tracker and self._last_state not in [ControllerState.BACKUP_ACTIVE, 
-                                                          ControllerState.STOPPING,
-                                                          ControllerState.STOPPED]:
-            mpc_cmd = self.mpc_tracker.compute(state, transformed_traj, consistency)
+        mpc_health = None
+        
+        if self.mpc_tracker and self._last_state not in [
+            ControllerState.BACKUP_ACTIVE, 
+            ControllerState.STOPPING,
+            ControllerState.STOPPED
+        ]:
+            mpc_cmd = self.mpc_tracker.compute(state, trajectory, consistency)
             if mpc_cmd.success:
                 self._last_mpc_cmd = mpc_cmd.copy()
         
-        # MPC 健康监控
         if self.mpc_health_monitor and mpc_cmd is not None:
             mpc_health = self.mpc_health_monitor.update(
                 mpc_cmd.solve_time_ms,
                 mpc_cmd.health_metrics.get('kkt_residual', 0.0),
                 mpc_cmd.health_metrics.get('condition_number', 1.0)
             )
-        else:
-            mpc_health = None
-        self._last_mpc_health = mpc_health
         
-        # 6. 构建诊断信息（使用强类型）
-        # 注意: safety_failed 使用上一周期的值，避免循环依赖
+        self._last_mpc_health = mpc_health
+        return mpc_cmd, mpc_health
+    
+    def _build_diagnostics(self, consistency: ConsistencyResult,
+                          mpc_health: Any, mpc_cmd: Optional[ControlOutput],
+                          timeout_status: TimeoutStatus, state: np.ndarray,
+                          trajectory: Trajectory, tf2_critical: bool) -> DiagnosticsInput:
+        """构建诊断信息"""
         diagnostics = DiagnosticsInput(
             alpha=consistency.alpha,
             data_valid=consistency.data_valid,
@@ -351,47 +462,56 @@ class ControllerManager:
             current_state=self._last_state,
         )
         self._last_diagnostics = diagnostics
-        
-        # 7. 选择控制器输出 (在状态机更新之前，基于当前状态)
+        return diagnostics
+    
+    def _select_controller_output(self, state: np.ndarray, trajectory: Trajectory,
+                                  consistency: ConsistencyResult,
+                                  mpc_cmd: Optional[ControlOutput]) -> ControlOutput:
+        """选择控制器输出"""
         if self._last_state in [ControllerState.BACKUP_ACTIVE, ControllerState.STOPPING]:
             if self.backup_tracker:
-                cmd = self.backup_tracker.compute(state, transformed_traj, consistency)
+                cmd = self.backup_tracker.compute(state, trajectory, consistency)
                 self._last_backup_cmd = cmd.copy()
             else:
                 cmd = ControlOutput(vx=0, vy=0, vz=0, omega=0, frame_id=self.default_frame_id)
         else:
-            cmd = mpc_cmd if mpc_cmd else ControlOutput(vx=0, vy=0, vz=0, omega=0, 
-                                                        frame_id=self.default_frame_id)
-        
-        # 计算跟踪误差
-        self._last_tracking_error = self._compute_tracking_error(state, transformed_traj)
-        
-        # 8. 安全检查 (在状态机更新之前)
-        safety_triggered = False
+            cmd = mpc_cmd if mpc_cmd else ControlOutput(
+                vx=0, vy=0, vz=0, omega=0, frame_id=self.default_frame_id)
+        return cmd
+    
+    def _apply_safety_check(self, state: np.ndarray, cmd: ControlOutput,
+                           diagnostics: DiagnosticsInput) -> ControlOutput:
+        """应用安全检查"""
         if self.safety_monitor:
             safety_decision = self.safety_monitor.check(state, cmd, diagnostics)
             if not safety_decision.safe:
                 self._safety_failed = True
-                safety_triggered = True
                 if safety_decision.limited_cmd is not None:
                     cmd = safety_decision.limited_cmd
-                # 更新诊断信息中的 safety_failed 标志
                 diagnostics.safety_failed = True
             else:
                 self._safety_failed = False
-        
-        # 9. 更新状态机 (只调用一次，包含安全检查结果)
+        return cmd
+    
+    def _update_state_machine(self, diagnostics: DiagnosticsInput) -> None:
+        """更新状态机"""
         if self.state_machine:
             new_state = self.state_machine.update(diagnostics)
             if new_state != self._last_state:
                 self._on_state_changed(self._last_state, new_state)
                 self._last_state = new_state
-        
-        # 10. 平滑过渡
+    
+    def _apply_smooth_transition(self, cmd: ControlOutput, 
+                                 current_time: float) -> ControlOutput:
+        """应用平滑过渡"""
         if self.smooth_transition and not self.smooth_transition.is_complete():
             cmd = self.smooth_transition.get_blended_output(cmd, current_time)
-        
-        # 11. 发布诊断 (使用 time.time() 作为时间戳，因为这是给外部使用的)
+        return cmd
+    
+    def _publish_diagnostics(self, state_output: Optional[EstimatorOutput],
+                            timeout_status: TimeoutStatus, tf2_critical: bool,
+                            cmd: ControlOutput) -> None:
+        """发布诊断信息"""
         wall_time = time.time()
         transform_status = self.coord_transformer.get_status() if self.coord_transformer else {
             'fallback_duration_ms': 0.0, 'accumulated_drift': 0.0
@@ -409,8 +529,6 @@ class ControllerManager:
             transition_progress=self.smooth_transition.get_progress() if self.smooth_transition else 0.0,
             tf2_critical=tf2_critical
         )
-        
-        return cmd
     
     def _compute_tracking_error(self, state: np.ndarray, trajectory: Trajectory) -> Dict[str, float]:
         """计算跟踪误差"""

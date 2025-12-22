@@ -211,8 +211,9 @@ class DiagnosticsPublisher:
             twist.angular.z = cmd.omega
             
             self._cmd_pub.publish(twist)
-        except Exception:
-            pass  # 静默处理发布失败
+        except Exception as e:
+            # 发布失败不应影响主控制循环，使用 debug 级别记录
+            logger.debug(f"Command publish failed: {e}")
     
     def get_last_published(self) -> Optional[Dict[str, Any]]:
         """获取最后发布的诊断数据"""
@@ -303,5 +304,6 @@ class DiagnosticsPublisher:
             msg = String()
             msg.data = json.dumps(diag_dict, default=_numpy_json_encoder)
             self._diagnostics_pub.publish(msg)
-        except Exception:
-            pass  # 静默处理发布失败
+        except Exception as e:
+            # 发布失败不应影响主控制循环，使用 debug 级别记录
+            logger.debug(f"Diagnostics publish failed: {e}")

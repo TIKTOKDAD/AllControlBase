@@ -9,6 +9,13 @@ from ..config.default_config import PLATFORM_CONFIG
 from ..core.ros_compat import euler_from_quaternion, get_monotonic_time, normalize_angle
 
 
+# 四元数有效性检查常量
+# 单位四元数的范数平方应该为 1.0
+# 使用宽松的边界来容忍数值误差和传感器噪声
+QUATERNION_NORM_SQ_MIN = 0.5  # 范数平方下界 (范数 > 0.707)
+QUATERNION_NORM_SQ_MAX = 2.0  # 范数平方上界 (范数 < 1.414)
+
+
 class AdaptiveEKFEstimator(IStateEstimator):
     """自适应 EKF 状态估计器"""
     
@@ -40,6 +47,7 @@ class AdaptiveEKFEstimator(IStateEstimator):
         self.stationary_covariance_scale = adaptive.get('stationary_covariance_scale', 0.1)
         self.stationary_thresh = adaptive.get('stationary_thresh', 0.05)
         self.slip_probability_k_factor = adaptive.get('slip_probability_k_factor', 5.0)
+        self.slip_history_window = adaptive.get('slip_history_window', 20)
         
         # IMU 相关参数
         self.max_tilt_angle = ekf_config.get('max_tilt_angle', np.pi / 3)  # ~60°
@@ -95,7 +103,7 @@ class AdaptiveEKFEstimator(IStateEstimator):
         self._imu_drift_detected = False
         
         # 打滑概率计算
-        self.slip_history = deque(maxlen=20)
+        self.slip_history = deque(maxlen=self.slip_history_window)
         
         # 世界坐标系加速度
         self.last_world_velocity = np.zeros(2)
@@ -156,7 +164,9 @@ class AdaptiveEKFEstimator(IStateEstimator):
         # 1. 先在当前状态上计算 Jacobian (预测前的状态)
         theta_before = self.x[6]
         omega_before = self.x[7]
-        F = self._compute_jacobian(dt, theta_before, omega_before)
+        vx_before = self.x[3]
+        vy_before = self.x[4]
+        F = self._compute_jacobian(dt, theta_before, omega_before, vx_before, vy_before)
         
         # 2. 更新状态
         self.x[0] += self.x[3] * dt
@@ -301,8 +311,8 @@ class AdaptiveEKFEstimator(IStateEstimator):
                     # 1. 范数不能太小（接近零向量）
                     # 2. 范数应该接近 1（单位四元数）
                     is_valid = (
-                        norm_sq > 0.5 and  # 范数平方至少 0.5
-                        norm_sq < 2.0      # 范数平方不超过 2
+                        norm_sq > QUATERNION_NORM_SQ_MIN and
+                        norm_sq < QUATERNION_NORM_SQ_MAX
                     )
                     
                     if is_valid:
@@ -420,7 +430,8 @@ class AdaptiveEKFEstimator(IStateEstimator):
         
         self.x[6] = normalize_angle(self.x[6])
     
-    def _compute_jacobian(self, dt: float, theta: float, omega: float) -> np.ndarray:
+    def _compute_jacobian(self, dt: float, theta: float, omega: float, 
+                          vx: float, vy: float) -> np.ndarray:
         """
         计算状态转移 Jacobian
         
@@ -443,6 +454,8 @@ class AdaptiveEKFEstimator(IStateEstimator):
             dt: 时间步长
             theta: 预测前的航向角
             omega: 预测前的角速度
+            vx: 预测前的 x 方向速度
+            vy: 预测前的 y 方向速度
         
         Returns:
             状态转移 Jacobian 矩阵 F [11x11]
@@ -454,14 +467,13 @@ class AdaptiveEKFEstimator(IStateEstimator):
         F[6, 7] = dt  # ∂theta/∂omega
         
         if self.velocity_heading_coupled:
-            # 使用预测前的速度计算 v_body
-            v_body = np.sqrt(self.x[3]**2 + self.x[4]**2)
+            # 使用传入的预测前速度计算 v_body
+            v_body = np.sqrt(vx**2 + vy**2)
             cos_theta = np.cos(theta)
             sin_theta = np.sin(theta)
             
             # 使用平滑过渡避免 Jacobian 跳变
             # 当 v_body 很小时，使用最小值来保证协方差传播
-            # 使用 max(v_body, MIN_V) 实现平滑过渡
             # 
             # 物理意义：即使车辆静止，航向角的不确定性仍然会影响
             # 速度估计的不确定性（因为一旦开始运动，速度方向取决于航向）
@@ -473,9 +485,6 @@ class AdaptiveEKFEstimator(IStateEstimator):
             
             # ∂vx_world/∂theta = -v_body * sin(theta)
             # ∂vy_world/∂theta = v_body * cos(theta)
-            # 使用 effective_v 代替 v_body 来计算 Jacobian
-            # 当 v_body >> MIN_V 时，effective_v ≈ v_body
-            # 当 v_body << MIN_V 时，effective_v ≈ MIN_V
             F[3, 6] = -effective_v * sin_theta
             F[4, 6] = effective_v * cos_theta
             
@@ -498,7 +507,8 @@ class AdaptiveEKFEstimator(IStateEstimator):
                 eigenvalues = np.maximum(eigenvalues, self.min_eigenvalue)
                 self.P = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
         except np.linalg.LinAlgError:
-            self.P = np.eye(11) * 0.1
+            # 使用配置的初始协方差值而非硬编码
+            self.P = np.eye(11) * self.initial_covariance
     
     def _get_adaptive_slip_threshold(self) -> float:
         current_velocity = np.linalg.norm(self.x[3:6])
@@ -516,8 +526,10 @@ class AdaptiveEKFEstimator(IStateEstimator):
         else:
             self.R_odom_current = self.R_odom_base.copy()
         
+        # 当速度较高时，航向角不确定性会影响速度估计的不确定性
+        # 使用 stationary_thresh 作为阈值，保持一致性
         theta_var = self.P[6, 6]
-        if theta_var > 0 and v_body > 0.1:
+        if theta_var > 0 and v_body > self.stationary_thresh * 2:
             velocity_transform_var = (v_body ** 2) * theta_var
             self.R_odom_current[3, 3] += velocity_transform_var
             self.R_odom_current[4, 4] += velocity_transform_var

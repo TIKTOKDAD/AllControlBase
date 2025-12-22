@@ -18,7 +18,10 @@ class MPCHealthMonitor:
         self.kkt_residual_thresh = health_config.get('kkt_residual_thresh', 1e-3)
         self.consecutive_warning_limit = health_config.get('consecutive_warning_limit', 3)
         self.consecutive_recovery_limit = health_config.get('consecutive_recovery_limit', 5)
-        self.recovery_multiplier = health_config.get('recovery_multiplier', 2.0)  # 从配置读取
+        self.recovery_multiplier = health_config.get('recovery_multiplier', 2.0)
+        # 超时计数衰减参数
+        self.consecutive_good_for_decay = health_config.get('consecutive_good_for_decay', 2)
+        self.timeout_decay_rate = health_config.get('timeout_decay_rate', 2)
         
         self.consecutive_near_timeout = 0
         self.consecutive_good = 0
@@ -33,8 +36,9 @@ class MPCHealthMonitor:
             self.consecutive_good = 0
         elif solve_time_ms < self.time_recovery_thresh:
             self.consecutive_good += 1
-            if self.consecutive_good >= 2:
-                self.consecutive_near_timeout = max(0, self.consecutive_near_timeout - 2)
+            # 使用配置的衰减参数
+            if self.consecutive_good >= self.consecutive_good_for_decay:
+                self.consecutive_near_timeout = max(0, self.consecutive_near_timeout - self.timeout_decay_rate)
         else:
             self.consecutive_good = 0
             self.consecutive_near_timeout = max(0, self.consecutive_near_timeout - 1)

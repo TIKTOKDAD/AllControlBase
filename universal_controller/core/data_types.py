@@ -59,6 +59,11 @@ class Trajectory:
     mode: TrajectoryMode = TrajectoryMode.MODE_TRACK
     soft_enabled: bool = False
     
+    # 类级别配置参数，可通过 Trajectory.low_speed_thresh = value 修改
+    # 用于 get_hard_velocities() 中判断是否计算角速度
+    # 注意: 默认值应与 consistency.low_speed_thresh 配置保持一致
+    low_speed_thresh: float = field(default=0.1, repr=False, compare=False)
+    
     def __post_init__(self):
         self.confidence = np.clip(self.confidence, 0.0, 1.0)
         if self.dt_sec <= 0:
@@ -75,16 +80,9 @@ class Trajectory:
         确保所有数据都是独立的副本，修改副本不会影响原始对象
         """
         new_header = Header(stamp=self.header.stamp, frame_id=self.header.frame_id, seq=self.header.seq)
-        # 保持 velocities 的原始状态：None 保持 None，空数组保持空数组，有数据则复制
-        # 使用 np.array(..., copy=True) 确保深拷贝，即使原数组是视图
-        if self.velocities is None:
-            new_velocities = None
-        elif len(self.velocities) == 0:
-            # 空数组保持空数组
-            new_velocities = np.array(self.velocities, copy=True)
-        else:
-            # 有数据则深拷贝
-            new_velocities = np.array(self.velocities, copy=True)
+        # 保持 velocities 的原始状态：None 保持 None，数组则深拷贝
+        # np.array(..., copy=True) 对空数组和非空数组都能正确处理
+        new_velocities = None if self.velocities is None else np.array(self.velocities, copy=True)
         return Trajectory(
             header=new_header,
             points=[Point3D(p.x, p.y, p.z) for p in self.points],
@@ -92,7 +90,8 @@ class Trajectory:
             dt_sec=self.dt_sec,
             confidence=self.confidence,
             mode=self.mode,
-            soft_enabled=self.soft_enabled
+            soft_enabled=self.soft_enabled,
+            low_speed_thresh=self.low_speed_thresh
         )
     
     def get_hard_velocities(self) -> np.ndarray:
@@ -102,7 +101,6 @@ class Trajectory:
         
         velocities = []
         n = len(self.points)
-        LOW_SPEED_THRESH = 0.05
         
         for i in range(n - 1):
             p0, p1 = self.points[i], self.points[i + 1]
@@ -126,7 +124,8 @@ class Trajectory:
             speed = np.sqrt(vx**2 + vy**2)
             speed_next = np.sqrt(vx_next**2 + vy_next**2)
             
-            if speed > LOW_SPEED_THRESH and speed_next > LOW_SPEED_THRESH:
+            # 使用实例属性 low_speed_thresh 而非硬编码值
+            if speed > self.low_speed_thresh and speed_next > self.low_speed_thresh:
                 heading_curr = np.arctan2(vy, vx)
                 heading_next = np.arctan2(vy_next, vx_next)
                 dheading = heading_next - heading_curr

@@ -50,6 +50,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self.drift_rate = transform_config.get('drift_rate', 0.01)
         self.max_drift_dt = transform_config.get('max_drift_dt', 0.5)  # 从配置读取
         self.source_frame = transform_config.get('source_frame', 'base_link')
+        self.drift_correction_thresh = transform_config.get('drift_correction_thresh', 0.01)  # 漂移校正阈值
         
         # 状态变量
         self.fallback_start_time: Optional[float] = None
@@ -389,7 +390,10 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             drift_theta = normalize_angle(drift_theta)
             
             # 应用校正 (反向)
-            if abs(drift_x) > 0.01 or abs(drift_y) > 0.01 or abs(drift_theta) > 0.01:
+            # 使用配置的漂移校正阈值
+            if (abs(drift_x) > self.drift_correction_thresh or 
+                abs(drift_y) > self.drift_correction_thresh or 
+                abs(drift_theta) > self.drift_correction_thresh):
                 self.state_estimator.apply_drift_correction(-drift_x, -drift_y, -drift_theta)
                 logger.info(f"Applied precise drift correction: "
                       f"dx={-drift_x:.4f}, dy={-drift_y:.4f}, dtheta={-drift_theta:.4f}")
@@ -405,7 +409,8 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             # 2. 或者使用外部定位系统（如 GPS、UWB）提供真实位置
             drift_magnitude = self.accumulated_drift
             
-            if drift_magnitude > 0.02:  # 只有漂移超过 2cm 才记录警告
+            # 使用配置的漂移校正阈值判断是否记录警告
+            if drift_magnitude > self.drift_correction_thresh:
                 logger.warning(f"Accumulated drift estimate: {drift_magnitude:.4f}m, "
                       f"but no TF2 position available for precise correction. "
                       f"Consider enabling external localization for drift correction.")

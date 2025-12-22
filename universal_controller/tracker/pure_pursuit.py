@@ -55,6 +55,12 @@ class PurePursuitController(ITrajectoryTracker):
         self.heading_control_angle_thresh = backup_config.get('heading_control_angle_thresh', np.pi / 2)  # ~90°
         self.max_curvature = backup_config.get('max_curvature', 5.0)
         self.min_turn_speed = backup_config.get('min_turn_speed', 0.1)
+        self.default_speed_ratio = backup_config.get('default_speed_ratio', 0.5)  # 默认速度比例
+        
+        # 低速过渡和距离阈值参数 - 从配置读取
+        self.low_speed_transition_factor = backup_config.get('low_speed_transition_factor', 0.5)
+        self.curvature_speed_limit_thresh = backup_config.get('curvature_speed_limit_thresh', 0.1)
+        self.min_distance_thresh = backup_config.get('min_distance_thresh', 0.1)
         
         self.last_cmd: Optional[ControlOutput] = None
         self._horizon: int = 20
@@ -137,12 +143,14 @@ class PurePursuitController(ITrajectoryTracker):
     
     def _get_omega_limit(self, current_v: float) -> float:
         """获取角速度限制，使用线性插值避免阶跃切换"""
-        if current_v < self.v_low_thresh * 0.5:
+        # 使用配置的低速过渡因子
+        low_speed_boundary = self.v_low_thresh * self.low_speed_transition_factor
+        if current_v < low_speed_boundary:
             # 非常低速时使用低速限制
             return self.omega_max_low
         elif current_v < self.v_low_thresh:
             # 过渡区域：线性插值
-            ratio = (current_v - self.v_low_thresh * 0.5) / (self.v_low_thresh * 0.5)
+            ratio = (current_v - low_speed_boundary) / (self.v_low_thresh - low_speed_boundary)
             return self.omega_max_low + ratio * (self.omega_max - self.omega_max_low)
         return self.omega_max
     
@@ -232,7 +240,7 @@ class PurePursuitController(ITrajectoryTracker):
                 curvature = 2.0 * local_y / L_sq
                 curvature = np.clip(curvature, -self.max_curvature, self.max_curvature)
                 
-                if abs(curvature) > 0.1:
+                if abs(curvature) > self.curvature_speed_limit_thresh:
                     v_curvature = min(omega_limit / abs(curvature), self.v_max)
                     pp_target_v = min(target_v, v_curvature)
                 else:
@@ -273,7 +281,7 @@ class PurePursuitController(ITrajectoryTracker):
             curvature = 0.0
         
         # 根据曲率限制速度
-        if abs(curvature) > 0.1:
+        if abs(curvature) > self.curvature_speed_limit_thresh:
             v_curvature = min(omega_limit / abs(curvature), self.v_max)
             target_v = min(target_v, v_curvature)
         
@@ -319,7 +327,7 @@ class PurePursuitController(ITrajectoryTracker):
                                  dist_to_target: float, trajectory: Trajectory,
                                  target_idx: int, omega_limit: float) -> float:
         if self.heading_mode == HeadingMode.FOLLOW_VELOCITY:
-            if dist_to_target > 0.1:
+            if dist_to_target > self.min_distance_thresh:
                 target_heading = np.arctan2(dy, dx)
                 heading_error = angle_difference(target_heading, theta)
                 omega = self.kp_heading * heading_error
@@ -403,7 +411,7 @@ class PurePursuitController(ITrajectoryTracker):
                             # 单元素数组
                             v_soft = abs(float(vel[0]))
                         else:
-                            v_soft = self.v_max * 0.5
+                            v_soft = self.v_max * self.default_speed_ratio
                     elif hasattr(vel, '__len__') and len(vel) >= 2:
                         # 列表或元组
                         v_soft = np.sqrt(vel[0]**2 + vel[1]**2)
@@ -411,15 +419,15 @@ class PurePursuitController(ITrajectoryTracker):
                         # 纯标量
                         v_soft = abs(float(vel))
                     else:
-                        v_soft = self.v_max * 0.5
+                        v_soft = self.v_max * self.default_speed_ratio
                     target_v = min(v_soft, self.v_max)
                 else:
-                    target_v = self.v_max * 0.5
+                    target_v = self.v_max * self.default_speed_ratio
             except (IndexError, TypeError, ValueError):
                 # 数组形状不正确，使用默认值
-                target_v = self.v_max * 0.5
+                target_v = self.v_max * self.default_speed_ratio
         else:
-            target_v = self.v_max * 0.5
+            target_v = self.v_max * self.default_speed_ratio
         
         v_min_forward = max(0.0, self.v_min)
         return np.clip(target_v, v_min_forward, self.v_max)

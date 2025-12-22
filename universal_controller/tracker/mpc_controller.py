@@ -57,10 +57,9 @@ class MPCController(ITrajectoryTracker):
         self.fallback_lookahead_steps = fallback_config.get('lookahead_steps', 3)
         self.fallback_heading_kp = fallback_config.get('heading_kp', 1.5)
         self.fallback_max_curvature = fallback_config.get('max_curvature', 5.0)
-        
-        # 阿克曼车辆最小转向速度 - 从 backup 配置读取以保持一致性
-        backup_config = config.get('backup', {})
-        self.min_turn_speed = backup_config.get('min_turn_speed', 0.1)
+        self.fallback_min_distance_thresh = fallback_config.get('min_distance_thresh', 0.1)
+        self.min_turn_speed = fallback_config.get('min_turn_speed', 0.1)
+        self.default_speed_ratio = fallback_config.get('default_speed_ratio', 0.5)
         
         # ACADOS 求解器参数
         solver_config = mpc_config.get('solver', {})
@@ -403,12 +402,12 @@ class MPCController(ITrajectoryTracker):
                 target_v = np.sqrt(v_ref[0]**2 + v_ref[1]**2) * consistency.alpha
                 target_v = min(target_v, self.v_max)
             else:
-                target_v = self.v_max * 0.5
+                target_v = self.v_max * self.default_speed_ratio
         else:
-            target_v = self.v_max * 0.5
+            target_v = self.v_max * self.default_speed_ratio
         
         if self.is_omni or self.is_3d:
-            if dist > 0.1:
+            if dist > self.fallback_min_distance_thresh:
                 vx = target_v * dx / dist
                 vy = target_v * dy / dist
             else:
@@ -458,7 +457,7 @@ class MPCController(ITrajectoryTracker):
                     omega = target_v * curvature
                     vx = target_v
             else:
-                curvature = 0.0
+                # 目标点非常近，直接前进
                 omega = 0.0
                 vx = target_v
             

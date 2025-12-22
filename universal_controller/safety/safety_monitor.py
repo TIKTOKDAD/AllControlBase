@@ -30,7 +30,9 @@ class BasicSafetyMonitor(ISafetyMonitor):
         self.accel_filter_window = safety_config.get('accel_filter_window', 3)
         self.accel_filter_alpha = safety_config.get('accel_filter_alpha', 0.3)  # 低通滤波系数
         self.accel_filter_warmup_alpha = safety_config.get('accel_filter_warmup_alpha', 0.5)  # 预热系数
+        self.accel_filter_warmup_period = safety_config.get('accel_filter_warmup_period', self.accel_filter_window)  # 预热期
         self.max_dt_for_accel = safety_config.get('max_dt_for_accel', 1.0)  # 加速度计算最大时间间隔
+        self.min_dt_for_accel = safety_config.get('min_dt_for_accel', 0.001)  # 加速度计算最小时间间隔
         
         self._last_cmd: Optional[ControlOutput] = None
         self._last_time: Optional[float] = None
@@ -50,7 +52,7 @@ class BasicSafetyMonitor(ISafetyMonitor):
         
         # 滤波器预热状态（在 __init__ 中初始化，避免动态创建属性）
         self._filter_warmup_count: int = 0
-        self._filter_warmup_period: int = self.accel_filter_window
+        self._filter_warmup_period: int = self.accel_filter_warmup_period
     
     def _filter_acceleration(self, raw_ax: float, raw_ay: float, 
                             raw_az: float, raw_alpha: float) -> tuple:
@@ -153,7 +155,7 @@ class BasicSafetyMonitor(ISafetyMonitor):
         current_time = get_monotonic_time()
         if self._last_cmd is not None and self._last_time is not None:
             dt = current_time - self._last_time
-            if dt > 0.001 and dt < self.max_dt_for_accel:  # 使用配置的最大时间间隔
+            if dt > self.min_dt_for_accel and dt < self.max_dt_for_accel:
                 # 计算原始加速度
                 raw_ax = (cmd.vx - self._last_cmd.vx) / dt
                 raw_ay = (cmd.vy - self._last_cmd.vy) / dt

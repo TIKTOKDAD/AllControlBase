@@ -81,6 +81,9 @@ class QuadrotorAttitudeController(IAttitudeController):
     使用完整的四旋翼动力学模型进行精确计算。
     """
     
+    # 数值稳定性常量
+    MIN_COS_ROLL_THRESH = 0.1  # cos(roll) 最小阈值，用于避免奇异情况
+    
     def __init__(self, config: Dict[str, Any]):
         attitude_config = config.get('attitude', {})
         
@@ -261,7 +264,8 @@ class QuadrotorAttitudeController(IAttitudeController):
         az_total = az + self.gravity  # 补偿重力
         
         # 防止 az_total 过小 (避免倒飞或自由落体)
-        az_total = max(az_total, 0.1 * self.gravity)
+        # 使用配置的最小推力因子
+        az_total = max(az_total, self.min_thrust_factor * self.gravity)
         
         # 总推力大小 (加速度量纲)
         # T/m = sqrt(ax^2 + ay^2 + az_total^2)
@@ -330,7 +334,7 @@ class QuadrotorAttitudeController(IAttitudeController):
         #   此时 ax_body ≈ 0, az_total ≈ 0，pitch 不确定
         #   使用备用计算方法
         
-        if abs(cos_roll) > 0.1:
+        if abs(cos_roll) > self.MIN_COS_ROLL_THRESH:
             # 正常情况: 使用精确公式
             # sin(θ) = ax_body / (thrust_accel * cos(φ))
             # cos(θ) = az_total / (thrust_accel * cos(φ))
@@ -370,7 +374,8 @@ class QuadrotorAttitudeController(IAttitudeController):
             重新计算的归一化推力
         """
         az_total = az + self.gravity
-        az_total = max(az_total, 0.1 * self.gravity)
+        # 使用配置的最小推力因子
+        az_total = max(az_total, self.min_thrust_factor * self.gravity)
         
         cos_roll = np.cos(roll)
         cos_pitch = np.cos(pitch)
@@ -403,21 +408,41 @@ class QuadrotorAttitudeController(IAttitudeController):
             目标 yaw 角 (rad)
         """
         theta_current = current_state[6]
-        
-        # 计算当前水平速度和命令水平速度
         v_horizontal_current = np.sqrt(current_state[3]**2 + current_state[4]**2)
         v_horizontal_cmd = np.sqrt(velocity_cmd.vx**2 + velocity_cmd.vy**2)
-        
-        # 获取垂直速度
         vz_current = abs(current_state[5]) if len(current_state) > 5 else 0.0
         vz_cmd = abs(velocity_cmd.vz)
         
-        # 悬停检测: 使用滞后逻辑和时间去抖动避免频繁切换
-        # 进入悬停需要满足严格条件，退出悬停需要满足宽松条件
-        # 使用配置的滞后因子
+        # 悬停检测
+        is_hovering = self._update_hover_state(
+            v_horizontal_current, v_horizontal_cmd, vz_current, vz_cmd, current_time)
         
+        # 悬停 yaw 漂移补偿 (F14.3)
+        if is_hovering and self.hover_yaw_compensation_enabled:
+            yaw_with_compensation = self._apply_hover_yaw_compensation(
+                theta_current, current_time)
+            if yaw_with_compensation is not None:
+                return yaw_with_compensation
+        else:
+            self._reset_hover_state()
+        
+        # 根据模式计算 yaw
+        return self._compute_yaw_by_mode(
+            yaw_mode, theta_current, v_horizontal_current, 
+            current_state, velocity_cmd, current_time)
+    
+    def _update_hover_state(self, v_horizontal_current: float, v_horizontal_cmd: float,
+                           vz_current: float, vz_cmd: float, 
+                           current_time: float) -> bool:
+        """
+        更新悬停状态检测
+        
+        使用滞后逻辑和时间去抖动避免频繁切换
+        
+        Returns:
+            是否处于悬停状态
+        """
         # 判断是否应该进入悬停状态
-        # 需要当前速度和命令速度都很小
         should_enter_hover = (
             v_horizontal_current < self.hover_speed_thresh * self.hover_enter_factor and
             vz_current < self.hover_vz_thresh * self.hover_enter_factor and
@@ -426,8 +451,6 @@ class QuadrotorAttitudeController(IAttitudeController):
         )
         
         # 判断是否应该退出悬停状态
-        # 当前速度超过退出阈值，或者命令速度较大时退出
-        # 命令速度使用更大的阈值，避免小的命令波动导致退出
         should_exit_hover = (
             v_horizontal_current > self.hover_speed_thresh * self.hover_exit_factor or
             vz_current > self.hover_vz_thresh * self.hover_exit_factor or
@@ -435,101 +458,90 @@ class QuadrotorAttitudeController(IAttitudeController):
             vz_cmd > self.hover_vz_thresh * self.hover_cmd_exit_factor
         )
         
-        # 滞后逻辑：已经在悬停状态时，只有满足退出条件才退出
-        # 不在悬停状态时，需要满足进入条件才进入
-        # 添加时间去抖动：状态切换需要持续一段时间才生效
         currently_hovering = self._hover_start_time is not None
         
-        # 默认保持当前状态
-        is_hovering = currently_hovering
-        
         if currently_hovering:
-            # 当前在悬停状态
-            if should_exit_hover:
-                # 需要退出悬停
-                if self._hover_debounce_target != False:
-                    # 开始退出悬停的去抖动计时
-                    self._hover_debounce_start = current_time
-                    self._hover_debounce_target = False
-                    is_hovering = True  # 去抖动期间保持悬停
-                elif (self._hover_debounce_start is not None and 
-                      current_time - self._hover_debounce_start >= self.hover_debounce_time):
-                    # 去抖动时间已过，确认退出悬停
-                    is_hovering = False
-                else:
-                    # 去抖动中，保持悬停状态
-                    is_hovering = True
-            else:
-                # 不需要退出，重置去抖动状态
-                self._hover_debounce_start = None
-                self._hover_debounce_target = None
-                is_hovering = True
+            return self._handle_hover_exit(should_exit_hover, current_time)
         else:
-            # 当前不在悬停状态
-            if should_enter_hover:
-                # 需要进入悬停
-                if self._hover_debounce_target != True:
-                    # 开始进入悬停的去抖动计时
-                    self._hover_debounce_start = current_time
-                    self._hover_debounce_target = True
-                    is_hovering = False  # 去抖动期间保持非悬停
-                elif (self._hover_debounce_start is not None and 
-                      current_time - self._hover_debounce_start >= self.hover_debounce_time):
-                    # 去抖动时间已过，确认进入悬停
-                    is_hovering = True
-                else:
-                    # 去抖动中，保持非悬停状态
-                    is_hovering = False
+            return self._handle_hover_enter(should_enter_hover, current_time)
+    
+    def _handle_hover_exit(self, should_exit: bool, current_time: float) -> bool:
+        """处理悬停退出逻辑"""
+        if should_exit:
+            if self._hover_debounce_target != False:
+                self._hover_debounce_start = current_time
+                self._hover_debounce_target = False
+                return True  # 去抖动期间保持悬停
+            elif (self._hover_debounce_start is not None and 
+                  current_time - self._hover_debounce_start >= self.hover_debounce_time):
+                return False  # 确认退出悬停
             else:
-                # 不需要进入，重置去抖动状态
-                self._hover_debounce_start = None
-                self._hover_debounce_target = None
-                is_hovering = False
+                return True  # 去抖动中，保持悬停
+        else:
+            self._hover_debounce_start = None
+            self._hover_debounce_target = None
+            return True
+    
+    def _handle_hover_enter(self, should_enter: bool, current_time: float) -> bool:
+        """处理悬停进入逻辑"""
+        if should_enter:
+            if self._hover_debounce_target != True:
+                self._hover_debounce_start = current_time
+                self._hover_debounce_target = True
+                return False  # 去抖动期间保持非悬停
+            elif (self._hover_debounce_start is not None and 
+                  current_time - self._hover_debounce_start >= self.hover_debounce_time):
+                return True  # 确认进入悬停
+            else:
+                return False  # 去抖动中，保持非悬停
+        else:
+            self._hover_debounce_start = None
+            self._hover_debounce_target = None
+            return False
+    
+    def _apply_hover_yaw_compensation(self, theta_current: float, 
+                                      current_time: float) -> Optional[float]:
+        """
+        应用悬停 yaw 漂移补偿
         
-        # 悬停 yaw 漂移补偿 (F14.3)
-        if is_hovering and self.hover_yaw_compensation_enabled:
-            if self._hover_start_time is None:
-                # 开始悬停，记录当前 yaw
-                self._hover_start_time = current_time
-                self._hover_yaw = theta_current
-                self._accumulated_yaw_drift = 0.0
-            else:
-                # 持续悬停，累积漂移补偿
-                hover_duration = current_time - self._hover_start_time
-                # 漂移补偿: 假设传感器有固定偏置导致的漂移
-                # 实际应用中应该通过标定或自适应算法确定漂移方向和速率
-                self._accumulated_yaw_drift = self._yaw_drift_rate * hover_duration
-            
-            # 使用悬停时记录的 yaw，加上漂移补偿
-            if self._hover_yaw is not None:
-                # 注意: 漂移补偿方向应根据实际硬件特性确定
-                # 这里假设正向漂移，用减法补偿
-                return self._hover_yaw - self._accumulated_yaw_drift
-        else:
-            # 非悬停状态，重置悬停记录
-            self._hover_start_time = None
-            self._hover_yaw = None
+        Returns:
+            补偿后的 yaw 角，如果无法补偿则返回 None
+        """
+        if self._hover_start_time is None:
+            self._hover_start_time = current_time
+            self._hover_yaw = theta_current
             self._accumulated_yaw_drift = 0.0
+        else:
+            hover_duration = current_time - self._hover_start_time
+            self._accumulated_yaw_drift = self._yaw_drift_rate * hover_duration
         
-        # 根据模式计算 yaw
+        if self._hover_yaw is not None:
+            return self._hover_yaw - self._accumulated_yaw_drift
+        return None
+    
+    def _reset_hover_state(self) -> None:
+        """重置悬停状态"""
+        self._hover_start_time = None
+        self._hover_yaw = None
+        self._accumulated_yaw_drift = 0.0
+    
+    def _compute_yaw_by_mode(self, yaw_mode: str, theta_current: float,
+                            v_horizontal_current: float, current_state: np.ndarray,
+                            velocity_cmd: ControlOutput, current_time: float) -> float:
+        """根据模式计算 yaw"""
         if yaw_mode == 'velocity':
-            # 朝向运动方向
             if v_horizontal_current > self.hover_speed_thresh:
                 return np.arctan2(current_state[4], current_state[3])
-            else:
-                return theta_current
+            return theta_current
         elif yaw_mode == 'fixed':
-            # 保持当前航向
             return theta_current
         elif yaw_mode == 'manual':
-            # 使用 omega 积分，使用实际时间间隔
             if self._last_time is not None:
                 dt_actual = current_time - self._last_time
-                if dt_actual > 0 and dt_actual < 1.0:  # 合理范围检查
+                if 0 < dt_actual < 1.0:
                     return theta_current + velocity_cmd.omega * dt_actual
             return theta_current + velocity_cmd.omega * self.dt
-        else:
-            return theta_current
+        return theta_current
 
     def _apply_rate_limits(self, roll: float, pitch: float, yaw: float,
                            thrust: float, current_time: float) -> AttitudeCommand:
