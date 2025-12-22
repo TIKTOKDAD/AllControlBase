@@ -178,6 +178,25 @@ def get_current_time() -> float:
     return time.time()
 
 
+def get_monotonic_time() -> float:
+    """
+    获取单调时钟时间（秒）
+    
+    使用 time.monotonic() 而非 time.time()，避免系统时间跳变
+    （如 NTP 同步）导致的时间间隔计算错误。
+    
+    适用场景：
+    - 计算时间间隔 (dt)
+    - 超时检测
+    - 性能测量
+    
+    不适用场景：
+    - 需要与外部系统同步的时间戳
+    - 日志记录的绝对时间
+    """
+    return time.monotonic()
+
+
 def create_time(sec: float):
     """创建时间对象"""
     if ROS_AVAILABLE:

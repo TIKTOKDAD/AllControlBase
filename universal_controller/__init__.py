@@ -1,8 +1,8 @@
 """
 通用控制器 (Universal Controller)
 
-版本: v3.17.9
-日期: 2024-12-21
+版本: v3.18.0
+日期: 2024-12-22
 
 基于 MPC 的通用轨迹跟踪控制器，支持多平台部署。
 
@@ -13,6 +13,8 @@
 - 高实时性: ACADOS 求解器，15ms 内完成优化
 - 插件化架构: 核心模块可替换，便于扩展和维护
 - 模块化 Mock: 模拟数据独立到 mock/ 模块，职责分离清晰
+- 强类型诊断: DiagnosticsInput 数据类提供类型安全
+- 职责分离: DiagnosticsPublisher 独立处理诊断发布
 
 支持平台:
 - 阿克曼转向车辆 (Ackermann)
@@ -30,7 +32,7 @@
     cmd = manager.update(odom, trajectory)
 """
 
-__version__ = "3.17.9"
+__version__ = "3.18.0"
 __author__ = "Universal Controller Team"
 
 # 导出主要类和配置
@@ -42,6 +44,7 @@ from .core.data_types import (
     Point3D, Header, Odometry, Imu, DiagnosticsV2, TimeoutStatus,
     SafetyDecision, MPCHealthStatus
 )
+from .core.diagnostics_input import DiagnosticsInput
 from .core.interfaces import (
     IStateEstimator, ITrajectoryTracker, IConsistencyChecker,
     ISafetyMonitor, ISmoothTransition, ICoordinateTransformer
@@ -59,7 +62,7 @@ __all__ = [
     # 数据类型
     'Trajectory', 'ControlOutput', 'ConsistencyResult', 'EstimatorOutput',
     'Point3D', 'Header', 'Odometry', 'Imu', 'DiagnosticsV2', 'TimeoutStatus',
-    'SafetyDecision', 'MPCHealthStatus',
+    'SafetyDecision', 'MPCHealthStatus', 'DiagnosticsInput',
     # 接口
     'IStateEstimator', 'ITrajectoryTracker', 'IConsistencyChecker',
     'ISafetyMonitor', 'ISmoothTransition', 'ICoordinateTransformer',

@@ -17,7 +17,9 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         self.v_dir_thresh = consistency_config.get('v_dir_thresh', 0.8)
         self.temporal_smooth_thresh = consistency_config.get('temporal_smooth_thresh', 0.5)
         self.low_speed_thresh = consistency_config.get('low_speed_thresh', 0.1)
-        self.temporal_window: deque = deque(maxlen=10)
+        self.max_curvature = consistency_config.get('max_curvature', 10.0)  # 从配置读取
+        temporal_window_size = consistency_config.get('temporal_window_size', 10)
+        self.temporal_window: deque = deque(maxlen=temporal_window_size)
         
         weights = consistency_config.get('weights', {})
         self.w_kappa = weights.get('kappa', 1.0)
@@ -191,9 +193,8 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         
         curvature = 2.0 * abs_cross / denominator
         
-        # 限制曲率最大值 (对应最小转弯半径 0.1m)
-        MAX_CURVATURE = 10.0
-        curvature = min(curvature, MAX_CURVATURE)
+        # 限制曲率最大值 (使用配置值)
+        curvature = min(curvature, self.max_curvature)
         
         return curvature, True
     
@@ -237,9 +238,8 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         
         curvature = abs(cross) / denominator
         
-        # 限制曲率最大值 (对应最小转弯半径 0.1m)
-        MAX_CURVATURE = 10.0
-        curvature = min(curvature, MAX_CURVATURE)
+        # 限制曲率最大值 (使用配置值)
+        curvature = min(curvature, self.max_curvature)
         
         return curvature, True
     

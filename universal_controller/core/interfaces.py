@@ -1,6 +1,6 @@
 """接口定义"""
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, Union
 import numpy as np
 
 from .data_types import (
@@ -8,6 +8,10 @@ from .data_types import (
     SafetyDecision, Odometry, Imu, AttitudeCommand
 )
 from .enums import TransformStatus
+
+# 前向声明，避免循环导入
+# DiagnosticsInput 在运行时导入
+DiagnosticsInputType = Union['DiagnosticsInput', Dict[str, Any]]
 
 
 class IStateEstimator(ABC):
@@ -82,7 +86,7 @@ class ISafetyMonitor(ABC):
     
     @abstractmethod
     def check(self, state: np.ndarray, cmd: ControlOutput, 
-              diagnostics: Dict[str, Any]) -> SafetyDecision:
+              diagnostics: DiagnosticsInputType) -> SafetyDecision:
         pass
     
     @abstractmethod

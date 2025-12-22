@@ -2,7 +2,6 @@
 from typing import Dict, Any, Optional
 import numpy as np
 import time
-import json
 
 from ..core.interfaces import (
     IStateEstimator, ITrajectoryTracker, IConsistencyChecker,
@@ -13,50 +12,13 @@ from ..core.data_types import (
     TimeoutStatus, DiagnosticsV2, Header, Odometry, Imu, AttitudeCommand
 )
 from ..core.enums import ControllerState, PlatformType
+from ..core.diagnostics_input import DiagnosticsInput
+from ..core.ros_compat import get_monotonic_time
 from ..config.default_config import PLATFORM_CONFIG, DEFAULT_CONFIG
 from ..safety.timeout_monitor import TimeoutMonitor
 from ..safety.state_machine import StateMachine
 from ..health.mpc_health_monitor import MPCHealthMonitor
-
-
-def _get_monotonic_time() -> float:
-    """
-    获取单调时钟时间（秒）
-    
-    使用 time.monotonic() 而非 time.time()，避免系统时间跳变
-    （如 NTP 同步）导致的时间间隔计算错误。
-    """
-    return time.monotonic()
-
-
-def _numpy_json_encoder(obj: Any) -> Any:
-    """
-    自定义 JSON 编码器处理 numpy 类型
-    
-    用于将包含 numpy 类型的字典序列化为 JSON。
-    定义为模块级函数以避免每次调用时重新创建。
-    
-    Args:
-        obj: 需要编码的对象
-    
-    Returns:
-        JSON 可序列化的对象
-    
-    Raises:
-        TypeError: 如果对象无法序列化
-    """
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, (np.integer,)):
-        return int(obj)
-    elif isinstance(obj, (np.floating,)):
-        return float(obj)
-    elif isinstance(obj, np.bool_):
-        return bool(obj)
-    elif isinstance(obj, (np.complex64, np.complex128)):
-        return {'real': float(obj.real), 'imag': float(obj.imag)}
-    # 对于无法处理的类型，抛出 TypeError 让 json.dumps 处理
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+from ..diagnostics.publisher import DiagnosticsPublisher
 
 
 class ControllerManager:
@@ -96,7 +58,7 @@ class ControllerManager:
         # 状态
         self._last_state = ControllerState.INIT
         self._safety_failed = False
-        self._last_diagnostics: Dict[str, Any] = {}
+        self._last_diagnostics: Optional[DiagnosticsInput] = None
         self._last_mpc_health = None
         self._last_consistency: Optional[ConsistencyResult] = None
         self._last_mpc_cmd: Optional[ControlOutput] = None
@@ -106,23 +68,18 @@ class ControllerManager:
         self._last_attitude_cmd: Optional[AttitudeCommand] = None  # F14: 姿态命令
         self._last_update_time: Optional[float] = None  # 用于计算实际时间间隔
         
-        # 诊断发布
-        self._diagnostics_callback: Optional[callable] = None  # 诊断回调函数
-        self._diagnostics_pub: Optional[Any] = None  # ROS Publisher (如果可用)
-        self._cmd_pub: Optional[Any] = None  # 控制命令 Publisher
+        # 诊断发布器（职责分离）
+        self._diagnostics_publisher = DiagnosticsPublisher()
         
-        # 尝试初始化 ROS Publisher
+        # 尝试初始化 ROS Publisher (向后兼容)
+        self._cmd_pub: Optional[Any] = None
         self._init_ros_publishers()
     
     def _init_ros_publishers(self) -> None:
         """
-        初始化 ROS Publishers
+        初始化 ROS Publishers (向后兼容)
         
-        在 ROS 环境下创建:
-        - /controller/diagnostics: 诊断消息
-        - /cmd_unified: 统一控制命令
-        
-        非 ROS 环境下静默跳过
+        注意: 诊断发布已移至 DiagnosticsPublisher
         """
         from ..core.ros_compat import ROS_AVAILABLE
         
@@ -131,28 +88,18 @@ class ControllerManager:
         
         try:
             import rospy
-            from std_msgs.msg import String
-            
-            # 使用 String 消息类型发布 JSON 格式的诊断数据
-            # 实际部署时可替换为自定义消息类型
-            self._diagnostics_pub = rospy.Publisher(
-                '/controller/diagnostics',
-                String,
-                queue_size=1
-            )
-            
-            # 控制命令发布器 (使用 geometry_msgs/Twist 或自定义消息)
             from geometry_msgs.msg import Twist
+            
+            # 控制命令发布器
             self._cmd_pub = rospy.Publisher(
                 '/cmd_unified',
                 Twist,
                 queue_size=1
             )
             
-            print("[ControllerManager] ROS publishers initialized")
+            print("[ControllerManager] ROS command publisher initialized")
         except Exception as e:
             print(f"[ControllerManager] ROS publisher init failed: {e}")
-            self._diagnostics_pub = None
             self._cmd_pub = None
     
     def set_diagnostics_callback(self, callback: callable) -> None:
@@ -163,7 +110,7 @@ class ControllerManager:
         
         用于非 ROS 环境下获取诊断数据，或用于日志记录、监控等
         """
-        self._diagnostics_callback = callback
+        self._diagnostics_publisher.add_callback(callback)
     
     def publish_command(self, cmd: ControlOutput) -> None:
         """
@@ -171,25 +118,11 @@ class ControllerManager:
         
         在 ROS 环境下发布到 /cmd_unified
         """
-        if self._cmd_pub is None:
-            return
-        
-        try:
-            from geometry_msgs.msg import Twist
-            
-            twist = Twist()
-            twist.linear.x = cmd.vx
-            twist.linear.y = cmd.vy
-            twist.linear.z = cmd.vz
-            twist.angular.z = cmd.omega
-            
-            self._cmd_pub.publish(twist)
-        except Exception as e:
-            pass  # 静默处理发布失败
+        self._diagnostics_publisher.publish_command(cmd)
     
     def get_last_published_diagnostics(self) -> Optional[Dict[str, Any]]:
         """获取最后发布的诊断数据"""
-        return self._last_published_diagnostics
+        return self._diagnostics_publisher.get_last_published()
     
     def initialize_components(self,
                              state_estimator: Optional[IStateEstimator] = None,
@@ -291,12 +224,12 @@ class ControllerManager:
                imu: Optional[Imu] = None) -> ControlOutput:
         """主控制循环"""
         # 使用单调时钟，避免系统时间跳变影响
-        current_time = _get_monotonic_time()
+        current_time = get_monotonic_time()
         
         # 计算实际时间间隔，用于 EKF 预测
-        # 长时间暂停检测阈值
-        LONG_PAUSE_THRESHOLD = 0.5  # 500ms
-        EKF_RESET_THRESHOLD = 2.0   # 2s
+        # 长时间暂停检测阈值 - 从配置读取
+        long_pause_threshold = self.config.get('system', {}).get('long_pause_threshold', 0.5)
+        ekf_reset_threshold = self.config.get('system', {}).get('ekf_reset_threshold', 2.0)
         
         # 标记是否需要跳过预测（EKF 刚重置后）
         skip_prediction = False
@@ -305,8 +238,8 @@ class ControllerManager:
             actual_dt = current_time - self._last_update_time
             
             # 检测长时间暂停
-            if actual_dt > EKF_RESET_THRESHOLD:
-                # 超过 2 秒的暂停，重置 EKF 以避免累积误差
+            if actual_dt > ekf_reset_threshold:
+                # 超过重置阈值的暂停，重置 EKF 以避免累积误差
                 print(f"[ControllerManager] Long pause detected ({actual_dt:.2f}s), resetting EKF")
                 if self.state_estimator:
                     self.state_estimator.reset()
@@ -314,8 +247,8 @@ class ControllerManager:
                 # 这样可以让 EKF 从观测数据重新初始化状态
                 skip_prediction = True
                 actual_dt = self.dt  # 使用默认值（用于后续计算）
-            elif actual_dt > LONG_PAUSE_THRESHOLD:
-                # 500ms - 2s 的暂停，使用多步预测
+            elif actual_dt > long_pause_threshold:
+                # 中等暂停，使用多步预测
                 # 将长时间间隔分解为多个小步骤，提高预测精度
                 print(f"[ControllerManager] Medium pause detected ({actual_dt:.2f}s), using multi-step prediction")
                 num_steps = int(actual_dt / self.dt)
@@ -325,8 +258,8 @@ class ControllerManager:
                 actual_dt = actual_dt - (num_steps - 1) * self.dt
             
             # 限制时间间隔在合理范围内，避免异常值
-            # 最小 1ms，最大 500ms（长暂停已经处理）
-            actual_dt = np.clip(actual_dt, 0.001, LONG_PAUSE_THRESHOLD)
+            # 最小 1ms，最大为长暂停阈值（长暂停已经处理）
+            actual_dt = np.clip(actual_dt, 0.001, long_pause_threshold)
         else:
             actual_dt = self.dt  # 首次调用使用默认值
         self._last_update_time = current_time
@@ -394,22 +327,22 @@ class ControllerManager:
             mpc_health = None
         self._last_mpc_health = mpc_health
         
-        # 6. 构建诊断信息
+        # 6. 构建诊断信息（使用强类型）
         # 注意: safety_failed 使用上一周期的值，避免循环依赖
-        diagnostics = {
-            'alpha': consistency.alpha,
-            'data_valid': consistency.data_valid,
-            'mpc_health': mpc_health,
-            'mpc_success': mpc_cmd.success if mpc_cmd else False,
-            'odom_timeout': timeout_status.odom_timeout,
-            'traj_timeout_exceeded': timeout_status.traj_grace_exceeded,
-            'v_horizontal': np.sqrt(state[3]**2 + state[4]**2),
-            'vz': state[5],
-            'has_valid_data': len(trajectory.points) > 0,
-            'tf2_critical': tf2_critical,
-            'safety_failed': self._safety_failed,
-            'current_state': self._last_state,  # 传递当前状态给安全监控器
-        }
+        diagnostics = DiagnosticsInput(
+            alpha=consistency.alpha,
+            data_valid=consistency.data_valid,
+            mpc_health=mpc_health,
+            mpc_success=mpc_cmd.success if mpc_cmd else False,
+            odom_timeout=timeout_status.odom_timeout,
+            traj_timeout_exceeded=timeout_status.traj_grace_exceeded,
+            v_horizontal=np.sqrt(state[3]**2 + state[4]**2),
+            vz=state[5],
+            has_valid_data=len(trajectory.points) > 0,
+            tf2_critical=tf2_critical,
+            safety_failed=self._safety_failed,
+            current_state=self._last_state,
+        )
         self._last_diagnostics = diagnostics
         
         # 7. 选择控制器输出 (在状态机更新之前，基于当前状态)
@@ -436,7 +369,7 @@ class ControllerManager:
                 if safety_decision.limited_cmd is not None:
                     cmd = safety_decision.limited_cmd
                 # 更新诊断信息中的 safety_failed 标志
-                diagnostics['safety_failed'] = True
+                diagnostics.safety_failed = True
             else:
                 self._safety_failed = False
         
@@ -453,100 +386,24 @@ class ControllerManager:
         
         # 11. 发布诊断 (使用 time.time() 作为时间戳，因为这是给外部使用的)
         wall_time = time.time()
-        self._publish_diagnostics(wall_time, cmd, state_output, timeout_status, tf2_critical)
-        
-        return cmd
-    
-    def _publish_diagnostics(self, current_time: float, cmd: ControlOutput,
-                            state_output: Optional[EstimatorOutput],
-                            timeout_status: TimeoutStatus,
-                            tf2_critical: bool) -> None:
-        """
-        发布诊断消息
-        
-        支持两种发布模式:
-        1. ROS 环境: 通过 ROS Publisher 发布到 /controller/diagnostics
-        2. 非 ROS 环境: 保存到 _last_published_diagnostics，可通过回调获取
-        """
         transform_status = self.coord_transformer.get_status() if self.coord_transformer else {
             'fallback_duration_ms': 0.0, 'accumulated_drift': 0.0
         }
-        
-        diag = DiagnosticsV2(
-            header=Header(stamp=current_time, frame_id=''),
-            state=int(self._last_state),
-            mpc_success=self._last_diagnostics.get('mpc_success', False),
-            mpc_solve_time_ms=cmd.solve_time_ms if cmd else 0.0,
-            backup_active=self._last_state == ControllerState.BACKUP_ACTIVE,
-            
-            mpc_health_kkt_residual=self._last_mpc_health.kkt_residual if self._last_mpc_health else 0.0,
-            mpc_health_condition_number=self._last_mpc_health.condition_number if self._last_mpc_health else 1.0,
-            mpc_health_consecutive_near_timeout=self._last_mpc_health.consecutive_near_timeout if self._last_mpc_health else 0,
-            mpc_health_degradation_warning=self._last_mpc_health.warning if self._last_mpc_health else False,
-            mpc_health_can_recover=self._last_mpc_health.can_recover if self._last_mpc_health else False,
-            
-            consistency_curvature=self._last_consistency.kappa_consistency if self._last_consistency else 1.0,
-            consistency_velocity_dir=self._last_consistency.v_dir_consistency if self._last_consistency else 1.0,
-            consistency_temporal=self._last_consistency.temporal_smooth if self._last_consistency else 1.0,
-            consistency_alpha_soft=self._last_consistency.alpha if self._last_consistency else 0.0,
-            consistency_data_valid=self._last_consistency.data_valid if self._last_consistency else True,
-            
-            estimator_covariance_norm=state_output.covariance_norm if state_output else 0.0,
-            estimator_innovation_norm=state_output.innovation_norm if state_output else 0.0,
-            estimator_slip_probability=state_output.slip_probability if state_output else 0.0,
-            estimator_imu_drift_detected=state_output.imu_drift_detected if state_output else False,
-            estimator_imu_bias=state_output.imu_bias if state_output else np.zeros(3),
-            estimator_imu_available=state_output.imu_available if state_output else True,
-            
-            tracking_lateral_error=self._last_tracking_error.get('lateral_error', 0.0) if self._last_tracking_error else 0.0,
-            tracking_longitudinal_error=self._last_tracking_error.get('longitudinal_error', 0.0) if self._last_tracking_error else 0.0,
-            tracking_heading_error=self._last_tracking_error.get('heading_error', 0.0) if self._last_tracking_error else 0.0,
-            tracking_prediction_error=self._last_tracking_error.get('prediction_error', 0.0) if self._last_tracking_error else 0.0,
-            
-            transform_tf2_available=not tf2_critical,
-            transform_fallback_duration_ms=transform_status['fallback_duration_ms'],
-            transform_accumulated_drift=transform_status['accumulated_drift'],
-            
-            timeout_odom=timeout_status.odom_timeout,
-            timeout_traj=timeout_status.traj_timeout,
-            timeout_traj_grace_exceeded=timeout_status.traj_grace_exceeded,
-            timeout_imu=timeout_status.imu_timeout,
-            timeout_last_odom_age_ms=timeout_status.last_odom_age_ms,
-            timeout_last_traj_age_ms=timeout_status.last_traj_age_ms,
-            timeout_last_imu_age_ms=timeout_status.last_imu_age_ms,
-            timeout_in_startup_grace=timeout_status.in_startup_grace,
-            
-            cmd_vx=cmd.vx,
-            cmd_vy=cmd.vy,
-            cmd_vz=cmd.vz,
-            cmd_omega=cmd.omega,
-            cmd_frame_id=cmd.frame_id,
-            
-            transition_progress=self.smooth_transition.get_progress() if self.smooth_transition else 0.0
+        self._diagnostics_publisher.publish(
+            current_time=wall_time,
+            state=self._last_state,
+            cmd=cmd,
+            state_output=state_output,
+            consistency=self._last_consistency,
+            mpc_health=self._last_mpc_health,
+            timeout_status=timeout_status,
+            transform_status=transform_status,
+            tracking_error=self._last_tracking_error,
+            transition_progress=self.smooth_transition.get_progress() if self.smooth_transition else 0.0,
+            tf2_critical=tf2_critical
         )
         
-        # 转换为字典格式
-        diag_dict = diag.to_ros_msg()
-        self._last_published_diagnostics = diag_dict
-        
-        # 调用诊断回调 (如果已注册)
-        if self._diagnostics_callback is not None:
-            try:
-                self._diagnostics_callback(diag_dict)
-            except Exception as e:
-                print(f"[ControllerManager] Diagnostics callback error: {e}")
-        
-        # ROS 环境下发布到话题
-        if self._diagnostics_pub is not None:
-            try:
-                from std_msgs.msg import String
-                
-                msg = String()
-                msg.data = json.dumps(diag_dict, default=_numpy_json_encoder)
-                self._diagnostics_pub.publish(msg)
-            except Exception as e:
-                # 非 ROS 环境或发布失败，静默处理
-                pass
+        return cmd
     
     def _compute_tracking_error(self, state: np.ndarray, trajectory: Trajectory) -> Dict[str, float]:
         """计算跟踪误差"""
@@ -608,7 +465,9 @@ class ControllerManager:
         return self._last_state
     
     def get_diagnostics(self) -> Dict[str, Any]:
-        return self._last_diagnostics.copy()
+        if self._last_diagnostics is None:
+            return {}
+        return self._last_diagnostics.to_dict()
     
     def reset(self) -> None:
         if self.state_estimator: self.state_estimator.reset()

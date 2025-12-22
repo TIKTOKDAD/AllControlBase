@@ -5,6 +5,7 @@ from .data_types import (
     ConsistencyResult, SafetyDecision, MPCHealthStatus, TimeoutStatus,
     AttitudeCommand, DiagnosticsV2, Odometry, Imu
 )
+from .diagnostics_input import DiagnosticsInput
 from .interfaces import (
     IStateEstimator, ITrajectoryTracker, IConsistencyChecker,
     ISafetyMonitor, ISmoothTransition, ICoordinateTransformer, IAttitudeController

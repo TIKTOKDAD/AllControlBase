@@ -5,6 +5,7 @@ ROS 模拟类
 """
 import time
 import numpy as np
+from collections import deque
 from typing import Optional, Tuple, Any
 
 from .data_mock import MockTransformStamped, MockHeader
@@ -180,8 +181,6 @@ class MockTF2BufferCore:
             return None
         
         # BFS 查找路径
-        from collections import deque
-        
         queue = deque([(target_frame, [target_frame])])
         visited = {target_frame}
         

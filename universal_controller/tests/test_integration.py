@@ -86,12 +86,13 @@ def test_diagnostics_publish():
     
     manager.update(odom, trajectory)
     
-    # 验证 _last_published_diagnostics 已设置
-    assert manager._last_published_diagnostics is not None
-    assert isinstance(manager._last_published_diagnostics, dict)
-    assert 'state' in manager._last_published_diagnostics
-    assert 'mpc_success' in manager._last_published_diagnostics
-    assert 'timeout' in manager._last_published_diagnostics
+    # 验证诊断数据已发布（通过 get_last_published_diagnostics 获取）
+    last_diag = manager.get_last_published_diagnostics()
+    assert last_diag is not None
+    assert isinstance(last_diag, dict)
+    assert 'state' in last_diag
+    assert 'mpc_success' in last_diag
+    assert 'timeout' in last_diag
     
     print("✓ test_diagnostics_publish passed")
 

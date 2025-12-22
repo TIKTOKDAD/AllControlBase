@@ -32,6 +32,7 @@ class MPCController(ITrajectoryTracker):
         self.omega_max = constraints.get('omega_max', 2.0)
         self.a_max = constraints.get('a_max', 1.5)
         self.vz_max = constraints.get('vz_max', 2.0)
+        self.alpha_max = constraints.get('alpha_max', 3.0)  # 角加速度限制
         
         self.output_frame = platform_config.get('output_frame', 'base_link')
         self.platform_type = platform_config.get('type', PlatformType.DIFFERENTIAL)
@@ -45,6 +46,19 @@ class MPCController(ITrajectoryTracker):
         self.Q_heading = mpc_weights.get('heading', 5.0)
         self.R_v = mpc_weights.get('control_v', 0.1)
         self.R_omega = mpc_weights.get('control_omega', 0.1)
+        
+        # Fallback 求解器参数
+        fallback_config = mpc_config.get('fallback', {})
+        self.fallback_lookahead_steps = fallback_config.get('lookahead_steps', 3)
+        self.fallback_heading_kp = fallback_config.get('heading_kp', 1.5)
+        self.fallback_max_curvature = fallback_config.get('max_curvature', 5.0)
+        
+        # ACADOS 求解器参数
+        solver_config = mpc_config.get('solver', {})
+        self.nlp_max_iter = solver_config.get('nlp_max_iter', 50)
+        self.qp_solver = solver_config.get('qp_solver', 'PARTIAL_CONDENSING_HPIPM')
+        self.integrator_type = solver_config.get('integrator_type', 'ERK')
+        self.nlp_solver_type = solver_config.get('nlp_solver_type', 'SQP_RTI')
         
         # ACADOS 求解器
         self._solver = None
@@ -166,8 +180,8 @@ class MPCController(ITrajectoryTracker):
             ocp.cost.yref_e = np.zeros(8)
             
             # 约束
-            ocp.constraints.lbu = np.array([-self.a_max, -self.a_max, -self.a_max, -3.0])
-            ocp.constraints.ubu = np.array([self.a_max, self.a_max, self.a_max, 3.0])
+            ocp.constraints.lbu = np.array([-self.a_max, -self.a_max, -self.a_max, -self.alpha_max])
+            ocp.constraints.ubu = np.array([self.a_max, self.a_max, self.a_max, self.alpha_max])
             ocp.constraints.idxbu = np.array([0, 1, 2, 3])
             
             ocp.constraints.lbx = np.array([-np.inf, -np.inf, -np.inf, 
@@ -179,11 +193,11 @@ class MPCController(ITrajectoryTracker):
             ocp.constraints.idxbx = np.array([0, 1, 2, 3, 4, 5, 6, 7])
             ocp.constraints.x0 = np.zeros(8)
             
-            ocp.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
+            ocp.solver_options.qp_solver = self.qp_solver
             ocp.solver_options.hessian_approx = 'GAUSS_NEWTON'
-            ocp.solver_options.integrator_type = 'ERK'
-            ocp.solver_options.nlp_solver_type = 'SQP_RTI'
-            ocp.solver_options.nlp_solver_max_iter = 50
+            ocp.solver_options.integrator_type = self.integrator_type
+            ocp.solver_options.nlp_solver_type = self.nlp_solver_type
+            ocp.solver_options.nlp_solver_max_iter = self.nlp_max_iter
             
             self._solver = AcadosOcpSolver(ocp, json_file='acados_ocp.json')
             self._is_initialized = True
@@ -360,7 +374,7 @@ class MPCController(ITrajectoryTracker):
                 min_dist = dist
                 closest_idx = i
         
-        lookahead_idx = min(closest_idx + 3, len(trajectory.points) - 1)
+        lookahead_idx = min(closest_idx + self.fallback_lookahead_steps, len(trajectory.points) - 1)
         target = trajectory.points[lookahead_idx]
         
         dx = target.x - px
@@ -387,7 +401,7 @@ class MPCController(ITrajectoryTracker):
             
             target_heading = np.arctan2(dy, dx)
             heading_error = np.arctan2(np.sin(target_heading - theta), np.cos(target_heading - theta))
-            omega = 1.5 * heading_error
+            omega = self.fallback_heading_kp * heading_error
             omega = np.clip(omega, -self.omega_max, self.omega_max)
             
             vz = 0.0
@@ -410,7 +424,7 @@ class MPCController(ITrajectoryTracker):
                     target_heading = np.arctan2(dy, dx)
                     heading_error = np.arctan2(np.sin(target_heading - theta), 
                                                np.cos(target_heading - theta))
-                    omega = 1.5 * heading_error
+                    omega = self.fallback_heading_kp * heading_error
                     
                     # 根据平台类型决定是否可以原地转向
                     if self.platform_type == PlatformType.ACKERMANN:
@@ -424,8 +438,7 @@ class MPCController(ITrajectoryTracker):
                 else:
                     curvature = 2.0 * local_y / L_sq
                     # 限制曲率范围，避免数值爆炸
-                    MAX_CURVATURE = 5.0
-                    curvature = np.clip(curvature, -MAX_CURVATURE, MAX_CURVATURE)
+                    curvature = np.clip(curvature, -self.fallback_max_curvature, self.fallback_max_curvature)
                     omega = target_v * curvature
                     vx = target_v
             else:

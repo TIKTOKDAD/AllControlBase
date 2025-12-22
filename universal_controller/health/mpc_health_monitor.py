@@ -18,6 +18,7 @@ class MPCHealthMonitor:
         self.kkt_residual_thresh = health_config.get('kkt_residual_thresh', 1e-3)
         self.consecutive_warning_limit = health_config.get('consecutive_warning_limit', 3)
         self.consecutive_recovery_limit = health_config.get('consecutive_recovery_limit', 5)
+        self.recovery_multiplier = health_config.get('recovery_multiplier', 2.0)  # 从配置读取
         
         self.consecutive_near_timeout = 0
         self.consecutive_good = 0
@@ -53,9 +54,9 @@ class MPCHealthMonitor:
             self.consecutive_good >= self.consecutive_recovery_limit and
             condition_number < self.condition_number_recovery
         )
-        # 如果连续良好次数是恢复阈值的 2 倍，放宽条件数要求
+        # 如果连续良好次数是恢复阈值的 recovery_multiplier 倍，放宽条件数要求
         fallback_recovery = (
-            self.consecutive_good >= self.consecutive_recovery_limit * 2 and
+            self.consecutive_good >= self.consecutive_recovery_limit * self.recovery_multiplier and
             condition_number < self.condition_number_thresh  # 使用警告阈值而非恢复阈值
         )
         self._can_recover = primary_recovery or fallback_recovery

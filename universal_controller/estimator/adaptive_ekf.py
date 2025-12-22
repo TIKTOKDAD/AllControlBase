@@ -2,22 +2,11 @@
 from typing import Dict, Any, Optional, List
 from collections import deque
 import numpy as np
-import time
 
 from ..core.interfaces import IStateEstimator
 from ..core.data_types import EstimatorOutput, Odometry, Imu
 from ..config.default_config import PLATFORM_CONFIG
-from ..core.ros_compat import euler_from_quaternion
-
-
-def _get_monotonic_time() -> float:
-    """
-    获取单调时钟时间（秒）
-    
-    使用 time.monotonic() 而非 time.time()，避免系统时间跳变
-    （如 NTP 同步）导致的时间间隔计算错误。
-    """
-    return time.monotonic()
+from ..core.ros_compat import euler_from_quaternion, get_monotonic_time
 
 
 class AdaptiveEKFEstimator(IStateEstimator):
@@ -26,14 +15,22 @@ class AdaptiveEKFEstimator(IStateEstimator):
     def __init__(self, config: Dict[str, Any]):
         ekf_config = config.get('ekf', config)
         
+        # 初始协方差值
+        covariance_config = ekf_config.get('covariance', {})
+        self.initial_covariance = covariance_config.get('initial_value', 0.1)
+        
         # 状态向量 [px, py, pz, vx, vy, vz, θ, ω, bias_ax, bias_ay, bias_az]
         self.x = np.zeros(11)
-        self.P = np.eye(11) * 0.1
+        self.P = np.eye(11) * self.initial_covariance
         
         # 平台类型
         platform_name = config.get('system', {}).get('platform', 'differential')
         self.platform_config = PLATFORM_CONFIG.get(platform_name, PLATFORM_CONFIG['differential'])
         self.velocity_heading_coupled = self.platform_config.get('velocity_heading_coupled', True)
+        
+        # 重力加速度 - 优先从 system.gravity 读取，其次从 attitude.gravity
+        self.gravity = config.get('system', {}).get('gravity', 
+                        config.get('attitude', {}).get('gravity', 9.81))
         
         # 自适应参数
         adaptive = ekf_config.get('adaptive', {})
@@ -42,6 +39,14 @@ class AdaptiveEKFEstimator(IStateEstimator):
         self.slip_covariance_scale = adaptive.get('slip_covariance_scale', 10.0)
         self.stationary_covariance_scale = adaptive.get('stationary_covariance_scale', 0.1)
         self.stationary_thresh = adaptive.get('stationary_thresh', 0.05)
+        self.slip_probability_k_factor = adaptive.get('slip_probability_k_factor', 5.0)
+        
+        # IMU 相关参数
+        self.max_tilt_angle = ekf_config.get('max_tilt_angle', np.pi / 3)  # ~60°
+        self.accel_freshness_thresh = ekf_config.get('accel_freshness_thresh', 0.1)  # 100ms
+        
+        # Jacobian 计算参数
+        self.min_velocity_for_jacobian = ekf_config.get('min_velocity_for_jacobian', 0.01)
         
         # 航向备选参数
         self.use_odom_orientation_fallback = ekf_config.get('use_odom_orientation_fallback', True)
@@ -173,7 +178,7 @@ class AdaptiveEKFEstimator(IStateEstimator):
     
     def update_odom(self, odom: Odometry) -> None:
         """Odom 更新"""
-        current_time = _get_monotonic_time()
+        current_time = get_monotonic_time()
         
         self._last_odom_orientation = odom.pose_orientation
         
@@ -275,34 +280,38 @@ class AdaptiveEKFEstimator(IStateEstimator):
         # 首先计算重力在机体坐标系的期望测量值（比力）
         # 对于地面车辆，假设 roll 和 pitch 接近 0
         # 对于无人机，使用 IMU 提供的姿态信息
-        g = 9.81
+        g = self.gravity  # 使用配置的重力加速度
         use_imu_orientation = False
         
-        if imu.orientation is not None and hasattr(imu, 'orientation'):
+        if imu.orientation is not None:
             # 检查四元数有效性
             q = imu.orientation
             if hasattr(q, '__len__') and len(q) == 4:
                 qx, qy, qz, qw = q[0], q[1], q[2], q[3]
-                norm_sq = qx*qx + qy*qy + qz*qz + qw*qw
                 
-                # 四元数有效性检查:
-                # 1. 范数不能太小（接近零向量）
-                # 2. 范数应该接近 1（单位四元数）
-                # 3. 不能是 NaN 或 Inf
-                is_valid = (
-                    norm_sq > 0.5 and  # 范数平方至少 0.5
-                    norm_sq < 2.0 and  # 范数平方不超过 2
-                    np.isfinite(norm_sq)  # 不是 NaN 或 Inf
-                )
-                
-                if is_valid:
-                    roll, pitch, _ = euler_from_quaternion(q)
+                # 检查各分量是否为 NaN 或 Inf
+                if not (np.isfinite(qx) and np.isfinite(qy) and 
+                        np.isfinite(qz) and np.isfinite(qw)):
+                    # 四元数包含无效值
+                    use_imu_orientation = False
+                else:
+                    norm_sq = qx*qx + qy*qy + qz*qz + qw*qw
                     
-                    # 额外检查: roll 和 pitch 应该在合理范围内
-                    # 对于大多数应用，roll/pitch 不应超过 ±60 度
-                    MAX_TILT_ANGLE = np.pi / 3  # 60 度
-                    if abs(roll) < MAX_TILT_ANGLE and abs(pitch) < MAX_TILT_ANGLE:
-                        use_imu_orientation = True
+                    # 四元数有效性检查:
+                    # 1. 范数不能太小（接近零向量）
+                    # 2. 范数应该接近 1（单位四元数）
+                    is_valid = (
+                        norm_sq > 0.5 and  # 范数平方至少 0.5
+                        norm_sq < 2.0      # 范数平方不超过 2
+                    )
+                    
+                    if is_valid:
+                        roll, pitch, _ = euler_from_quaternion(q)
+                        
+                        # 额外检查: roll 和 pitch 应该在合理范围内
+                        # 使用配置的最大倾斜角阈值
+                        if abs(roll) < self.max_tilt_angle and abs(pitch) < self.max_tilt_angle:
+                            use_imu_orientation = True
         
         if use_imu_orientation:
             # 加速度计静止时的期望测量值 (比力 = -g_body)
@@ -326,13 +335,12 @@ class AdaptiveEKFEstimator(IStateEstimator):
         
         # 打滑检测：比较 IMU 测量的加速度与 odom 计算的加速度
         # 添加时间窗口检查，确保 odom 加速度数据是新鲜的
-        current_imu_time = _get_monotonic_time()
-        ACCEL_FRESHNESS_THRESH = 0.1  # 100ms 内的 odom 加速度数据才有效
+        current_imu_time = get_monotonic_time()
         
         odom_accel_fresh = (
             self._world_accel_initialized and 
             self.last_odom_time is not None and
-            (current_imu_time - self.last_odom_time) < ACCEL_FRESHNESS_THRESH
+            (current_imu_time - self.last_odom_time) < self.accel_freshness_thresh
         )
         
         if odom_accel_fresh:
@@ -451,30 +459,33 @@ class AdaptiveEKFEstimator(IStateEstimator):
             cos_theta = np.cos(theta)
             sin_theta = np.sin(theta)
             
-            # 即使速度很小，也需要计算这些偏导数以保证协方差传播正确
-            # 使用更小的阈值 1e-9 来避免数值问题，但不跳过计算
-            # 当 v_body 很小时，偏导数自然也很小，不会造成问题
-            if v_body > 1e-9:
-                # ∂vx_world/∂theta = -v_body * sin(theta)
-                # ∂vy_world/∂theta = v_body * cos(theta)
-                F[3, 6] = -v_body * sin_theta
-                F[4, 6] = v_body * cos_theta
-                
-                # ∂vx_world/∂omega 和 ∂vy_world/∂omega
-                # 由于 theta_new = theta + omega * dt
-                # vx_new = v_body * cos(theta_new)
-                # 使用链式法则: ∂vx_new/∂omega = ∂vx_new/∂theta_new * ∂theta_new/∂omega
-                #                              = -v_body * sin(theta) * dt
-                F[3, 7] = -v_body * sin_theta * dt
-                F[4, 7] = v_body * cos_theta * dt
-            else:
-                # 速度极小时，使用小的非零值避免协方差矩阵退化
-                # 这些值代表了速度方向的不确定性
-                MIN_VELOCITY_JACOBIAN = 0.01  # 最小速度 Jacobian 值
-                F[3, 6] = -MIN_VELOCITY_JACOBIAN * sin_theta
-                F[4, 6] = MIN_VELOCITY_JACOBIAN * cos_theta
-                F[3, 7] = -MIN_VELOCITY_JACOBIAN * sin_theta * dt
-                F[4, 7] = MIN_VELOCITY_JACOBIAN * cos_theta * dt
+            # 使用平滑过渡避免 Jacobian 跳变
+            # 当 v_body 很小时，使用最小值来保证协方差传播
+            # 使用 max(v_body, MIN_V) 实现平滑过渡
+            # 
+            # 物理意义：即使车辆静止，航向角的不确定性仍然会影响
+            # 速度估计的不确定性（因为一旦开始运动，速度方向取决于航向）
+            
+            # 使用平滑的 max 函数避免不连续
+            # effective_v = sqrt(v_body^2 + MIN_V^2) 近似于 max(v_body, MIN_V)
+            # 但在 v_body ≈ MIN_V 附近更平滑
+            effective_v = np.sqrt(v_body**2 + self.min_velocity_for_jacobian**2)
+            
+            # ∂vx_world/∂theta = -v_body * sin(theta)
+            # ∂vy_world/∂theta = v_body * cos(theta)
+            # 使用 effective_v 代替 v_body 来计算 Jacobian
+            # 当 v_body >> MIN_V 时，effective_v ≈ v_body
+            # 当 v_body << MIN_V 时，effective_v ≈ MIN_V
+            F[3, 6] = -effective_v * sin_theta
+            F[4, 6] = effective_v * cos_theta
+            
+            # ∂vx_world/∂omega 和 ∂vy_world/∂omega
+            # 由于 theta_new = theta + omega * dt
+            # vx_new = v_body * cos(theta_new)
+            # 使用链式法则: ∂vx_new/∂omega = ∂vx_new/∂theta_new * ∂theta_new/∂omega
+            #                              = -v_body * sin(theta) * dt
+            F[3, 7] = -effective_v * sin_theta * dt
+            F[4, 7] = effective_v * cos_theta * dt
         
         return F
     
@@ -513,7 +524,7 @@ class AdaptiveEKFEstimator(IStateEstimator):
     
     def _compute_slip_probability(self, accel_diff: float) -> float:
         slip_thresh = self._get_adaptive_slip_threshold()
-        k = 5.0 / slip_thresh
+        k = self.slip_probability_k_factor / slip_thresh
         probability = 1.0 / (1.0 + np.exp(-k * (accel_diff - slip_thresh * 0.8)))
         self.slip_history.append(probability)
         return np.mean(self.slip_history)
@@ -548,7 +559,7 @@ class AdaptiveEKFEstimator(IStateEstimator):
     
     def reset(self) -> None:
         self.x = np.zeros(11)
-        self.P = np.eye(11) * 0.1
+        self.P = np.eye(11) * self.initial_covariance
         self.slip_detected = False
         self.slip_probability = 0.0
         self.last_innovation_norm = 0.0

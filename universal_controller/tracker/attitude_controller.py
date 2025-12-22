@@ -66,23 +66,10 @@
 """
 from typing import Dict, Any, Optional
 import numpy as np
-import time
 
 from ..core.interfaces import IAttitudeController
 from ..core.data_types import ControlOutput, AttitudeCommand
-
-
-def _get_monotonic_time() -> float:
-    """
-    获取单调时钟时间（秒）
-    
-    使用 time.monotonic() 而非 time.time() 或 time.perf_counter()，
-    避免系统时间跳变（如 NTP 同步）导致的时间间隔计算错误。
-    
-    注意: time.perf_counter() 虽然精度更高，但在某些系统上可能会受到
-    睡眠/休眠的影响。time.monotonic() 更适合用于超时和时间间隔计算。
-    """
-    return time.monotonic()
+from ..core.ros_compat import get_monotonic_time
 
 
 class QuadrotorAttitudeController(IAttitudeController):
@@ -99,7 +86,9 @@ class QuadrotorAttitudeController(IAttitudeController):
         
         # 物理参数
         self.mass = attitude_config.get('mass', 1.5)  # kg
-        self.gravity = attitude_config.get('gravity', 9.81)  # m/s^2
+        # 重力加速度 - 优先从 system.gravity 读取
+        self.gravity = config.get('system', {}).get('gravity', 
+                        attitude_config.get('gravity', 9.81))
         
         # 姿态角速度限制 (F14.2)
         self.roll_rate_max = attitude_config.get('roll_rate_max', 3.0)  # rad/s
@@ -126,6 +115,12 @@ class QuadrotorAttitudeController(IAttitudeController):
         self._yaw_drift_rate = attitude_config.get('yaw_drift_rate', 0.001)
         self._accumulated_yaw_drift = 0.0
         
+        # 悬停检测滞后参数 - 从配置读取
+        self.hover_enter_factor = attitude_config.get('hover_enter_factor', 1.0)
+        self.hover_exit_factor = attitude_config.get('hover_exit_factor', 1.5)
+        self.hover_cmd_exit_factor = attitude_config.get('hover_cmd_exit_factor', 2.0)
+        self.hover_debounce_time = attitude_config.get('hover_debounce_time', 0.1)
+        
         # 位置-姿态解耦 (F14.4)
         self.position_attitude_decoupled = attitude_config.get(
             'position_attitude_decoupled', False)
@@ -137,10 +132,20 @@ class QuadrotorAttitudeController(IAttitudeController):
         # 推力变化率限制 (每秒相对于悬停推力的变化)
         self.thrust_rate_max = attitude_config.get('thrust_rate_max', 2.0)
         
+        # 最小推力加速度因子 (相对于重力)
+        self.min_thrust_factor = attitude_config.get('min_thrust_factor', 0.1)
+        
+        # 姿态角饱和后推力重计算的最小因子
+        self.attitude_factor_min = attitude_config.get('attitude_factor_min', 0.1)
+        
         # 状态
         self._last_attitude: Optional[AttitudeCommand] = None
         self._last_time: Optional[float] = None
         self.dt = attitude_config.get('dt', 0.02)
+        
+        # 悬停去抖动状态
+        self._hover_debounce_start: Optional[float] = None
+        self._hover_debounce_target: Optional[bool] = None
 
     def compute_attitude(self, velocity_cmd: ControlOutput,
                          current_state: np.ndarray,
@@ -167,7 +172,7 @@ class QuadrotorAttitudeController(IAttitudeController):
         if current_state is None or len(current_state) < 7:
             raise ValueError("current_state must have at least 7 elements")
         
-        current_time = _get_monotonic_time()
+        current_time = get_monotonic_time()
         
         # 当前状态
         vx_current = current_state[3]
@@ -292,7 +297,7 @@ class QuadrotorAttitudeController(IAttitudeController):
         
         # 防止除以零和数值不稳定
         # 当推力加速度很小时（接近自由落体或悬停），使用保守的姿态
-        MIN_THRUST_ACCEL = 0.1 * self.gravity  # 最小推力加速度阈值 (约 1 m/s²)
+        MIN_THRUST_ACCEL = self.min_thrust_factor * self.gravity  # 使用配置的最小推力因子
         if thrust_accel < MIN_THRUST_ACCEL:
             # 推力很小，使用简化计算
             # 假设小姿态角近似: roll ≈ -ay/g, pitch ≈ ax/g
@@ -374,7 +379,7 @@ class QuadrotorAttitudeController(IAttitudeController):
         # 为了达到期望的垂直加速度: T * cos(roll) * cos(pitch) = az_total
         attitude_factor = cos_roll * cos_pitch
         
-        if attitude_factor > 0.1:  # 避免除以接近零的数
+        if attitude_factor > self.attitude_factor_min:  # 使用配置的最小因子
             thrust = az_total / (attitude_factor * self.gravity)
         else:
             # 姿态角过大，使用总加速度计算
@@ -409,39 +414,31 @@ class QuadrotorAttitudeController(IAttitudeController):
         
         # 悬停检测: 使用滞后逻辑和时间去抖动避免频繁切换
         # 进入悬停需要满足严格条件，退出悬停需要满足宽松条件
-        HOVER_ENTER_FACTOR = 1.0  # 进入悬停的阈值因子
-        HOVER_EXIT_FACTOR = 1.5   # 退出悬停的阈值因子（更宽松）
-        CMD_EXIT_FACTOR = 2.0     # 命令速度退出悬停的阈值因子
-        HOVER_DEBOUNCE_TIME = 0.1  # 悬停状态切换去抖动时间 (秒)
+        # 使用配置的滞后因子
         
         # 判断是否应该进入悬停状态
         # 需要当前速度和命令速度都很小
         should_enter_hover = (
-            v_horizontal_current < self.hover_speed_thresh * HOVER_ENTER_FACTOR and
-            vz_current < self.hover_vz_thresh * HOVER_ENTER_FACTOR and
-            v_horizontal_cmd < self.hover_speed_thresh * HOVER_ENTER_FACTOR and
-            vz_cmd < self.hover_vz_thresh * HOVER_ENTER_FACTOR
+            v_horizontal_current < self.hover_speed_thresh * self.hover_enter_factor and
+            vz_current < self.hover_vz_thresh * self.hover_enter_factor and
+            v_horizontal_cmd < self.hover_speed_thresh * self.hover_enter_factor and
+            vz_cmd < self.hover_vz_thresh * self.hover_enter_factor
         )
         
         # 判断是否应该退出悬停状态
         # 当前速度超过退出阈值，或者命令速度较大时退出
         # 命令速度使用更大的阈值，避免小的命令波动导致退出
         should_exit_hover = (
-            v_horizontal_current > self.hover_speed_thresh * HOVER_EXIT_FACTOR or
-            vz_current > self.hover_vz_thresh * HOVER_EXIT_FACTOR or
-            v_horizontal_cmd > self.hover_speed_thresh * CMD_EXIT_FACTOR or
-            vz_cmd > self.hover_vz_thresh * CMD_EXIT_FACTOR
+            v_horizontal_current > self.hover_speed_thresh * self.hover_exit_factor or
+            vz_current > self.hover_vz_thresh * self.hover_exit_factor or
+            v_horizontal_cmd > self.hover_speed_thresh * self.hover_cmd_exit_factor or
+            vz_cmd > self.hover_vz_thresh * self.hover_cmd_exit_factor
         )
         
         # 滞后逻辑：已经在悬停状态时，只有满足退出条件才退出
         # 不在悬停状态时，需要满足进入条件才进入
         # 添加时间去抖动：状态切换需要持续一段时间才生效
         currently_hovering = self._hover_start_time is not None
-        
-        # 初始化去抖动状态（如果需要）
-        if not hasattr(self, '_hover_debounce_start'):
-            self._hover_debounce_start: Optional[float] = None
-            self._hover_debounce_target: Optional[bool] = None
         
         # 默认保持当前状态
         is_hovering = currently_hovering
@@ -456,7 +453,7 @@ class QuadrotorAttitudeController(IAttitudeController):
                     self._hover_debounce_target = False
                     is_hovering = True  # 去抖动期间保持悬停
                 elif (self._hover_debounce_start is not None and 
-                      current_time - self._hover_debounce_start >= HOVER_DEBOUNCE_TIME):
+                      current_time - self._hover_debounce_start >= self.hover_debounce_time):
                     # 去抖动时间已过，确认退出悬停
                     is_hovering = False
                 else:
@@ -477,7 +474,7 @@ class QuadrotorAttitudeController(IAttitudeController):
                     self._hover_debounce_target = True
                     is_hovering = False  # 去抖动期间保持非悬停
                 elif (self._hover_debounce_start is not None and 
-                      current_time - self._hover_debounce_start >= HOVER_DEBOUNCE_TIME):
+                      current_time - self._hover_debounce_start >= self.hover_debounce_time):
                     # 去抖动时间已过，确认进入悬停
                     is_hovering = True
                 else:
@@ -517,7 +514,7 @@ class QuadrotorAttitudeController(IAttitudeController):
         # 根据模式计算 yaw
         if yaw_mode == 'velocity':
             # 朝向运动方向
-            if v_horizontal_current > 0.1:
+            if v_horizontal_current > self.hover_speed_thresh:
                 return np.arctan2(current_state[4], current_state[3])
             else:
                 return theta_current
@@ -596,7 +593,7 @@ class QuadrotorAttitudeController(IAttitudeController):
     def set_hover_yaw(self, yaw: float) -> None:
         """设置悬停时的目标航向"""
         self._hover_yaw = yaw
-        self._hover_start_time = _get_monotonic_time()
+        self._hover_start_time = get_monotonic_time()
         self._accumulated_yaw_drift = 0.0
 
     def get_attitude_rate_limits(self) -> Dict[str, float]:

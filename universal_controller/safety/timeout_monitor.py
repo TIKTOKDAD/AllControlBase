@@ -1,18 +1,8 @@
 """超时监控器"""
 from typing import Dict, Any, Optional
-import time
 
 from ..core.data_types import TimeoutStatus
-
-
-def _get_monotonic_time() -> float:
-    """
-    获取单调时钟时间（秒）
-    
-    使用 time.monotonic() 而非 time.time()，避免系统时间跳变
-    （如 NTP 同步）导致的时间间隔计算错误。
-    """
-    return time.monotonic()
+from ..core.ros_compat import get_monotonic_time
 
 
 # 表示"从未收到消息"的超时值 (毫秒)
@@ -48,14 +38,14 @@ class TimeoutMonitor:
         Args:
             stamp: 消息时间戳（秒），仅用于日志，内部使用接收时间
         """
-        receive_time = _get_monotonic_time()
+        receive_time = get_monotonic_time()
         self._last_odom_time = receive_time
         if self._startup_time is None:
             self._startup_time = receive_time
     
     def update_trajectory(self, stamp: float) -> None:
         """更新轨迹时间戳"""
-        receive_time = _get_monotonic_time()
+        receive_time = get_monotonic_time()
         self._last_traj_time = receive_time
         self._traj_timeout_start = None
         if self._startup_time is None:
@@ -63,7 +53,7 @@ class TimeoutMonitor:
     
     def update_imu(self, stamp: float) -> None:
         """更新 IMU 时间戳"""
-        receive_time = _get_monotonic_time()
+        receive_time = get_monotonic_time()
         self._last_imu_time = receive_time
         if self._startup_time is None:
             self._startup_time = receive_time
@@ -76,7 +66,7 @@ class TimeoutMonitor:
                          注意：为保持一致性，建议不传入此参数
         """
         # 使用单调时钟，忽略外部传入的时间
-        monotonic_now = _get_monotonic_time()
+        monotonic_now = get_monotonic_time()
         
         in_startup_grace = False
         if self._startup_time is None:

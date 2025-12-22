@@ -48,6 +48,10 @@ DEFAULT_CONFIG = {
     'system': {
         'ctrl_freq': 50,
         'platform': 'differential',
+        'gravity': 9.81,  # 重力加速度 (m/s²)，用于 EKF 和姿态控制
+        # 控制循环暂停检测
+        'long_pause_threshold': 0.5,  # 长时间暂停检测阈值 (秒)，超过此值使用多步预测
+        'ekf_reset_threshold': 2.0,   # EKF 重置阈值 (秒)，超过此值重置 EKF
     },
     'mpc': {
         'horizon': 20,
@@ -69,6 +73,20 @@ DEFAULT_CONFIG = {
             'kkt_residual_thresh': 1e-3,
             'consecutive_warning_limit': 3,
             'consecutive_recovery_limit': 5,
+            'recovery_multiplier': 2.0,  # 备选恢复条件的倍数
+        },
+        # Fallback 求解器参数
+        'fallback': {
+            'lookahead_steps': 3,  # 前瞻步数
+            'heading_kp': 1.5,  # 航向控制增益
+            'max_curvature': 5.0,  # 最大曲率限制 (1/m)
+        },
+        # ACADOS 求解器参数
+        'solver': {
+            'nlp_max_iter': 50,  # NLP 求解器最大迭代次数
+            'qp_solver': 'PARTIAL_CONDENSING_HPIPM',  # QP 求解器类型
+            'integrator_type': 'ERK',  # 积分器类型
+            'nlp_solver_type': 'SQP_RTI',  # NLP 求解器类型
         },
     },
     'watchdog': {
@@ -84,6 +102,8 @@ DEFAULT_CONFIG = {
         'temporal_smooth_thresh': 0.5,
         'low_speed_thresh': 0.1,
         'alpha_min': 0.1,
+        'max_curvature': 10.0,  # 曲率计算的最大值限制 (1/m)
+        'temporal_window_size': 10,  # 时序平滑度计算的滑动窗口大小
         'weights': {
             'kappa': 1.0,
             'velocity': 1.5,
@@ -97,12 +117,21 @@ DEFAULT_CONFIG = {
         'emergency_decel': 3.0,
         'velocity_margin': 1.1,
         'accel_margin': 1.5,
+        # 加速度滤波参数
+        'accel_filter_window': 3,  # 滑动窗口大小
+        'accel_filter_alpha': 0.3,  # 低通滤波系数
+        'accel_filter_warmup_alpha': 0.5,  # 滤波器预热期间的系数（加速收敛）
+        'max_dt_for_accel': 1.0,  # 加速度计算的最大时间间隔 (秒)
         'state_machine': {
             'alpha_recovery_thresh': 5,
             'alpha_recovery_value': 0.3,
             'alpha_disable_thresh': 0.1,
             'mpc_recovery_thresh': 5,
-            'mpc_fail_thresh': 3,  # 新增：MPC 连续失败阈值
+            'mpc_fail_window_size': 10,  # MPC 失败检测滑动窗口大小
+            'mpc_fail_thresh': 3,  # 窗口内失败次数阈值
+            'mpc_fail_ratio_thresh': 0.5,  # 失败率阈值
+            'mpc_recovery_history_min': 3,  # MPC 恢复检测最小历史记录数
+            'mpc_recovery_recent_count': 5,  # MPC 恢复检测最近检查次数
         },
     },
     'transform': {
@@ -114,7 +143,7 @@ DEFAULT_CONFIG = {
         'drift_estimation_enabled': False,  # 无外部定位，禁用漂移估计
         'recovery_correction_enabled': False,  # 无外部定位，禁用恢复校正
         'drift_rate': 0.01,
-        'tf2_required': False,  # 不强制要求 TF2
+        'max_drift_dt': 0.5,  # 漂移估计最大时间间隔 (秒)
     },
     'transition': {
         'type': 'exponential',
@@ -132,6 +161,12 @@ DEFAULT_CONFIG = {
         'kp_heading': 1.5,
         'heading_mode': 'follow_velocity',
         'dt': 0.02,
+        # Pure Pursuit 控制参数
+        'heading_error_thresh': 1.047,  # 航向误差阈值 (rad, ~60°)
+        'pure_pursuit_angle_thresh': 1.047,  # Pure Pursuit 模式角度阈值 (rad, ~60°)
+        'heading_control_angle_thresh': 1.571,  # 航向控制模式角度阈值 (rad, ~90°)
+        'max_curvature': 5.0,  # 最大曲率限制 (1/m)
+        'min_turn_speed': 0.1,  # 阿克曼车辆最小转向速度 (m/s)
     },
     'constraints': {
         'v_max': 2.0,
@@ -158,7 +193,13 @@ DEFAULT_CONFIG = {
             'slip_covariance_scale': 10.0,
             'stationary_covariance_scale': 0.1,
             'stationary_thresh': 0.05,
+            'slip_probability_k_factor': 5.0,  # 打滑概率 sigmoid 函数的斜率因子
         },
+        # IMU 相关参数
+        'max_tilt_angle': 1.047,  # IMU 姿态角有效性检查阈值 (rad, ~60°)
+        'accel_freshness_thresh': 0.1,  # 加速度数据新鲜度阈值 (秒)
+        # Jacobian 计算参数
+        'min_velocity_for_jacobian': 0.01,  # Jacobian 计算的最小速度阈值 (m/s)
         'measurement_noise': {
             'odom_position': 0.01,
             'odom_velocity': 0.1,
@@ -178,12 +219,14 @@ DEFAULT_CONFIG = {
         },
         'covariance': {
             'min_eigenvalue': 1e-6,
+            'initial_value': 0.1,  # 初始协方差对角线值
         },
     },
     # F14: 无人机姿态控制配置
     'attitude': {
         'mass': 1.5,  # kg
-        'gravity': 9.81,  # m/s^2
+        # 注意: 重力加速度统一使用 system.gravity，此处已废弃
+        # 'gravity': 9.81,  # 已废弃，请使用 system.gravity
         # F14.2: 姿态角速度限制
         'roll_rate_max': 3.0,  # rad/s
         'pitch_rate_max': 3.0,  # rad/s
@@ -200,11 +243,19 @@ DEFAULT_CONFIG = {
         'hover_speed_thresh': 0.1,  # m/s (水平速度阈值)
         'hover_vz_thresh': 0.05,  # m/s (垂直速度阈值，更严格)
         'yaw_drift_rate': 0.001,  # rad/s
+        # 悬停检测滞后参数
+        'hover_enter_factor': 1.0,  # 进入悬停的阈值因子
+        'hover_exit_factor': 1.5,  # 退出悬停的阈值因子
+        'hover_cmd_exit_factor': 2.0,  # 命令速度退出悬停的阈值因子
+        'hover_debounce_time': 0.1,  # 悬停状态切换去抖动时间 (秒)
         # F14.4: 位置-姿态解耦
         'position_attitude_decoupled': False,
         # 推力限制 (归一化到悬停推力)
         'thrust_min': 0.1,  # 最小推力 (防止自由落体)
         'thrust_max': 2.0,  # 最大推力
+        'thrust_rate_max': 2.0,  # 推力变化率限制 (每秒)
+        'min_thrust_factor': 0.1,  # 最小推力加速度因子 (相对于重力)
+        'attitude_factor_min': 0.1,  # 姿态角饱和后推力重计算的最小因子
         'dt': 0.02,
     },
 }

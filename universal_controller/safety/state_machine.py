@@ -1,18 +1,10 @@
 """状态机"""
-from typing import Dict, Any, Optional
-import time
+from typing import Dict, Any, Optional, Union
+from collections import deque
 
 from ..core.enums import ControllerState
-
-
-def _get_monotonic_time() -> float:
-    """
-    获取单调时钟时间（秒）
-    
-    使用 time.monotonic() 而非 time.time()，避免系统时间跳变
-    （如 NTP 同步）导致的时间间隔计算错误。
-    """
-    return time.monotonic()
+from ..core.diagnostics_input import DiagnosticsInput
+from ..core.ros_compat import get_monotonic_time
 
 
 class StateMachine:
@@ -22,7 +14,6 @@ class StateMachine:
         self.state = ControllerState.INIT
         self.alpha_recovery_count = 0
         self.mpc_recovery_count = 0
-        self.mpc_fail_count: float = 0.0  # MPC 失败计数器（使用浮点数支持衰减）
         
         safety_config = config.get('safety', {})
         sm_config = safety_config.get('state_machine', {})
@@ -31,8 +22,18 @@ class StateMachine:
         self.alpha_recovery_value = sm_config.get('alpha_recovery_value', 0.3)
         self.alpha_disable_thresh = sm_config.get('alpha_disable_thresh', 0.1)
         self.mpc_recovery_thresh = sm_config.get('mpc_recovery_thresh', 5)
-        self.mpc_fail_thresh = sm_config.get('mpc_fail_thresh', 3)  # 失败阈值
-        self.mpc_fail_decay = sm_config.get('mpc_fail_decay', 0.5)  # 成功时的衰减因子
+        
+        # MPC 失败检测参数
+        # 使用滑动窗口方法：在最近 N 次调用中，如果失败次数超过阈值则切换
+        self.mpc_fail_window_size = sm_config.get('mpc_fail_window_size', 10)  # 窗口大小
+        self.mpc_fail_thresh = sm_config.get('mpc_fail_thresh', 3)  # 窗口内失败次数阈值
+        self.mpc_fail_ratio_thresh = sm_config.get('mpc_fail_ratio_thresh', 0.5)  # 失败率阈值
+        self._mpc_success_history: deque = deque(maxlen=self.mpc_fail_window_size)
+        
+        # MPC 恢复检测参数 - 从配置读取
+        self.mpc_recovery_history_min = sm_config.get('mpc_recovery_history_min', 3)
+        self.mpc_recovery_recent_count = sm_config.get('mpc_recovery_recent_count', 5)
+        
         self.v_stop_thresh = safety_config.get('v_stop_thresh', 0.05)
         self.vz_stop_thresh = safety_config.get('vz_stop_thresh', 0.1)
         self.stopping_timeout = safety_config.get('stopping_timeout', 5.0)
@@ -42,25 +43,96 @@ class StateMachine:
         """重置所有计数器 - 在状态转换时调用以确保一致性"""
         self.alpha_recovery_count = 0
         self.mpc_recovery_count = 0
-        self.mpc_fail_count = 0.0
+        self._mpc_success_history.clear()
     
-    def update(self, diagnostics: Dict[str, Any]) -> ControllerState:
-        alpha = diagnostics.get('alpha', 1.0)
-        mpc_health = diagnostics.get('mpc_health')
-        odom_timeout = diagnostics.get('odom_timeout', False)
-        traj_timeout_exceeded = diagnostics.get('traj_timeout_exceeded', False)
-        v_horizontal = diagnostics.get('v_horizontal', 0)
-        vz = diagnostics.get('vz', 0)
-        mpc_success = diagnostics.get('mpc_success', False)
-        has_valid_data = diagnostics.get('has_valid_data', False)
-        tf2_critical = diagnostics.get('tf2_critical', False)
-        data_valid = diagnostics.get('data_valid', True)
-        safety_failed = diagnostics.get('safety_failed', False)
+    def _check_mpc_should_switch_to_backup(self, mpc_success: bool) -> bool:
+        """
+        检查是否应该切换到备用控制器
+        
+        使用滑动窗口方法：
+        1. 记录最近 N 次 MPC 调用的成功/失败状态
+        2. 如果窗口内失败次数超过阈值，或失败率超过阈值，则切换
+        
+        这种方法的优点：
+        - 单次失败不会触发切换
+        - 连续失败会快速触发切换
+        - 间歇性失败（如 70% 成功率）会在窗口填满后稳定判断
+        - 恢复后历史记录自然滑出窗口
+        
+        Args:
+            mpc_success: 本次 MPC 是否成功
+        
+        Returns:
+            是否应该切换到备用控制器
+        """
+        # 记录本次结果
+        self._mpc_success_history.append(mpc_success)
+        
+        # 窗口未填满时，使用更保守的策略
+        # 只有连续失败达到阈值才切换
+        if len(self._mpc_success_history) < self.mpc_fail_window_size:
+            # 计算最近连续失败次数
+            consecutive_failures = 0
+            for success in reversed(self._mpc_success_history):
+                if not success:
+                    consecutive_failures += 1
+                else:
+                    break
+            return consecutive_failures >= self.mpc_fail_thresh
+        
+        # 窗口已填满，使用完整的判断逻辑
+        fail_count = sum(1 for s in self._mpc_success_history if not s)
+        fail_ratio = fail_count / len(self._mpc_success_history)
+        
+        # 两个条件满足其一即切换：
+        # 1. 失败次数超过阈值
+        # 2. 失败率超过阈值
+        return (fail_count >= self.mpc_fail_thresh or 
+                fail_ratio >= self.mpc_fail_ratio_thresh)
+    
+    def _check_mpc_can_recover(self) -> bool:
+        """
+        检查 MPC 是否可以从备用控制器恢复
+        
+        恢复条件：最近的成功率足够高
+        
+        Returns:
+            是否可以尝试恢复到 MPC
+        """
+        if len(self._mpc_success_history) < self.mpc_recovery_history_min:
+            # 历史记录太少，不恢复
+            return False
+        
+        # 检查最近几次是否都成功
+        recent_count = min(self.mpc_recovery_recent_count, len(self._mpc_success_history))
+        recent_successes = sum(1 for s in list(self._mpc_success_history)[-recent_count:] if s)
+        
+        # 最近 N 次中至少 N-1 次成功才考虑恢复
+        return recent_successes >= recent_count - 1
+    
+    def update(self, diagnostics: Union[DiagnosticsInput, Dict[str, Any]]) -> ControllerState:
+        # 支持 DiagnosticsInput 和 Dict 两种输入格式（向后兼容）
+        if isinstance(diagnostics, DiagnosticsInput):
+            diag = diagnostics
+        else:
+            diag = DiagnosticsInput.from_dict(diagnostics)
+        
+        alpha = diag.alpha
+        mpc_health = diag.mpc_health
+        odom_timeout = diag.odom_timeout
+        traj_timeout_exceeded = diag.traj_timeout_exceeded
+        v_horizontal = diag.v_horizontal
+        vz = diag.vz
+        mpc_success = diag.mpc_success
+        has_valid_data = diag.has_valid_data
+        tf2_critical = diag.tf2_critical
+        data_valid = diag.data_valid
+        safety_failed = diag.safety_failed
         
         # 超时 -> STOPPING (最高优先级)
         if odom_timeout or traj_timeout_exceeded:
             if self.state != ControllerState.STOPPING:
-                self._stopping_start_time = _get_monotonic_time()
+                self._stopping_start_time = get_monotonic_time()
                 self.state = ControllerState.STOPPING
                 self._reset_all_counters()
             return self.state
@@ -75,39 +147,24 @@ class StateMachine:
             if safety_failed:
                 self.state = ControllerState.MPC_DEGRADED
                 self._reset_all_counters()
-            elif not mpc_success:
-                # 使用失败计数器，避免单次失败就切换
-                # 失败时增加 1.0
-                self.mpc_fail_count += 1.0
-                if self.mpc_fail_count >= self.mpc_fail_thresh:
+            else:
+                # 使用滑动窗口方法检测 MPC 失败
+                should_switch_to_backup = self._check_mpc_should_switch_to_backup(mpc_success)
+                
+                if should_switch_to_backup:
                     self.state = ControllerState.BACKUP_ACTIVE
                     self._reset_all_counters()
-            else:
-                # MPC 成功，使用衰减而非立即重置
-                # 衰减策略设计目标：
-                # - 单次失败后快速恢复（1-2 次成功即可）
-                # - 连续失败需要更多成功才能恢复
-                # - 在 70% 成功率下保持稳定（不会持续增长）
-                # 
-                # 使用非线性衰减：衰减量与当前计数成正比
-                # decay = base_decay + proportional_decay * count
-                # 这样当计数较高时，衰减更快，有助于从间歇性失败中恢复
-                base_decay = self.mpc_fail_decay  # 基础衰减 (默认 0.5)
-                proportional_decay = 0.2  # 比例衰减系数
-                actual_decay = base_decay + proportional_decay * self.mpc_fail_count
-                # 限制最大衰减量，避免过快恢复
-                actual_decay = min(actual_decay, 1.5)
-                self.mpc_fail_count = max(0, self.mpc_fail_count - actual_decay)
-                
-                if not data_valid and alpha < self.alpha_recovery_value:
-                    self.state = ControllerState.SOFT_DISABLED
-                    self._reset_all_counters()
-                elif data_valid and alpha < self.alpha_disable_thresh:
-                    self.state = ControllerState.SOFT_DISABLED
-                    self._reset_all_counters()
-                elif (mpc_health and mpc_health.warning) or tf2_critical:
-                    self.state = ControllerState.MPC_DEGRADED
-                    self._reset_all_counters()
+                elif mpc_success:
+                    # MPC 成功，检查其他状态转换条件
+                    if not data_valid and alpha < self.alpha_recovery_value:
+                        self.state = ControllerState.SOFT_DISABLED
+                        self._reset_all_counters()
+                    elif data_valid and alpha < self.alpha_disable_thresh:
+                        self.state = ControllerState.SOFT_DISABLED
+                        self._reset_all_counters()
+                    elif (mpc_health and mpc_health.warning) or tf2_critical:
+                        self.state = ControllerState.MPC_DEGRADED
+                        self._reset_all_counters()
         
         elif self.state == ControllerState.SOFT_DISABLED:
             if safety_failed:
@@ -157,10 +214,15 @@ class StateMachine:
                 self.mpc_recovery_count = 0
         
         elif self.state == ControllerState.BACKUP_ACTIVE:
+            # 记录 MPC 成功/失败状态到滑动窗口
+            self._mpc_success_history.append(mpc_success)
+            
             # 尝试恢复到 MPC
+            # 使用滑动窗口方法检查是否可以恢复
             if mpc_success and not tf2_critical and not safety_failed:
-                self.state = ControllerState.MPC_DEGRADED
-                self._reset_all_counters()
+                if self._check_mpc_can_recover():
+                    self.state = ControllerState.MPC_DEGRADED
+                    self._reset_all_counters()
         
         elif self.state == ControllerState.STOPPING:
             stopped = (abs(v_horizontal) < self.v_stop_thresh and 
@@ -171,7 +233,7 @@ class StateMachine:
                 self._stopping_start_time = None
                 self._reset_all_counters()
             elif self._stopping_start_time is not None:
-                elapsed = _get_monotonic_time() - self._stopping_start_time
+                elapsed = get_monotonic_time() - self._stopping_start_time
                 if elapsed > self.stopping_timeout:
                     print(f"STOPPING timeout after {elapsed:.1f}s, forcing STOPPED")
                     self.state = ControllerState.STOPPED

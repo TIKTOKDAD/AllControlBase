@@ -1,20 +1,10 @@
 """平滑过渡控制器"""
 from typing import Dict, Any, Optional
 import numpy as np
-import time
 
 from ..core.interfaces import ISmoothTransition
 from ..core.data_types import ControlOutput
-
-
-def _get_monotonic_time() -> float:
-    """
-    获取单调时钟时间（秒）
-    
-    使用 time.monotonic() 而非 time.time()，避免系统时间跳变
-    （如 NTP 同步）导致的时间间隔计算错误。
-    """
-    return time.monotonic()
+from ..core.ros_compat import get_monotonic_time
 
 
 class ExponentialSmoothTransition(ISmoothTransition):
@@ -32,7 +22,7 @@ class ExponentialSmoothTransition(ISmoothTransition):
         self.progress = 0.0
     
     def start_transition(self, from_cmd: ControlOutput) -> None:
-        self.start_time = _get_monotonic_time()
+        self.start_time = get_monotonic_time()
         self.in_transition = True
         self.from_cmd = from_cmd.copy()
         self.progress = 0.0
@@ -50,7 +40,7 @@ class ExponentialSmoothTransition(ISmoothTransition):
             return new_cmd
         
         # 使用单调时钟计算经过时间
-        monotonic_now = _get_monotonic_time()
+        monotonic_now = get_monotonic_time()
         elapsed = monotonic_now - self.start_time
         alpha = 1.0 - np.exp(-elapsed / self.tau)
         self.progress = alpha
@@ -92,7 +82,7 @@ class LinearSmoothTransition(ISmoothTransition):
         self.progress = 0.0
     
     def start_transition(self, from_cmd: ControlOutput) -> None:
-        self.start_time = _get_monotonic_time()
+        self.start_time = get_monotonic_time()
         self.in_transition = True
         self.from_cmd = from_cmd.copy()
         self.progress = 0.0
@@ -110,7 +100,7 @@ class LinearSmoothTransition(ISmoothTransition):
             return new_cmd
         
         # 使用单调时钟计算经过时间
-        monotonic_now = _get_monotonic_time()
+        monotonic_now = get_monotonic_time()
         elapsed = monotonic_now - self.start_time
         alpha = min(elapsed / self.duration, 1.0)
         self.progress = alpha

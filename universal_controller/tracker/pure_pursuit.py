@@ -47,6 +47,13 @@ class PurePursuitController(ITrajectoryTracker):
         self.kp_heading = backup_config.get('kp_heading', 1.5)
         self.fixed_heading: Optional[float] = backup_config.get('fixed_heading')
         
+        # Pure Pursuit 控制参数 - 从配置读取
+        self.heading_error_thresh = backup_config.get('heading_error_thresh', np.pi / 3)  # ~60°
+        self.pure_pursuit_angle_thresh = backup_config.get('pure_pursuit_angle_thresh', np.pi / 3)  # ~60°
+        self.heading_control_angle_thresh = backup_config.get('heading_control_angle_thresh', np.pi / 2)  # ~90°
+        self.max_curvature = backup_config.get('max_curvature', 5.0)
+        self.min_turn_speed = backup_config.get('min_turn_speed', 0.1)
+        
         self.last_cmd: Optional[ControlOutput] = None
         self._horizon: int = 20
         self._current_position: Optional[np.ndarray] = None
@@ -156,20 +163,19 @@ class PurePursuitController(ITrajectoryTracker):
         
         L_sq = local_x**2 + local_y**2
         
-        # 曲率计算，添加数值稳定性保护
-        # 最大曲率限制为 5.0 (对应最小转弯半径 0.2m)
-        MAX_CURVATURE = 5.0
-        
-        # 航向误差阈值（弧度）
-        # 当航向误差大于此值时，优先原地旋转
-        HEADING_ERROR_THRESH = np.pi / 3  # 60 度
-        
         # 角速度变化率限制（用于平滑角速度命令）
         # 这可以防止目标点在正后方时的角速度跳变
-        MAX_OMEGA_RATE = self.alpha_max * self.dt if hasattr(self, 'alpha_max') else 3.0 * self.dt
+        MAX_OMEGA_RATE = self.alpha_max * self.dt
         
         if L_sq > 1e-6:
-            if local_x < 0:
+            # 计算目标点相对于车辆的角度
+            # 当目标点在正前方时，angle = 0
+            # 当目标点在正侧方时，angle = ±90°
+            # 当目标点在正后方时，angle = ±180°
+            target_angle = np.arctan2(local_y, local_x)
+            abs_target_angle = abs(target_angle)
+            
+            if abs_target_angle > self.heading_control_angle_thresh:
                 # 目标点在车辆后方，使用航向误差控制
                 # 差速车可以原地转向，所以先转向再前进
                 target_heading = np.arctan2(dy, dx)
@@ -194,17 +200,61 @@ class PurePursuitController(ITrajectoryTracker):
                 # 当航向误差较大时，减速或停止前进
                 # 使用平滑的速度衰减函数，避免突变
                 abs_heading_error = abs(heading_error)
-                if abs_heading_error > HEADING_ERROR_THRESH:
+                if abs_heading_error > self.heading_error_thresh:
                     # 航向误差大于阈值，完全停止前进，专注于旋转
                     vx = 0.0
                 else:
                     # 航向误差小于阈值，使用余弦函数平滑过渡
                     # 当 heading_error = 0 时，heading_factor = 1
-                    # 当 heading_error = HEADING_ERROR_THRESH 时，heading_factor ≈ 0.5
+                    # 当 heading_error = heading_error_thresh 时，heading_factor ≈ 0.5
                     heading_factor = np.cos(abs_heading_error)
                     # 额外的线性衰减，确保在阈值处速度较低
-                    linear_factor = 1.0 - abs_heading_error / HEADING_ERROR_THRESH * 0.5
+                    linear_factor = 1.0 - abs_heading_error / self.heading_error_thresh * 0.5
                     vx = target_v * heading_factor * linear_factor
+                
+                return ControlOutput(vx=vx, vy=0.0, vz=0.0, omega=omega, 
+                                    frame_id=self.output_frame, success=True)
+            
+            elif abs_target_angle > self.pure_pursuit_angle_thresh:
+                # 过渡区域：目标点在侧前方
+                # 混合 Pure Pursuit 和航向误差控制
+                # 使用线性插值
+                blend_factor = (abs_target_angle - self.pure_pursuit_angle_thresh) / (self.heading_control_angle_thresh - self.pure_pursuit_angle_thresh)
+                
+                # Pure Pursuit 部分
+                curvature = 2.0 * local_y / L_sq
+                curvature = np.clip(curvature, -self.max_curvature, self.max_curvature)
+                
+                if abs(curvature) > 0.1:
+                    v_curvature = min(omega_limit / abs(curvature), self.v_max)
+                    pp_target_v = min(target_v, v_curvature)
+                else:
+                    pp_target_v = target_v
+                
+                pp_omega = pp_target_v * curvature
+                pp_omega = np.clip(pp_omega, -omega_limit, omega_limit)
+                
+                # 航向误差控制部分
+                target_heading = np.arctan2(dy, dx)
+                heading_error = np.arctan2(np.sin(target_heading - theta), 
+                                          np.cos(target_heading - theta))
+                hc_omega = self.kp_heading * heading_error
+                hc_omega = np.clip(hc_omega, -omega_limit, omega_limit)
+                
+                # 混合
+                omega = (1 - blend_factor) * pp_omega + blend_factor * hc_omega
+                omega = np.clip(omega, -omega_limit, omega_limit)
+                
+                # 速度也需要混合：Pure Pursuit 使用 pp_target_v，航向控制使用降低的速度
+                abs_heading_error = abs(heading_error)
+                if abs_heading_error > self.heading_error_thresh:
+                    hc_vx = 0.0
+                else:
+                    heading_factor = np.cos(abs_heading_error)
+                    linear_factor = 1.0 - abs_heading_error / self.heading_error_thresh * 0.5
+                    hc_vx = target_v * heading_factor * linear_factor
+                
+                vx = (1 - blend_factor) * pp_target_v + blend_factor * hc_vx
                 
                 return ControlOutput(vx=vx, vy=0.0, vz=0.0, omega=omega, 
                                     frame_id=self.output_frame, success=True)
@@ -212,7 +262,7 @@ class PurePursuitController(ITrajectoryTracker):
                 # 目标点在车辆前方，使用标准 Pure Pursuit 曲率控制
                 curvature = 2.0 * local_y / L_sq
                 # 限制曲率范围，避免数值爆炸
-                curvature = np.clip(curvature, -MAX_CURVATURE, MAX_CURVATURE)
+                curvature = np.clip(curvature, -self.max_curvature, self.max_curvature)
         else:
             curvature = 0.0
         

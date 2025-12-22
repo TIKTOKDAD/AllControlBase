@@ -10,7 +10,6 @@
 """
 from typing import Dict, Any, Tuple, Optional
 import numpy as np
-import time
 
 from ..core.interfaces import ICoordinateTransformer, IStateEstimator
 from ..core.data_types import Trajectory, Point3D
@@ -19,18 +18,9 @@ from ..core.ros_compat import (
     tf2_ros, tft, ROS_AVAILABLE, TF2_AVAILABLE,
     TF2LookupException, TF2ExtrapolationException, TF2ConnectivityException,
     get_current_time, create_time, create_duration,
-    euler_from_quaternion, quaternion_from_euler
+    euler_from_quaternion, quaternion_from_euler,
+    get_monotonic_time
 )
-
-
-def _get_monotonic_time() -> float:
-    """
-    获取单调时钟时间（秒）
-    
-    使用 time.monotonic() 而非 time.time()，避免系统时间跳变
-    （如 NTP 同步）导致的时间间隔计算错误。
-    """
-    return time.monotonic()
 
 
 class RobustCoordinateTransformer(ICoordinateTransformer):
@@ -54,6 +44,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self.drift_estimation_enabled = transform_config.get('drift_estimation_enabled', True)
         self.recovery_correction_enabled = transform_config.get('recovery_correction_enabled', True)
         self.drift_rate = transform_config.get('drift_rate', 0.01)
+        self.max_drift_dt = transform_config.get('max_drift_dt', 0.5)  # 从配置读取
         self.source_frame = transform_config.get('source_frame', 'base_link')
         
         # 状态变量
@@ -69,6 +60,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self._fallback_start_estimator_position: Optional[np.ndarray] = None
         self._fallback_start_estimator_theta: float = 0.0
         self._last_status = TransformStatus.TF2_OK
+        self._last_fallback_update_time: Optional[float] = None  # 漂移估计时间跟踪
         
         # TF2 Buffer 和 Listener
         self._tf_buffer: Optional[Any] = None
@@ -200,6 +192,9 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
                     self._apply_recovery_correction(position, yaw)
                 self.fallback_start_time = None
                 self.accumulated_drift = 0.0
+                # 重置漂移估计时间跟踪
+                if hasattr(self, '_last_fallback_update_time'):
+                    self._last_fallback_update_time = None
                 print(f"[RobustCoordinateTransformer] TF2 recovered, drift corrected")
             
             self._last_status = TransformStatus.TF2_OK
@@ -250,7 +245,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         - 降级超过 500ms 触发更高级别警告
         - 降级超过 1000ms 触发临界状态 (F3.4)
         """
-        current_time = _get_monotonic_time()
+        current_time = get_monotonic_time()
         
         if self.fallback_start_time is None:
             # 开始降级
@@ -271,12 +266,12 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         # 使用实际时间间隔而非假设的固定频率
         if self.drift_estimation_enabled:
             # 计算自上次更新以来的时间间隔
-            if not hasattr(self, '_last_fallback_update_time'):
+            if self._last_fallback_update_time is None:
                 self._last_fallback_update_time = self.fallback_start_time
             
             dt = current_time - self._last_fallback_update_time
-            # 限制 dt 在合理范围内，避免异常值
-            dt = np.clip(dt, 0.0, 0.5)  # 最大 500ms
+            # 限制 dt 在合理范围内，避免异常值 (使用配置值)
+            dt = np.clip(dt, 0.0, self.max_drift_dt)
             
             self.accumulated_drift += self.drift_rate * dt
             self._last_fallback_update_time = current_time
@@ -425,7 +420,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         """获取变换器状态"""
         fallback_duration_ms = 0.0
         if self.fallback_start_time is not None:
-            fallback_duration_ms = (_get_monotonic_time() - self.fallback_start_time) * 1000
+            fallback_duration_ms = (get_monotonic_time() - self.fallback_start_time) * 1000
         
         return {
             'tf2_available': self.fallback_start_time is None,
@@ -448,5 +443,4 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self._fallback_start_estimator_theta = 0.0
         self._last_status = TransformStatus.TF2_OK
         # 重置漂移估计时间跟踪
-        if hasattr(self, '_last_fallback_update_time'):
-            self._last_fallback_update_time = None
+        self._last_fallback_update_time = None

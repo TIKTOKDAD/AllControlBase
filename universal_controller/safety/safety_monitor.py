@@ -1,22 +1,13 @@
 """安全监控器"""
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from collections import deque
 import numpy as np
-import time
 
 from ..core.interfaces import ISafetyMonitor
 from ..core.data_types import ControlOutput, SafetyDecision
 from ..core.enums import ControllerState, PlatformType
-
-
-def _get_monotonic_time() -> float:
-    """
-    获取单调时钟时间（秒）
-    
-    使用 time.monotonic() 而非 time.time()，避免系统时间跳变
-    （如 NTP 同步）导致的时间间隔计算错误。
-    """
-    return time.monotonic()
+from ..core.diagnostics_input import DiagnosticsInput
+from ..core.ros_compat import get_monotonic_time
 
 
 class BasicSafetyMonitor(ISafetyMonitor):
@@ -38,6 +29,8 @@ class BasicSafetyMonitor(ISafetyMonitor):
         # 加速度滤波参数
         self.accel_filter_window = safety_config.get('accel_filter_window', 3)
         self.accel_filter_alpha = safety_config.get('accel_filter_alpha', 0.3)  # 低通滤波系数
+        self.accel_filter_warmup_alpha = safety_config.get('accel_filter_warmup_alpha', 0.5)  # 预热系数
+        self.max_dt_for_accel = safety_config.get('max_dt_for_accel', 1.0)  # 加速度计算最大时间间隔
         
         self._last_cmd: Optional[ControlOutput] = None
         self._last_time: Optional[float] = None
@@ -54,6 +47,10 @@ class BasicSafetyMonitor(ISafetyMonitor):
         self._filtered_ay: Optional[float] = None
         self._filtered_az: Optional[float] = None
         self._filtered_alpha: Optional[float] = None
+        
+        # 滤波器预热状态（在 __init__ 中初始化，避免动态创建属性）
+        self._filter_warmup_count: int = 0
+        self._filter_warmup_period: int = self.accel_filter_window
     
     def _filter_acceleration(self, raw_ax: float, raw_ay: float, 
                             raw_az: float, raw_alpha: float) -> tuple:
@@ -95,18 +92,25 @@ class BasicSafetyMonitor(ISafetyMonitor):
         # 应用低通滤波（指数移动平均）
         if self._filtered_ax is None:
             # 第一次调用时初始化滤波器
-            # 如果初始值异常大，使用限制值初始化，避免异常值影响
-            INIT_CLAMP_FACTOR = 2.0  # 初始化时的限制因子
-            init_ax = np.clip(avg_ax, -self.a_max * INIT_CLAMP_FACTOR, self.a_max * INIT_CLAMP_FACTOR)
-            init_ay = np.clip(avg_ay, -self.a_max * INIT_CLAMP_FACTOR, self.a_max * INIT_CLAMP_FACTOR)
-            init_az = np.clip(avg_az, -self.az_max * INIT_CLAMP_FACTOR, self.az_max * INIT_CLAMP_FACTOR)
-            init_alpha = np.clip(avg_alpha, -self.alpha_max * INIT_CLAMP_FACTOR, self.alpha_max * INIT_CLAMP_FACTOR)
-            
-            self._filtered_ax = init_ax
-            self._filtered_ay = init_ay
-            self._filtered_az = init_az
-            self._filtered_alpha = init_alpha
+            # 使用零初始化，让滤波器逐渐收敛到真实值
+            # 这样可以避免启动瞬态的影响
+            self._filtered_ax = 0.0
+            self._filtered_ay = 0.0
+            self._filtered_az = 0.0
+            self._filtered_alpha = 0.0
+            # 重置预热计数
+            self._filter_warmup_count = 0
+        
+        # 预热期间使用更大的滤波系数
+        if self._filter_warmup_count < self._filter_warmup_period:
+            # 预热期间使用配置的预热系数加速收敛
+            self._filtered_ax = self.accel_filter_warmup_alpha * avg_ax + (1 - self.accel_filter_warmup_alpha) * self._filtered_ax
+            self._filtered_ay = self.accel_filter_warmup_alpha * avg_ay + (1 - self.accel_filter_warmup_alpha) * self._filtered_ay
+            self._filtered_az = self.accel_filter_warmup_alpha * avg_az + (1 - self.accel_filter_warmup_alpha) * self._filtered_az
+            self._filtered_alpha = self.accel_filter_warmup_alpha * avg_alpha + (1 - self.accel_filter_warmup_alpha) * self._filtered_alpha
+            self._filter_warmup_count += 1
         else:
+            # 正常滤波
             self._filtered_ax = self.accel_filter_alpha * avg_ax + (1 - self.accel_filter_alpha) * self._filtered_ax
             self._filtered_ay = self.accel_filter_alpha * avg_ay + (1 - self.accel_filter_alpha) * self._filtered_ay
             self._filtered_az = self.accel_filter_alpha * avg_az + (1 - self.accel_filter_alpha) * self._filtered_az
@@ -115,8 +119,14 @@ class BasicSafetyMonitor(ISafetyMonitor):
         return self._filtered_ax, self._filtered_ay, self._filtered_az, self._filtered_alpha
     
     def check(self, state: np.ndarray, cmd: ControlOutput, 
-              diagnostics: Dict[str, Any]) -> SafetyDecision:
+              diagnostics: Union[DiagnosticsInput, Dict[str, Any]]) -> SafetyDecision:
         """检查控制命令安全性"""
+        # 支持 DiagnosticsInput 和 Dict 两种输入格式（向后兼容）
+        if isinstance(diagnostics, DiagnosticsInput):
+            diag = diagnostics
+        else:
+            diag = DiagnosticsInput.from_dict(diagnostics)
+        
         reasons = []
         limited_cmd = cmd.copy()
         needs_limiting = False
@@ -144,10 +154,10 @@ class BasicSafetyMonitor(ISafetyMonitor):
             needs_limiting = True
         
         # 检查加速度 (使用单调时钟避免时间跳变)
-        current_time = _get_monotonic_time()
+        current_time = get_monotonic_time()
         if self._last_cmd is not None and self._last_time is not None:
             dt = current_time - self._last_time
-            if dt > 0.001 and dt < 1.0:  # 添加上限检查，避免异常大的 dt
+            if dt > 0.001 and dt < self.max_dt_for_accel:  # 使用配置的最大时间间隔
                 # 计算原始加速度
                 raw_ax = (cmd.vx - self._last_cmd.vx) / dt
                 raw_ay = (cmd.vy - self._last_cmd.vy) / dt
@@ -183,7 +193,7 @@ class BasicSafetyMonitor(ISafetyMonitor):
         
         # 根据当前状态决定建议的新状态
         # 如果已经在 BACKUP_ACTIVE，不建议转换到 MPC_DEGRADED
-        current_state = diagnostics.get('current_state', ControllerState.NORMAL)
+        current_state = diag.current_state
         if reasons:
             if current_state == ControllerState.BACKUP_ACTIVE:
                 # 已经在备用控制器，保持当前状态
@@ -211,3 +221,5 @@ class BasicSafetyMonitor(ISafetyMonitor):
         self._filtered_ay = None
         self._filtered_az = None
         self._filtered_alpha = None
+        # 重置预热状态
+        self._filter_warmup_count = 0
