@@ -284,34 +284,56 @@ class TrajectoryViewPanel(QGroupBox):
             'lookahead_idx': traj.lookahead_idx,
         }
 
-        # 如果没有轨迹数据，使用模拟数据
-        if not trajectory_data['hard_points']:
-            trajectory_data = self._generate_mock_trajectory()
+        # 检查是否有真实轨迹数据
+        has_trajectory = bool(trajectory_data['hard_points'])
+        
+        # 检查是否有真实位置数据 (非零位置)
+        pos = trajectory_data.get('current_position')
+        has_position = pos is not None and (pos[0] != 0 or pos[1] != 0 or pos[2] != 0)
 
         self._update_status_bar(trajectory_data, {
             'alpha_soft': consistency.alpha_soft
-        })
+        }, has_trajectory=has_trajectory, has_position=has_position)
 
-        # 更新历史
-        pos = trajectory_data.get('current_position', (0, 0, 0))
-        if self._last_position is None or \
-           np.hypot(pos[0] - self._last_position[0], pos[1] - self._last_position[1]) > 0.02:
-            self._position_history.append((pos[0], pos[1]))
-            self._last_position = (pos[0], pos[1])
+        # 只有有真实位置数据时才更新历史轨迹
+        if has_position:
+            if self._last_position is None or \
+               np.hypot(pos[0] - self._last_position[0], pos[1] - self._last_position[1]) > 0.02:
+                self._position_history.append((pos[0], pos[1]))
+                self._last_position = (pos[0], pos[1])
 
-        self._draw(trajectory_data)
+        self._draw(trajectory_data, has_trajectory=has_trajectory, has_position=has_position)
 
-    def _update_status_bar(self, traj_data: dict, consistency: dict):
+    def _update_status_bar(self, traj_data: dict, consistency: dict, 
+                           has_trajectory: bool = True, has_position: bool = True):
         pos = traj_data.get('current_position', (0, 0, 0))
         heading = traj_data.get('current_heading', 0)
         hard_points = traj_data.get('hard_points', [])
         nearest_dist = traj_data.get('nearest_distance', None)
 
-        self.pos_label.setText(f'位置: ({pos[0]:.2f}, {pos[1]:.2f})')
-        self.heading_label.setText(f'航向: {np.degrees(heading):.1f}°')
-        self.points_label.setText(f'轨迹: {len(hard_points)} 点')
-        self.nearest_label.setText(f'最近点: {nearest_dist:.2f} m' if nearest_dist else '最近点: -- m')
+        # 位置显示
+        if has_position and pos:
+            self.pos_label.setText(f'位置: ({pos[0]:.2f}, {pos[1]:.2f})')
+            self.pos_label.setStyleSheet('color: #4CAF50;')
+            self.heading_label.setText(f'航向: {np.degrees(heading):.1f}°')
+            self.heading_label.setStyleSheet('color: #2196F3;')
+        else:
+            self.pos_label.setText('位置: 无数据')
+            self.pos_label.setStyleSheet('color: #757575;')
+            self.heading_label.setText('航向: 无数据')
+            self.heading_label.setStyleSheet('color: #757575;')
 
+        # 轨迹显示
+        if has_trajectory:
+            self.points_label.setText(f'轨迹: {len(hard_points)} 点')
+            self.points_label.setStyleSheet('color: #B0B0B0;')
+            self.nearest_label.setText(f'最近点: {nearest_dist:.2f} m' if nearest_dist else '最近点: -- m')
+        else:
+            self.points_label.setText('轨迹: 无数据')
+            self.points_label.setStyleSheet('color: #757575;')
+            self.nearest_label.setText('最近点: 无数据')
+
+        # Soft 状态
         alpha = consistency.get('alpha_soft', 0)
         if alpha > 0.1:
             self.soft_label.setText(f'Soft: ✓ α={alpha:.2f}')
@@ -320,15 +342,15 @@ class TrajectoryViewPanel(QGroupBox):
             self.soft_label.setText(f'Soft: ✗ α={alpha:.2f}')
             self.soft_label.setStyleSheet('color: #FFC107;')
 
-    def _draw(self, traj_data: dict):
+    def _draw(self, traj_data: dict, has_trajectory: bool = True, has_position: bool = True):
         self.ax.clear()
         if self._view_mode == '2D':
-            self._draw_2d(traj_data)
+            self._draw_2d(traj_data, has_trajectory=has_trajectory, has_position=has_position)
         else:
-            self._draw_3d(traj_data)
+            self._draw_3d(traj_data, has_trajectory=has_trajectory, has_position=has_position)
         self.canvas.draw_idle()
 
-    def _draw_2d(self, traj_data: dict):
+    def _draw_2d(self, traj_data: dict, has_trajectory: bool = True, has_position: bool = True):
         hard_points = traj_data.get('hard_points', [])
         soft_velocities = traj_data.get('soft_velocities', [])
         pos = traj_data.get('current_position', (0, 0, 0))
@@ -336,51 +358,6 @@ class TrajectoryViewPanel(QGroupBox):
         vel = traj_data.get('current_velocity', (0, 0))
         nearest_idx = traj_data.get('nearest_idx', 0)
         lookahead_idx = traj_data.get('lookahead_idx', 0)
-
-        # 历史轨迹
-        if self._show_history and len(self._position_history) > 1:
-            hist = list(self._position_history)
-            hx, hy = zip(*hist)
-            self.ax.plot(hx, hy, '-', color='#505050', linewidth=2, alpha=0.6)
-
-        # Hard 轨迹
-        if self._show_hard_traj and hard_points:
-            xs, ys = zip(*[(p[0], p[1]) for p in hard_points])
-            self.ax.plot(xs, ys, 'o-', color='#2196F3', markersize=5, linewidth=2, label='Hard')
-
-            if 0 <= nearest_idx < len(hard_points):
-                self.ax.plot(hard_points[nearest_idx][0], hard_points[nearest_idx][1],
-                           'o', color='#FF9800', markersize=10, zorder=5)
-            if 0 <= lookahead_idx < len(hard_points):
-                self.ax.plot(hard_points[lookahead_idx][0], hard_points[lookahead_idx][1],
-                           'D', color='#9C27B0', markersize=8, zorder=5)
-
-        # Soft 速度向量
-        if self._show_soft_vel and soft_velocities and hard_points:
-            n = min(len(hard_points), len(soft_velocities))
-            scale = 0.4
-            for i in range(0, n, 3):
-                px, py = hard_points[i][0], hard_points[i][1]
-                vx, vy = soft_velocities[i][0], soft_velocities[i][1]
-                if np.hypot(vx, vy) > 0.05:
-                    self.ax.annotate('', xy=(px + vx * scale, py + vy * scale), xytext=(px, py),
-                                    arrowprops=dict(arrowstyle='->', color='#4CAF50', lw=1.5))
-
-        # 当前位置
-        self.ax.plot(pos[0], pos[1], 'o', color='#F44336', markersize=14, zorder=10)
-
-        # 航向箭头
-        arrow_len = self._view_range * 0.12
-        dx, dy = arrow_len * np.cos(heading), arrow_len * np.sin(heading)
-        self.ax.annotate('', xy=(pos[0] + dx, pos[1] + dy), xytext=(pos[0], pos[1]),
-                        arrowprops=dict(arrowstyle='->', color='#F44336', lw=2.5))
-
-        # 速度向量
-        if np.hypot(vel[0], vel[1]) > 0.05:
-            vel_scale = 0.6
-            self.ax.annotate('', xy=(pos[0] + vel[0] * vel_scale, pos[1] + vel[1] * vel_scale),
-                            xytext=(pos[0], pos[1]),
-                            arrowprops=dict(arrowstyle='->', color='#FFEB3B', lw=2))
 
         # 坐标轴样式
         self.ax.set_facecolor('#1A1A1A')
@@ -397,21 +374,81 @@ class TrajectoryViewPanel(QGroupBox):
 
         self.ax.set_aspect('equal', adjustable='box')
 
+        # 如果没有任何数据，显示"无数据"提示
+        if not has_trajectory and not has_position:
+            self.ax.text(0.5, 0.5, '无轨迹数据', transform=self.ax.transAxes,
+                        fontsize=16, color='#757575', ha='center', va='center')
+            self.ax.set_xlim(-5, 5)
+            self.ax.set_ylim(-5, 5)
+            return
+
+        # 历史轨迹 (只有有真实位置数据时才显示)
+        if self._show_history and has_position and len(self._position_history) > 1:
+            hist = list(self._position_history)
+            hx, hy = zip(*hist)
+            self.ax.plot(hx, hy, '-', color='#505050', linewidth=2, alpha=0.6)
+
+        # Hard 轨迹 (只有有真实轨迹数据时才显示)
+        if self._show_hard_traj and has_trajectory and hard_points:
+            xs, ys = zip(*[(p[0], p[1]) for p in hard_points])
+            self.ax.plot(xs, ys, 'o-', color='#2196F3', markersize=5, linewidth=2, label='Hard')
+
+            if 0 <= nearest_idx < len(hard_points):
+                self.ax.plot(hard_points[nearest_idx][0], hard_points[nearest_idx][1],
+                           'o', color='#FF9800', markersize=10, zorder=5)
+            if 0 <= lookahead_idx < len(hard_points):
+                self.ax.plot(hard_points[lookahead_idx][0], hard_points[lookahead_idx][1],
+                           'D', color='#9C27B0', markersize=8, zorder=5)
+
+        # Soft 速度向量 (只有有真实数据时才显示)
+        if self._show_soft_vel and has_trajectory and soft_velocities and hard_points:
+            n = min(len(hard_points), len(soft_velocities))
+            scale = 0.4
+            for i in range(0, n, 3):
+                px, py = hard_points[i][0], hard_points[i][1]
+                vx, vy = soft_velocities[i][0], soft_velocities[i][1]
+                if np.hypot(vx, vy) > 0.05:
+                    self.ax.annotate('', xy=(px + vx * scale, py + vy * scale), xytext=(px, py),
+                                    arrowprops=dict(arrowstyle='->', color='#4CAF50', lw=1.5))
+
+        # 当前位置 (只有有真实位置数据时才显示)
+        if has_position and pos:
+            self.ax.plot(pos[0], pos[1], 'o', color='#F44336', markersize=14, zorder=10)
+
+            # 航向箭头
+            arrow_len = self._view_range * 0.12
+            dx, dy = arrow_len * np.cos(heading), arrow_len * np.sin(heading)
+            self.ax.annotate('', xy=(pos[0] + dx, pos[1] + dy), xytext=(pos[0], pos[1]),
+                            arrowprops=dict(arrowstyle='->', color='#F44336', lw=2.5))
+
+            # 速度向量
+            if vel and np.hypot(vel[0], vel[1]) > 0.05:
+                vel_scale = 0.6
+                self.ax.annotate('', xy=(pos[0] + vel[0] * vel_scale, pos[1] + vel[1] * vel_scale),
+                                xytext=(pos[0], pos[1]),
+                                arrowprops=dict(arrowstyle='->', color='#FFEB3B', lw=2))
+
         # 视图范围
-        if self._follow_robot:
+        if has_position and pos and self._follow_robot:
             r = self._view_range
             self.ax.set_xlim(pos[0] - r, pos[0] + r)
             self.ax.set_ylim(pos[1] - r, pos[1] + r)
+        elif has_trajectory and hard_points:
+            # 如果只有轨迹没有位置，以轨迹中心为视图中心
+            xs = [p[0] for p in hard_points]
+            ys = [p[1] for p in hard_points]
+            cx, cy = np.mean(xs), np.mean(ys)
+            r = self._view_range
+            self.ax.set_xlim(cx - r, cx + r)
+            self.ax.set_ylim(cy - r, cy + r)
+        else:
+            # 默认视图
+            self.ax.set_xlim(-self._view_range, self._view_range)
+            self.ax.set_ylim(-self._view_range, self._view_range)
 
-    def _draw_3d(self, traj_data: dict):
+    def _draw_3d(self, traj_data: dict, has_trajectory: bool = True, has_position: bool = True):
         hard_points = traj_data.get('hard_points', [])
         pos = traj_data.get('current_position', (0, 0, 0))
-
-        if self._show_hard_traj and hard_points:
-            xs, ys, zs = zip(*hard_points)
-            self.ax.plot(xs, ys, zs, 'o-', color='#2196F3', markersize=4, linewidth=1.5)
-
-        self.ax.scatter([pos[0]], [pos[1]], [pos[2]], c='#F44336', s=120, marker='o')
 
         self.ax.set_facecolor('#1A1A1A')
         self.ax.set_xlabel('X (m)', color='#909090')
@@ -419,46 +456,43 @@ class TrajectoryViewPanel(QGroupBox):
         self.ax.set_zlabel('Z (m)', color='#909090')
         self.ax.tick_params(colors='#808080', labelsize=8)
 
-        if self._follow_robot:
+        # 如果没有任何数据，显示提示
+        if not has_trajectory and not has_position:
+            self.ax.text2D(0.5, 0.5, '无轨迹数据', transform=self.ax.transAxes,
+                          fontsize=16, color='#757575', ha='center', va='center')
+            r = self._view_range
+            self.ax.set_xlim(-r, r)
+            self.ax.set_ylim(-r, r)
+            self.ax.set_zlim(0, r)
+            return
+
+        # Hard 轨迹
+        if self._show_hard_traj and has_trajectory and hard_points:
+            xs, ys, zs = zip(*hard_points)
+            self.ax.plot(xs, ys, zs, 'o-', color='#2196F3', markersize=4, linewidth=1.5)
+
+        # 当前位置
+        if has_position and pos:
+            self.ax.scatter([pos[0]], [pos[1]], [pos[2]], c='#F44336', s=120, marker='o')
+
+        # 视图范围
+        if has_position and pos and self._follow_robot:
             r = self._view_range
             self.ax.set_xlim(pos[0] - r, pos[0] + r)
             self.ax.set_ylim(pos[1] - r, pos[1] + r)
             self.ax.set_zlim(max(0, pos[2] - r / 2), pos[2] + r / 2)
+        elif has_trajectory and hard_points:
+            xs = [p[0] for p in hard_points]
+            ys = [p[1] for p in hard_points]
+            zs = [p[2] for p in hard_points]
+            cx, cy, cz = np.mean(xs), np.mean(ys), np.mean(zs)
+            r = self._view_range
+            self.ax.set_xlim(cx - r, cx + r)
+            self.ax.set_ylim(cy - r, cy + r)
+            self.ax.set_zlim(max(0, cz - r / 2), cz + r / 2)
+        else:
+            r = self._view_range
+            self.ax.set_xlim(-r, r)
+            self.ax.set_ylim(-r, r)
+            self.ax.set_zlim(0, r)
 
-    def _generate_mock_trajectory(self) -> dict:
-        import time
-        t = time.time()
-
-        radius, omega = 3.0, 0.2
-        cx = radius * np.cos(omega * t)
-        cy = radius * np.sin(omega * t)
-        heading = omega * t + np.pi / 2
-
-        n_points, dt = 20, 0.1
-        hard_points, soft_velocities = [], []
-
-        for i in range(n_points):
-            future_t = t + i * dt
-            px = radius * np.cos(omega * future_t)
-            py = radius * np.sin(omega * future_t)
-            hard_points.append((px, py, 0.0))
-            vx = -radius * omega * np.sin(omega * future_t)
-            vy = radius * omega * np.cos(omega * future_t)
-            soft_velocities.append((vx, vy, 0.0, omega))
-
-        nearest_idx, min_dist = 0, float('inf')
-        for i, p in enumerate(hard_points):
-            dist = np.hypot(p[0] - cx, p[1] - cy)
-            if dist < min_dist:
-                min_dist, nearest_idx = dist, i
-
-        return {
-            'hard_points': hard_points,
-            'soft_velocities': soft_velocities,
-            'current_position': (cx, cy, 0.0),
-            'current_heading': heading,
-            'current_velocity': (soft_velocities[0][0], soft_velocities[0][1]) if soft_velocities else (0, 0),
-            'nearest_idx': nearest_idx,
-            'nearest_distance': min_dist,
-            'lookahead_idx': min(nearest_idx + 5, n_points - 1),
-        }
