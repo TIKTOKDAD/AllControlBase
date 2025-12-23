@@ -269,9 +269,6 @@ print_header "步骤 5: 编译 controller_ros"
 if [ ! -d "$CATKIN_WS/src" ]; then
     print_info "创建 catkin 工作空间: $CATKIN_WS"
     mkdir -p "$CATKIN_WS/src"
-    cd "$CATKIN_WS"
-    source /opt/ros/noetic/setup.bash
-    catkin_make
 fi
 
 # 链接 controller_ros
@@ -283,8 +280,14 @@ fi
 ln -s "$ALLCONTROLBASE_PATH/controller_ros" controller_ros
 print_success "创建符号链接: controller_ros -> $ALLCONTROLBASE_PATH/controller_ros ✓"
 
-# 编译
+# 清理旧的编译缓存 (避免 CMake 缓存问题)
 cd "$CATKIN_WS"
+if [ -d "build" ] || [ -d "devel" ]; then
+    print_info "清理旧的编译缓存..."
+    rm -rf build devel
+fi
+
+# 编译
 source /opt/ros/noetic/setup.bash
 print_info "编译 catkin 工作空间..."
 catkin_make
