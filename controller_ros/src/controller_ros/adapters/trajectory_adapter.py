@@ -5,6 +5,7 @@ ROS 消息: controller_ros/LocalTrajectoryV4
 UC 数据类型: universal_controller.core.data_types.Trajectory
 """
 from typing import Any
+import logging
 import numpy as np
 
 from universal_controller.core.data_types import (
@@ -12,6 +13,8 @@ from universal_controller.core.data_types import (
 )
 from universal_controller.core.enums import TrajectoryMode
 from .base import IMsgConverter
+
+logger = logging.getLogger(__name__)
 
 
 class TrajectoryAdapter(IMsgConverter):
@@ -28,12 +31,46 @@ class TrajectoryAdapter(IMsgConverter):
             Point3D(x=p.x, y=p.y, z=p.z)
             for p in ros_msg.points
         ]
+        num_points = len(points)
         
         # 转换速度数组
         velocities = None
-        if ros_msg.soft_enabled and len(ros_msg.velocities_flat) > 0:
+        soft_enabled = ros_msg.soft_enabled
+        if soft_enabled and len(ros_msg.velocities_flat) > 0:
             # 从扁平数组重建 [N, 4] 数组
-            velocities = np.array(ros_msg.velocities_flat).reshape(-1, 4)
+            flat_len = len(ros_msg.velocities_flat)
+            
+            # 检查长度是否为 4 的倍数
+            if flat_len % 4 != 0:
+                logger.warning(
+                    f"velocities_flat length {flat_len} is not a multiple of 4, truncating"
+                )
+                flat_len = (flat_len // 4) * 4
+            
+            if flat_len > 0:
+                velocities = np.array(ros_msg.velocities_flat[:flat_len]).reshape(-1, 4)
+                num_vel_points = velocities.shape[0]
+                
+                # 检查速度点数与位置点数是否匹配
+                if num_vel_points != num_points:
+                    logger.warning(
+                        f"Velocity points ({num_vel_points}) != position points ({num_points}), "
+                        f"adjusting velocities"
+                    )
+                    if num_vel_points > num_points:
+                        # 速度点多于位置点，截断
+                        velocities = velocities[:num_points]
+                    else:
+                        # 速度点少于位置点，用零填充
+                        padding = np.zeros((num_points - num_vel_points, 4))
+                        velocities = np.vstack([velocities, padding])
+            else:
+                # 无有效速度数据，禁用 soft 模式
+                soft_enabled = False
+        elif soft_enabled:
+            # soft_enabled=True 但没有速度数据，禁用 soft 模式
+            logger.debug("soft_enabled=True but no velocity data, disabling soft mode")
+            soft_enabled = False
         
         # 转换轨迹模式
         try:
@@ -51,7 +88,7 @@ class TrajectoryAdapter(IMsgConverter):
             dt_sec=ros_msg.dt_sec,
             confidence=ros_msg.confidence,
             mode=mode,
-            soft_enabled=ros_msg.soft_enabled
+            soft_enabled=soft_enabled
         )
     
     def to_ros(self, uc_data: UcTrajectory) -> Any:

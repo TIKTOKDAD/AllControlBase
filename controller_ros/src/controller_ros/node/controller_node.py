@@ -1,7 +1,8 @@
 """
-控制器 ROS 节点
+控制器 ROS2 节点
 
 主节点实现，组装所有组件，管理控制循环。
+支持 TF2 坐标变换集成。
 """
 import rclpy
 from rclpy.node import Node
@@ -15,14 +16,14 @@ from ..utils import ParamLoader, TimeSync
 
 class ControllerNode(Node):
     """
-    控制器主节点
+    控制器主节点 (ROS2)
     
     职责:
     - 初始化 ROS 节点
     - 加载配置参数
     - 组装各层组件
     - 管理控制循环
-    - 处理生命周期
+    - TF2 坐标变换集成
     
     输出:
     - /cmd_unified (UnifiedCmd)
@@ -52,35 +53,39 @@ class ControllerNode(Node):
         # 5. 创建控制器桥接
         self._controller_bridge = ControllerBridge(self._params)
         
-        # 6. 创建订阅管理器
+        # 6. 注入 TF2 到坐标变换器
+        self._inject_tf2()
+        
+        # 7. 创建订阅管理器
         self._subscribers = SubscriberManager(
             self, self._topics, self._sensor_cb_group
         )
         
-        # 7. 创建发布管理器
+        # 8. 创建发布管理器
         self._publishers = PublisherManager(
             self, self._topics, default_frame_id
         )
         
-        # 8. 创建服务管理器
+        # 9. 创建服务管理器
         self._services = ServiceManager(
             self,
             reset_callback=self._handle_reset,
             get_diagnostics_callback=self._handle_get_diagnostics
         )
         
-        # 9. 创建时间同步
-        time_sync_config = self._params.get('time_sync', {})
+        # 10. 创建时间同步
+        # 注意: _merge_params 将 time_sync 合并到 watchdog，所以从 watchdog 读取
+        watchdog_config = self._params.get('watchdog', {})
         self._time_sync = TimeSync(
-            max_odom_age_ms=time_sync_config.get('max_odom_age_ms', 100),
-            max_traj_age_ms=time_sync_config.get('max_traj_age_ms', 200),
-            max_imu_age_ms=time_sync_config.get('max_imu_age_ms', 50)
+            max_odom_age_ms=watchdog_config.get('odom_timeout_ms', 100),
+            max_traj_age_ms=watchdog_config.get('traj_timeout_ms', 200),
+            max_imu_age_ms=watchdog_config.get('imu_timeout_ms', 50)
         )
         
-        # 10. 设置诊断回调
+        # 11. 设置诊断回调
         self._controller_bridge.set_diagnostics_callback(self._on_diagnostics)
         
-        # 11. 创建控制定时器
+        # 12. 创建控制定时器
         control_rate = self._params.get('node', {}).get('control_rate', 50.0)
         control_period = 1.0 / control_rate
         self._control_timer = self.create_timer(
@@ -93,8 +98,26 @@ class ControllerNode(Node):
         self._waiting_for_data_logged = False
         
         self.get_logger().info(
-            f'Controller node initialized (platform={platform_type}, rate={control_rate}Hz)'
+            f'Controller node initialized (platform={platform_type}, '
+            f'rate={control_rate}Hz, tf2={self._tf_bridge.is_initialized})'
         )
+    
+    def _inject_tf2(self):
+        """将 TF2 注入到坐标变换器"""
+        if not self._tf_bridge.is_initialized:
+            self.get_logger().info("TF2 not available, using fallback coordinate transform")
+            return
+        
+        # 获取 universal_controller 的坐标变换器
+        manager = self._controller_bridge.manager
+        if manager is not None and hasattr(manager, 'coord_transformer') and manager.coord_transformer is not None:
+            success = self._tf_bridge.inject_to_transformer(manager.coord_transformer)
+            if success:
+                self.get_logger().info("TF2 successfully injected to coordinate transformer")
+            else:
+                self.get_logger().warn("Failed to inject TF2 to coordinate transformer")
+        else:
+            self.get_logger().info("ControllerManager has no coord_transformer, TF2 injection skipped")
     
     def _control_callback(self):
         """控制循环回调"""
@@ -119,8 +142,9 @@ class ControllerNode(Node):
         timeouts = self._time_sync.check_freshness(ages)
         
         if timeouts.get('odom_timeout', False):
-            self.get_logger().warn_throttle(
-                1.0, f"Odom timeout: age={ages.get('odom', 0)*1000:.1f}ms"
+            self.get_logger().warn(
+                f"Odom timeout: age={ages.get('odom', 0)*1000:.1f}ms",
+                throttle_duration_sec=1.0
             )
         
         # 4. 执行控制更新
@@ -129,6 +153,20 @@ class ControllerNode(Node):
         except Exception as e:
             self.get_logger().error(f'Controller update failed: {e}')
             self._publishers.publish_stop_cmd()
+            # 发布错误诊断信息
+            error_diag = {
+                'state': 0,  # INIT/ERROR state
+                'mpc_success': False,
+                'backup_active': False,
+                'error_message': str(e),
+                'timeout': {
+                    'odom_timeout': timeouts.get('odom_timeout', False),
+                    'traj_timeout': timeouts.get('trajectory_timeout', False),
+                    'imu_timeout': timeouts.get('imu_timeout', False),
+                },
+                'cmd': {'vx': 0.0, 'vy': 0.0, 'vz': 0.0, 'omega': 0.0},
+            }
+            self._publishers.publish_diagnostics(error_diag, force=True)
             return
         
         # 5. 发布控制命令
@@ -144,6 +182,7 @@ class ControllerNode(Node):
     def _handle_reset(self):
         """处理重置请求"""
         self._controller_bridge.reset()
+        self._waiting_for_data_logged = False
         self.get_logger().info('Controller reset')
     
     def _handle_get_diagnostics(self):

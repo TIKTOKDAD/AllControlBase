@@ -2,9 +2,14 @@
 TF2 桥接层
 
 管理 TF2 Buffer 和 Listener，提供坐标变换查询。
+支持 ROS1 和 ROS2。
 """
 from typing import Optional
 import logging
+
+from ..utils.ros_compat import (
+    ROS_VERSION, TF2_AVAILABLE, TF2Compat
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,39 +22,19 @@ class TFBridge:
     - 管理 TF2 Buffer 和 Listener
     - 提供坐标变换查询
     - 将变换注入到 universal_controller
+    
+    支持 ROS1 和 ROS2。
     """
     
-    def __init__(self, node):
+    def __init__(self, node=None):
         """
         初始化 TF 桥接
         
         Args:
-            node: ROS2 节点实例
+            node: ROS2 节点实例 (ROS1 不需要)
         """
         self._node = node
-        self._buffer = None
-        self._listener = None
-        self._initialized = False
-        
-        self._initialize()
-    
-    def _initialize(self):
-        """初始化 TF2"""
-        try:
-            import tf2_ros
-            from tf2_ros.buffer import Buffer
-            from tf2_ros.transform_listener import TransformListener
-            
-            self._buffer = Buffer()
-            self._listener = TransformListener(self._buffer, self._node)
-            self._initialized = True
-            logger.info("TF2 bridge initialized")
-        except ImportError as e:
-            logger.warning(f"TF2 not available: {e}")
-            self._initialized = False
-        except Exception as e:
-            logger.error(f"TF2 initialization failed: {e}")
-            self._initialized = False
+        self._tf2_compat = TF2Compat(node)
     
     def lookup_transform(self, target_frame: str, source_frame: str,
                         time=None, timeout_sec: float = 0.01) -> Optional[dict]:
@@ -65,71 +50,50 @@ class TFBridge:
         Returns:
             变换字典 {'translation': (x, y, z), 'rotation': (x, y, z, w)} 或 None
         """
-        if not self._initialized or self._buffer is None:
-            return None
-        
-        try:
-            import tf2_ros
-            from rclpy.time import Time
-            from rclpy.duration import Duration
-            
-            if time is None:
-                time = Time()
-            
-            transform = self._buffer.lookup_transform(
-                target_frame, source_frame, time,
-                timeout=Duration(seconds=timeout_sec)
-            )
-            
-            return {
-                'translation': (
-                    transform.transform.translation.x,
-                    transform.transform.translation.y,
-                    transform.transform.translation.z
-                ),
-                'rotation': (
-                    transform.transform.rotation.x,
-                    transform.transform.rotation.y,
-                    transform.transform.rotation.z,
-                    transform.transform.rotation.w
-                )
-            }
-        except tf2_ros.LookupException:
-            logger.debug(f"TF lookup failed: {source_frame} -> {target_frame}")
-            return None
-        except tf2_ros.ExtrapolationException:
-            logger.debug(f"TF extrapolation failed: {source_frame} -> {target_frame}")
-            return None
-        except Exception as e:
-            logger.warning(f"TF lookup error: {e}")
-            return None
+        return self._tf2_compat.lookup_transform(
+            target_frame, source_frame, time, timeout_sec
+        )
     
     def can_transform(self, target_frame: str, source_frame: str,
                      time=None, timeout_sec: float = 0.01) -> bool:
         """检查是否可以进行坐标变换"""
-        if not self._initialized or self._buffer is None:
+        return self._tf2_compat.can_transform(
+            target_frame, source_frame, time, timeout_sec
+        )
+    
+    def inject_to_transformer(self, coord_transformer) -> bool:
+        """
+        将 TF2 变换注入到 universal_controller 的坐标变换器
+        
+        Args:
+            coord_transformer: RobustCoordinateTransformer 实例
+        
+        Returns:
+            是否成功注入
+        """
+        if not self.is_initialized:
+            logger.warning("TF2 not initialized, cannot inject to transformer")
             return False
         
-        try:
-            from rclpy.time import Time
-            from rclpy.duration import Duration
-            
-            if time is None:
-                time = Time()
-            
-            return self._buffer.can_transform(
-                target_frame, source_frame, time,
-                timeout=Duration(seconds=timeout_sec)
-            )
-        except Exception:
+        if coord_transformer is None:
+            logger.warning("Coordinate transformer is None")
+            return False
+        
+        # 检查 coord_transformer 是否支持 TF2 注入
+        if hasattr(coord_transformer, 'set_tf2_lookup_callback'):
+            coord_transformer.set_tf2_lookup_callback(self.lookup_transform)
+            logger.info("TF2 lookup callback injected to coordinate transformer")
+            return True
+        else:
+            logger.warning("Coordinate transformer does not support TF2 injection")
             return False
     
     @property
     def is_initialized(self) -> bool:
         """TF2 是否已初始化"""
-        return self._initialized
+        return self._tf2_compat.is_initialized
     
     @property
     def buffer(self):
         """获取 TF2 Buffer (用于高级操作)"""
-        return self._buffer
+        return self._tf2_compat.buffer

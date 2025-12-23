@@ -80,8 +80,54 @@ class ServiceManager:
             if self._get_diagnostics_callback:
                 diag = self._get_diagnostics_callback()
                 if diag:
-                    # 填充诊断消息
                     response.success = True
+                    # 填充诊断数据到 response.diagnostics
+                    # response.diagnostics 是 DiagnosticsV2 类型
+                    d = response.diagnostics
+                    d.header.stamp = self._node.get_clock().now().to_msg()
+                    d.header.frame_id = 'controller'
+                    
+                    d.state = diag.get('state', 0)
+                    d.mpc_success = diag.get('mpc_success', False)
+                    d.mpc_solve_time_ms = float(diag.get('mpc_solve_time_ms', 0.0))
+                    d.backup_active = diag.get('backup_active', False)
+                    
+                    # MPC 健康状态
+                    mpc_health = diag.get('mpc_health', {})
+                    d.mpc_health_kkt_residual = float(mpc_health.get('kkt_residual', 0.0))
+                    d.mpc_health_condition_number = float(mpc_health.get('condition_number', 1.0))
+                    d.mpc_health_consecutive_near_timeout = int(mpc_health.get('consecutive_near_timeout', 0))
+                    d.mpc_health_degradation_warning = mpc_health.get('degradation_warning', False)
+                    d.mpc_health_can_recover = mpc_health.get('can_recover', True)
+                    
+                    # 一致性指标
+                    consistency = diag.get('consistency', {})
+                    d.consistency_curvature = float(consistency.get('curvature', 0.0))
+                    d.consistency_velocity_dir = float(consistency.get('velocity_dir', 1.0))
+                    d.consistency_temporal = float(consistency.get('temporal', 1.0))
+                    d.consistency_alpha_soft = float(consistency.get('alpha_soft', 0.0))
+                    d.consistency_data_valid = consistency.get('data_valid', True)
+                    
+                    # 超时状态
+                    timeout = diag.get('timeout', {})
+                    d.timeout_odom = timeout.get('odom_timeout', False)
+                    d.timeout_traj = timeout.get('traj_timeout', False)
+                    d.timeout_traj_grace_exceeded = timeout.get('traj_grace_exceeded', False)
+                    d.timeout_imu = timeout.get('imu_timeout', False)
+                    d.timeout_last_odom_age_ms = float(timeout.get('last_odom_age_ms', 0.0))
+                    d.timeout_last_traj_age_ms = float(timeout.get('last_traj_age_ms', 0.0))
+                    d.timeout_last_imu_age_ms = float(timeout.get('last_imu_age_ms', 0.0))
+                    d.timeout_in_startup_grace = timeout.get('in_startup_grace', False)
+                    
+                    # 控制命令
+                    cmd = diag.get('cmd', {})
+                    d.cmd_vx = float(cmd.get('vx', 0.0))
+                    d.cmd_vy = float(cmd.get('vy', 0.0))
+                    d.cmd_vz = float(cmd.get('vz', 0.0))
+                    d.cmd_omega = float(cmd.get('omega', 0.0))
+                    d.cmd_frame_id = cmd.get('frame_id', '')
+                    
+                    d.transition_progress = float(diag.get('transition_progress', 0.0))
                 else:
                     response.success = False
             else:

@@ -16,6 +16,18 @@ from universal_controller.core.data_types import Odometry, Imu, Trajectory
 from ..adapters import OdomAdapter, ImuAdapter, TrajectoryAdapter
 
 
+def _get_clock_time_sec(node: Node) -> float:
+    """
+    获取节点时钟时间（秒）
+    
+    使用节点时钟而非系统时间，以支持仿真时间模式。
+    """
+    try:
+        return node.get_clock().now().nanoseconds * 1e-9
+    except Exception:
+        return time.time()
+
+
 class SubscriberManager:
     """
     订阅管理器
@@ -101,21 +113,21 @@ class SubscriberManager:
         uc_odom = self._odom_adapter.to_uc(msg)
         with self._lock:
             self._latest_data['odom'] = uc_odom
-            self._timestamps['odom'] = time.time()
+            self._timestamps['odom'] = _get_clock_time_sec(self._node)
     
     def _imu_callback(self, msg: RosImu):
         """IMU 回调"""
         uc_imu = self._imu_adapter.to_uc(msg)
         with self._lock:
             self._latest_data['imu'] = uc_imu
-            self._timestamps['imu'] = time.time()
+            self._timestamps['imu'] = _get_clock_time_sec(self._node)
     
     def _traj_callback(self, msg):
         """轨迹回调"""
         uc_traj = self._traj_adapter.to_uc(msg)
         with self._lock:
             self._latest_data['trajectory'] = uc_traj
-            self._timestamps['trajectory'] = time.time()
+            self._timestamps['trajectory'] = _get_clock_time_sec(self._node)
     
     def get_latest_odom(self) -> Optional[Odometry]:
         """获取最新里程计"""
@@ -136,12 +148,21 @@ class SubscriberManager:
         """
         获取各数据的年龄 (秒)
         
+        使用节点时钟计算，以支持仿真时间模式。
+        
         Returns:
-            字典，键为数据名，值为距上次更新的秒数
+            字典，键为数据名 ('odom', 'imu', 'trajectory')，
+            值为距上次更新的秒数。未收到的数据返回 float('inf')。
         """
-        now = time.time()
+        now = _get_clock_time_sec(self._node)
         with self._lock:
-            return {k: now - v for k, v in self._timestamps.items()}
+            ages = {}
+            for key in ['odom', 'imu', 'trajectory']:
+                if key in self._timestamps:
+                    ages[key] = now - self._timestamps[key]
+                else:
+                    ages[key] = float('inf')
+            return ages
     
     def is_data_fresh(self, max_ages: Dict[str, float]) -> bool:
         """

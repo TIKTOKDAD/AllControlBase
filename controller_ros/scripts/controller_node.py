@@ -4,10 +4,10 @@
 控制器 ROS1 节点
 
 主节点实现，组装所有组件，管理控制循环。
+支持 TF2 坐标变换集成。
 """
 import rospy
 import threading
-import time
 from typing import Dict, Any, Optional
 
 from nav_msgs.msg import Odometry as RosOdometry
@@ -28,6 +28,119 @@ from universal_controller.core.enums import TrajectoryMode
 
 import numpy as np
 
+# TF2 支持 (可选)
+TF2_AVAILABLE = False
+try:
+    import tf2_ros
+    TF2_AVAILABLE = True
+except ImportError:
+    rospy.logwarn("tf2_ros not available, TF2 integration disabled")
+
+
+def _get_ros_time_sec() -> float:
+    """
+    获取当前 ROS 时间（秒）
+    
+    支持仿真时间模式 (use_sim_time=true)
+    """
+    try:
+        return rospy.Time.now().to_sec()
+    except rospy.exceptions.ROSInitException:
+        # ROS 未初始化时回退到系统时间
+        import time
+        return time.time()
+
+
+class TF2Bridge:
+    """TF2 桥接层 (ROS1 版本)"""
+    
+    def __init__(self):
+        self._buffer = None
+        self._listener = None
+        self._initialized = False
+        
+        if TF2_AVAILABLE:
+            try:
+                self._buffer = tf2_ros.Buffer()
+                self._listener = tf2_ros.TransformListener(self._buffer)
+                self._initialized = True
+                rospy.loginfo("TF2 bridge initialized")
+            except Exception as e:
+                rospy.logwarn(f"TF2 initialization failed: {e}")
+    
+    def lookup_transform(self, target_frame: str, source_frame: str,
+                        time=None, timeout_sec: float = 0.01) -> Optional[Dict]:
+        """查询坐标变换"""
+        if not self._initialized or self._buffer is None:
+            return None
+        
+        try:
+            if time is None:
+                time = rospy.Time(0)
+            
+            transform = self._buffer.lookup_transform(
+                target_frame, source_frame, time,
+                timeout=rospy.Duration(timeout_sec)
+            )
+            
+            return {
+                'translation': (
+                    transform.transform.translation.x,
+                    transform.transform.translation.y,
+                    transform.transform.translation.z
+                ),
+                'rotation': (
+                    transform.transform.rotation.x,
+                    transform.transform.rotation.y,
+                    transform.transform.rotation.z,
+                    transform.transform.rotation.w
+                )
+            }
+        except (tf2_ros.LookupException, tf2_ros.ExtrapolationException,
+                tf2_ros.ConnectivityException) as e:
+            rospy.logdebug(f"TF lookup failed: {source_frame} -> {target_frame}: {e}")
+            return None
+        except Exception as e:
+            rospy.logwarn(f"TF lookup error: {e}")
+            return None
+    
+    def can_transform(self, target_frame: str, source_frame: str,
+                     time=None, timeout_sec: float = 0.01) -> bool:
+        """检查是否可以进行坐标变换"""
+        if not self._initialized or self._buffer is None:
+            return False
+        
+        try:
+            if time is None:
+                time = rospy.Time(0)
+            return self._buffer.can_transform(
+                target_frame, source_frame, time,
+                timeout=rospy.Duration(timeout_sec)
+            )
+        except Exception:
+            return False
+    
+    def inject_to_transformer(self, coord_transformer) -> bool:
+        """将 TF2 变换注入到 universal_controller 的坐标变换器"""
+        if not self._initialized:
+            rospy.logwarn("TF2 not initialized, cannot inject to transformer")
+            return False
+        
+        if coord_transformer is None:
+            return False
+        
+        if hasattr(coord_transformer, 'set_tf2_lookup_callback'):
+            coord_transformer.set_tf2_lookup_callback(self.lookup_transform)
+            rospy.loginfo("TF2 lookup callback injected to coordinate transformer")
+            return True
+        else:
+            rospy.logwarn("Coordinate transformer does not support TF2 injection")
+            return False
+    
+    @property
+    def is_initialized(self) -> bool:
+        return self._initialized
+
 
 class ControllerNode:
     """
@@ -37,6 +150,7 @@ class ControllerNode:
     - 初始化 ROS 节点
     - 加载配置参数
     - 管理控制循环
+    - TF2 坐标变换集成
     
     输出:
     - /cmd_unified (UnifiedCmd)
@@ -49,33 +163,40 @@ class ControllerNode:
         # 1. 加载参数
         self._load_parameters()
         
-        # 2. 初始化控制器
+        # 2. 初始化 TF2 桥接
+        self._tf_bridge = TF2Bridge()
+        
+        # 3. 初始化控制器
         self._init_controller()
         
-        # 3. 创建订阅器
+        # 4. 注入 TF2 到坐标变换器
+        self._inject_tf2()
+        
+        # 5. 创建订阅器
         self._create_subscribers()
         
-        # 4. 创建发布器
+        # 6. 创建发布器
         self._create_publishers()
         
-        # 5. 创建服务
+        # 7. 创建服务
         self._create_services()
         
-        # 6. 数据缓存 (线程安全)
+        # 8. 数据缓存 (线程安全)
         self._lock = threading.Lock()
         self._latest_odom: Optional[UcOdometry] = None
         self._latest_imu: Optional[UcImu] = None
         self._latest_traj: Optional[UcTrajectory] = None
         self._data_timestamps: Dict[str, float] = {}
         
-        # 7. 状态
+        # 9. 状态
         self._waiting_for_data = True
         
-        # 8. 创建控制定时器
+        # 10. 创建控制定时器
         control_period = 1.0 / self._control_rate
         self._timer = rospy.Timer(rospy.Duration(control_period), self._control_callback)
         
-        rospy.loginfo(f"Controller node initialized (platform={self._platform_type}, rate={self._control_rate}Hz)")
+        rospy.loginfo(f"Controller node initialized (platform={self._platform_type}, "
+                     f"rate={self._control_rate}Hz, tf2={self._tf_bridge.is_initialized})")
     
     def _load_parameters(self):
         """加载 ROS 参数"""
@@ -114,6 +235,11 @@ class ControllerNode:
         self._config['system']['platform'] = self._platform_type
         self._config['system']['ctrl_freq'] = int(self._control_rate)
         
+        # TF 配置传递给 universal_controller
+        self._config['transform'] = self._config.get('transform', {}).copy()
+        self._config['transform']['source_frame'] = self._tf_source_frame
+        self._config['transform']['target_frame'] = self._tf_target_frame
+        
         # 加载额外的控制器参数
         controller_params = rospy.get_param('controller', {})
         for key, value in controller_params.items():
@@ -137,6 +263,22 @@ class ControllerNode:
         self._manager.set_diagnostics_callback(self._on_diagnostics)
         
         rospy.loginfo("ControllerManager initialized")
+    
+    def _inject_tf2(self):
+        """将 TF2 注入到坐标变换器"""
+        if not self._tf_bridge.is_initialized:
+            rospy.loginfo("TF2 not available, using fallback coordinate transform")
+            return
+        
+        # 获取 universal_controller 的坐标变换器
+        if hasattr(self._manager, 'coord_transformer') and self._manager.coord_transformer is not None:
+            success = self._tf_bridge.inject_to_transformer(self._manager.coord_transformer)
+            if success:
+                rospy.loginfo("TF2 successfully injected to coordinate transformer")
+            else:
+                rospy.logwarn("Failed to inject TF2 to coordinate transformer")
+        else:
+            rospy.loginfo("ControllerManager has no coord_transformer, TF2 injection skipped")
     
     def _create_subscribers(self):
         """创建订阅器"""
@@ -228,7 +370,7 @@ class ControllerNode:
         
         with self._lock:
             self._latest_odom = uc_odom
-            self._data_timestamps['odom'] = time.time()
+            self._data_timestamps['odom'] = _get_ros_time_sec()
     
     def _imu_callback(self, msg: RosImu):
         """IMU 回调"""
@@ -257,7 +399,7 @@ class ControllerNode:
         
         with self._lock:
             self._latest_imu = uc_imu
-            self._data_timestamps['imu'] = time.time()
+            self._data_timestamps['imu'] = _get_ros_time_sec()
     
     def _traj_callback(self, msg: LocalTrajectoryV4):
         """轨迹回调"""
@@ -269,8 +411,21 @@ class ControllerNode:
         
         # 转换速度数组
         velocities = None
-        if msg.soft_enabled and len(msg.velocities_flat) > 0:
-            velocities = np.array(msg.velocities_flat).reshape(-1, 4)
+        soft_enabled = msg.soft_enabled
+        if soft_enabled and len(msg.velocities_flat) > 0:
+            flat_len = len(msg.velocities_flat)
+            if flat_len % 4 != 0:
+                rospy.logwarn_throttle(5.0,
+                    f"velocities_flat length {flat_len} is not a multiple of 4, truncating")
+                flat_len = (flat_len // 4) * 4
+            if flat_len > 0:
+                velocities = np.array(msg.velocities_flat[:flat_len]).reshape(-1, 4)
+            else:
+                # 无有效速度数据，禁用 soft 模式
+                soft_enabled = False
+        elif soft_enabled:
+            # soft_enabled=True 但没有速度数据，禁用 soft 模式
+            soft_enabled = False
         
         # 转换轨迹模式
         try:
@@ -288,20 +443,24 @@ class ControllerNode:
             dt_sec=msg.dt_sec,
             confidence=msg.confidence,
             mode=mode,
-            soft_enabled=msg.soft_enabled
+            soft_enabled=soft_enabled
         )
         
         with self._lock:
             self._latest_traj = uc_traj
-            self._data_timestamps['trajectory'] = time.time()
+            self._data_timestamps['trajectory'] = _get_ros_time_sec()
     
     def _control_callback(self, event):
         """控制循环回调"""
         # 1. 获取最新数据
+        now = _get_ros_time_sec()
         with self._lock:
             odom = self._latest_odom
             imu = self._latest_imu
             trajectory = self._latest_traj
+            odom_age = now - self._data_timestamps.get('odom', 0) if 'odom' in self._data_timestamps else float('inf')
+            traj_age = now - self._data_timestamps.get('trajectory', 0) if 'trajectory' in self._data_timestamps else float('inf')
+            imu_age = now - self._data_timestamps.get('imu', 0) if 'imu' in self._data_timestamps else float('inf')
         
         # 2. 检查数据有效性
         if odom is None or trajectory is None:
@@ -314,11 +473,6 @@ class ControllerNode:
             self._waiting_for_data = False
         
         # 3. 检查数据新鲜度
-        now = time.time()
-        with self._lock:
-            odom_age = now - self._data_timestamps.get('odom', 0)
-            traj_age = now - self._data_timestamps.get('trajectory', 0)
-        
         if odom_age > self._max_odom_age:
             rospy.logwarn_throttle(1.0, f"Odom timeout: age={odom_age*1000:.1f}ms")
         
@@ -328,6 +482,23 @@ class ControllerNode:
         except Exception as e:
             rospy.logerr(f"Controller update failed: {e}")
             self._publish_stop_cmd()
+            # 发布错误诊断信息
+            error_diag = {
+                'state': 0,  # INIT/ERROR state
+                'mpc_success': False,
+                'backup_active': False,
+                'error_message': str(e),
+                'timeout': {
+                    'odom_timeout': odom_age > self._max_odom_age,
+                    'traj_timeout': traj_age > self._max_traj_age,
+                    'imu_timeout': imu_age > self._max_imu_age,
+                    'last_odom_age_ms': odom_age * 1000,
+                    'last_traj_age_ms': traj_age * 1000,
+                    'last_imu_age_ms': imu_age * 1000,
+                },
+                'cmd': {'vx': 0.0, 'vy': 0.0, 'vz': 0.0, 'omega': 0.0},
+            }
+            self._publish_diagnostics(error_diag)
             return
         
         # 5. 发布控制命令
@@ -391,6 +562,34 @@ class ControllerNode:
         msg.consistency_temporal = float(consistency.get('temporal', 1.0))
         msg.consistency_alpha_soft = float(consistency.get('alpha_soft', 0.0))
         msg.consistency_data_valid = consistency.get('data_valid', True)
+        
+        # 状态估计器健康
+        estimator = diag.get('estimator_health', {})
+        msg.estimator_covariance_norm = float(estimator.get('covariance_norm', 0.0))
+        msg.estimator_innovation_norm = float(estimator.get('innovation_norm', 0.0))
+        msg.estimator_slip_probability = float(estimator.get('slip_probability', 0.0))
+        msg.estimator_imu_drift_detected = estimator.get('imu_drift_detected', False)
+        msg.estimator_imu_available = estimator.get('imu_available', True)
+        
+        # IMU bias
+        imu_bias = estimator.get('imu_bias', [0.0, 0.0, 0.0])
+        if isinstance(imu_bias, (list, tuple)) and len(imu_bias) >= 3:
+            msg.estimator_imu_bias = [float(imu_bias[0]), float(imu_bias[1]), float(imu_bias[2])]
+        else:
+            msg.estimator_imu_bias = [0.0, 0.0, 0.0]
+        
+        # 跟踪误差
+        tracking = diag.get('tracking', {})
+        msg.tracking_lateral_error = float(tracking.get('lateral_error', 0.0))
+        msg.tracking_longitudinal_error = float(tracking.get('longitudinal_error', 0.0))
+        msg.tracking_heading_error = float(tracking.get('heading_error', 0.0))
+        msg.tracking_prediction_error = float(tracking.get('prediction_error', 0.0))
+        
+        # 坐标变换状态
+        transform = diag.get('transform', {})
+        msg.transform_tf2_available = transform.get('tf2_available', self._tf_bridge.is_initialized)
+        msg.transform_fallback_duration_ms = float(transform.get('fallback_duration_ms', 0.0))
+        msg.transform_accumulated_drift = float(transform.get('accumulated_drift', 0.0))
         
         # 超时状态
         timeout = diag.get('timeout', {})

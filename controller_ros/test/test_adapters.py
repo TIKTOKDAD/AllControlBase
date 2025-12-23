@@ -189,6 +189,77 @@ def test_trajectory_adapter_soft_mode():
     assert uc_traj.velocities[0, 0] == 1.0
 
 
+def test_trajectory_adapter_soft_mode_empty_velocities():
+    """测试轨迹适配器 Soft 模式但无速度数据"""
+    from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+    
+    adapter = TrajectoryAdapter()
+    ros_msg = MockRosTrajectory()
+    ros_msg.soft_enabled = True
+    ros_msg.velocities_flat = []  # 空速度数据
+    
+    uc_traj = adapter.to_uc(ros_msg)
+    
+    # soft_enabled 应该被禁用
+    assert uc_traj.soft_enabled == False
+    assert uc_traj.velocities is None
+
+
+def test_trajectory_adapter_soft_mode_invalid_length():
+    """测试轨迹适配器 Soft 模式但速度数据长度无效"""
+    from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+    
+    adapter = TrajectoryAdapter()
+    ros_msg = MockRosTrajectory()
+    ros_msg.soft_enabled = True
+    ros_msg.velocities_flat = [1.0, 0.0, 0.0]  # 长度不是 4 的倍数，截断后为 0
+    
+    uc_traj = adapter.to_uc(ros_msg)
+    
+    # soft_enabled 应该被禁用
+    assert uc_traj.soft_enabled == False
+    assert uc_traj.velocities is None
+
+
+def test_trajectory_adapter_soft_mode_partial_truncate():
+    """测试轨迹适配器 Soft 模式部分截断"""
+    from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+    
+    adapter = TrajectoryAdapter()
+    ros_msg = MockRosTrajectory()
+    ros_msg.soft_enabled = True
+    ros_msg.velocities_flat = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0]  # 6 个值，截断为 4 个
+    
+    uc_traj = adapter.to_uc(ros_msg)
+    
+    assert uc_traj.soft_enabled == True
+    assert uc_traj.velocities is not None
+    # 1 个有效速度点，但有 10 个位置点，所以会填充到 10 个
+    assert uc_traj.velocities.shape == (10, 4)
+    assert uc_traj.velocities[0, 0] == 1.0
+    # 填充的点应该是零
+    assert uc_traj.velocities[1, 0] == 0.0
+
+
+def test_trajectory_adapter_velocity_points_mismatch():
+    """测试轨迹适配器速度点数与位置点数不匹配"""
+    from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+    
+    adapter = TrajectoryAdapter()
+    ros_msg = MockRosTrajectory()
+    ros_msg.points = [MockRosPoint(i * 0.1, 0, 0) for i in range(5)]  # 5 个位置点
+    ros_msg.soft_enabled = True
+    ros_msg.velocities_flat = [1.0, 0.0, 0.0, 0.0] * 10  # 10 个速度点
+    
+    uc_traj = adapter.to_uc(ros_msg)
+    
+    assert uc_traj.soft_enabled == True
+    assert uc_traj.velocities is not None
+    # 速度点应该被截断到与位置点相同
+    assert uc_traj.velocities.shape == (5, 4)
+    assert len(uc_traj.points) == 5
+
+
 def test_output_adapter_to_ros():
     """测试输出适配器 UC → ROS"""
     from controller_ros.adapters.output_adapter import OutputAdapter

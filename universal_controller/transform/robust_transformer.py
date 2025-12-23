@@ -100,6 +100,9 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self._tf2_initialized = False
         self._tf2_force_disabled = False  # 用于测试时强制禁用 TF2
         
+        # 外部 TF2 查找回调 (用于 ROS 胶水层注入)
+        self._external_tf2_lookup: Optional[callable] = None
+        
         # 初始化 TF2
         self._initialize_tf2()
     
@@ -129,6 +132,24 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self._tf2_force_disabled = not available
         if not available:
             logger.debug("TF2 force disabled for testing")
+    
+    def set_tf2_lookup_callback(self, callback: callable) -> None:
+        """
+        设置外部 TF2 查找回调
+        
+        用于 ROS 胶水层注入真实的 TF2 查找功能。
+        
+        Args:
+            callback: 回调函数，签名为:
+                callback(target_frame: str, source_frame: str, 
+                        time: Optional[float], timeout_sec: float) -> Optional[dict]
+                返回 {'translation': (x, y, z), 'rotation': (x, y, z, w)} 或 None
+        """
+        self._external_tf2_lookup = callback
+        if callback is not None:
+            logger.info("External TF2 lookup callback set")
+        else:
+            logger.info("External TF2 lookup callback cleared")
     
     def set_transform(self, parent_frame: str, child_frame: str,
                      x: float, y: float, z: float, yaw: float,
@@ -166,9 +187,33 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         """
         尝试 TF2 查找
         
+        优先使用外部 TF2 回调（如果设置），否则使用内部 TF2 Buffer。
+        
         Returns:
             (position, yaw, success): 位置 [x, y, z], 航向角, 是否成功
         """
+        # 优先使用外部 TF2 回调 (ROS 胶水层注入)
+        if self._external_tf2_lookup is not None and not self._tf2_force_disabled:
+            try:
+                result = self._external_tf2_lookup(
+                    target_frame, source_frame, target_time, self.tf2_timeout
+                )
+                if result is not None:
+                    position = np.array(result['translation'])
+                    q = result['rotation']
+                    _, _, yaw = euler_from_quaternion(q)
+                    
+                    # 更新缓存
+                    self._last_tf2_position = position.copy()
+                    self._last_tf2_yaw = yaw
+                    
+                    return position, yaw, True
+            except Exception as e:
+                logger.debug(f"External TF2 lookup failed: {e}")
+            
+            return None, None, False
+        
+        # 使用内部 TF2 Buffer
         if self._tf_buffer is None or self._tf2_force_disabled:
             return None, None, False
         
@@ -562,7 +607,8 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             'accumulated_drift': self.accumulated_drift,
             'is_critical': self._last_status.is_critical(),
             'status': self._last_status.name,
-            'tf2_initialized': self._tf2_initialized
+            'tf2_initialized': self._tf2_initialized,
+            'external_tf2_callback': self._external_tf2_lookup is not None
         }
     
     def reset(self) -> None:

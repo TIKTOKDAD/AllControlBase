@@ -37,7 +37,12 @@ class PublisherManager:
         """
         self._node = node
         self._topics = topics
-        self._output_adapter = OutputAdapter(default_frame_id)
+        
+        # 创建时间获取函数，支持仿真时间
+        def get_ros_time() -> float:
+            return node.get_clock().now().nanoseconds * 1e-9
+        
+        self._output_adapter = OutputAdapter(default_frame_id, get_time_func=get_ros_time)
         
         # 创建发布器
         self._create_publishers()
@@ -167,6 +172,10 @@ class PublisherManager:
     def publish_debug_path(self, trajectory: Trajectory):
         """发布调试路径"""
         if self._path_pub is None:
+            return
+        
+        # 检查轨迹点是否有效
+        if trajectory.points is None or len(trajectory.points) == 0:
             return
         
         path = Path()
