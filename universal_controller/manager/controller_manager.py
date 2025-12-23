@@ -136,33 +136,15 @@ class ControllerManager:
     
     def _init_ros_publishers(self) -> None:
         """
-        初始化 ROS Publishers (向后兼容)
+        初始化 ROS Publishers (已禁用)
         
-        注意: 诊断发布已移至 DiagnosticsPublisher，此方法保留用于向后兼容
+        注意: 在 ROS 环境下，命令发布由 controller_ros/controller_node.py 处理，
+        使用 UnifiedCmd 消息类型。这里不再创建发布器，避免话题类型冲突。
+        
+        controller_node.py 会调用 _publish_cmd() 方法发布 UnifiedCmd 消息。
         """
-        from ..core.ros_compat import ROS_AVAILABLE
-        
-        if not ROS_AVAILABLE:
-            return
-        
-        try:
-            import rospy
-            from geometry_msgs.msg import Twist
-            
-            # 使用已存储的话题名称，避免重复读取配置
-            cmd_topic = self._diagnostics_publisher.cmd_topic
-            
-            # 控制命令发布器
-            self._cmd_pub = rospy.Publisher(
-                cmd_topic,
-                Twist,
-                queue_size=1
-            )
-            
-            logger.info(f"ROS command publisher initialized: {cmd_topic}")
-        except Exception as e:
-            logger.warning(f"ROS publisher init failed: {e}")
-            self._cmd_pub = None
+        # 禁用内部 ROS 发布器，由 controller_node.py 处理
+        self._cmd_pub = None
     
     def set_diagnostics_callback(self, callback: callable) -> None:
         """
