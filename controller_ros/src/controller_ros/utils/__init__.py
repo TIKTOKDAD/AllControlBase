@@ -3,6 +3,7 @@
 """
 from .param_loader import ParamLoader
 from .time_sync import TimeSync
+from .diag_filler import fill_diagnostics_msg
 from .ros_compat import (
     ROS_VERSION, ROS_AVAILABLE, TF2_AVAILABLE,
     get_current_time, get_monotonic_time,
@@ -14,6 +15,7 @@ from .ros_compat import (
 __all__ = [
     'ParamLoader',
     'TimeSync',
+    'fill_diagnostics_msg',
     'ROS_VERSION',
     'ROS_AVAILABLE', 
     'TF2_AVAILABLE',

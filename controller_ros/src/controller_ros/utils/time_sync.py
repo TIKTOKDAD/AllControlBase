@@ -29,8 +29,13 @@ class TimeSync:
         """
         self._max_ages = {
             'odom': max_odom_age_ms / 1000.0,
-            'trajectory': max_traj_age_ms / 1000.0,
+            'traj': max_traj_age_ms / 1000.0,  # 使用 'traj' 而非 'trajectory' 以保持键名一致性
             'imu': max_imu_age_ms / 1000.0,
+        }
+        
+        # 输入键名映射 (支持 'trajectory' 作为 'traj' 的别名)
+        self._key_aliases = {
+            'trajectory': 'traj',
         }
     
     def check_freshness(self, ages: Dict[str, float]) -> Dict[str, bool]:
@@ -38,14 +43,20 @@ class TimeSync:
         检查数据新鲜度
         
         Args:
-            ages: 各数据的年龄 (秒)
+            ages: 各数据的年龄 (秒)，支持 'odom', 'traj'/'trajectory', 'imu'
         
         Returns:
-            各数据是否超时的字典
+            各数据是否超时的字典，键为 'odom_timeout', 'traj_timeout', 'imu_timeout'
         """
+        # 规范化输入键名
+        normalized_ages = {}
+        for key, value in ages.items():
+            normalized_key = self._key_aliases.get(key, key)
+            normalized_ages[normalized_key] = value
+        
         timeouts = {}
         for key, max_age in self._max_ages.items():
-            age = ages.get(key, float('inf'))
+            age = normalized_ages.get(key, float('inf'))
             timeouts[f'{key}_timeout'] = age > max_age
         return timeouts
     
@@ -56,17 +67,25 @@ class TimeSync:
         
         Args:
             ages: 各数据的年龄 (秒)
-            required: 必需的数据列表，默认 ['odom', 'trajectory']
+            required: 必需的数据列表，默认 ['odom', 'traj']
         
         Returns:
             所有必需数据都新鲜返回 True
         """
         if required is None:
-            required = ['odom', 'trajectory']
+            required = ['odom', 'traj']
+        
+        # 规范化输入键名
+        normalized_ages = {}
+        for key, value in ages.items():
+            normalized_key = self._key_aliases.get(key, key)
+            normalized_ages[normalized_key] = value
         
         for key in required:
-            max_age = self._max_ages.get(key, 0.1)
-            age = ages.get(key, float('inf'))
+            # 规范化 required 中的键名
+            normalized_key = self._key_aliases.get(key, key)
+            max_age = self._max_ages.get(normalized_key, 0.1)
+            age = normalized_ages.get(normalized_key, float('inf'))
             if age > max_age:
                 return False
         return True

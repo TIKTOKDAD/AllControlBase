@@ -13,6 +13,9 @@ from geometry_msgs.msg import PoseStamped
 from universal_controller.core.data_types import ControlOutput, Trajectory
 from ..adapters import OutputAdapter
 
+# 默认诊断发布降频率 (每 N 次控制循环发布一次)
+DEFAULT_DIAG_PUBLISH_RATE = 5
+
 
 class PublisherManager:
     """
@@ -26,7 +29,8 @@ class PublisherManager:
     """
     
     def __init__(self, node: Node, topics: Dict[str, str],
-                 default_frame_id: str = 'base_link'):
+                 default_frame_id: str = 'base_link',
+                 diag_publish_rate: int = DEFAULT_DIAG_PUBLISH_RATE):
         """
         初始化发布管理器
         
@@ -34,13 +38,19 @@ class PublisherManager:
             node: ROS2 节点
             topics: 话题配置字典
             default_frame_id: 默认输出坐标系
+            diag_publish_rate: 诊断发布降频率 (每 N 次控制循环发布一次)
         """
         self._node = node
         self._topics = topics
         
         # 创建时间获取函数，支持仿真时间
         def get_ros_time() -> float:
-            return node.get_clock().now().nanoseconds * 1e-9
+            clock_time = node.get_clock().now().nanoseconds * 1e-9
+            # 检查时间是否有效 (仿真时间模式下可能为 0)
+            if clock_time > 0:
+                return clock_time
+            else:
+                return time.time()
         
         self._output_adapter = OutputAdapter(default_frame_id, get_time_func=get_ros_time)
         
@@ -48,8 +58,12 @@ class PublisherManager:
         self._create_publishers()
         
         # 诊断降频计数器
-        self._diag_counter = 0
-        self._diag_publish_rate = 5  # 每 5 次控制循环发布一次诊断
+        # 初始化为 publish_rate - 1，确保首次调用时立即发布
+        self._diag_publish_rate = max(1, diag_publish_rate)  # 至少为 1
+        self._diag_counter = self._diag_publish_rate - 1
+        
+        # 上一次发布的状态，用于检测状态变化
+        self._last_state: Optional[int] = None
     
     def _create_publishers(self):
         """创建所有发布器"""
@@ -109,61 +123,26 @@ class PublisherManager:
         if self._diag_pub is None:
             return
         
-        # 降频发布
+        # 检测状态变化，状态变化时强制发布
+        current_state = diag.get('state', 0)
+        state_changed = self._last_state is not None and current_state != self._last_state
+        self._last_state = current_state
+        
+        # 降频发布，但状态变化时强制发布
         self._diag_counter += 1
-        if not force and self._diag_counter < self._diag_publish_rate:
+        if not force and not state_changed and self._diag_counter < self._diag_publish_rate:
             return
         self._diag_counter = 0
         
         try:
             from controller_ros.msg import DiagnosticsV2
+            from ..utils.diag_filler import fill_diagnostics_msg
             
             msg = DiagnosticsV2()
-            msg.header.stamp = self._node.get_clock().now().to_msg()
-            msg.header.frame_id = 'controller'
-            
-            # 填充诊断数据
-            msg.state = diag.get('state', 0)
-            msg.mpc_success = diag.get('mpc_success', False)
-            msg.mpc_solve_time_ms = float(diag.get('mpc_solve_time_ms', 0.0))
-            msg.backup_active = diag.get('backup_active', False)
-            
-            # MPC 健康状态
-            mpc_health = diag.get('mpc_health', {})
-            msg.mpc_health_kkt_residual = float(mpc_health.get('kkt_residual', 0.0))
-            msg.mpc_health_condition_number = float(mpc_health.get('condition_number', 1.0))
-            msg.mpc_health_consecutive_near_timeout = int(mpc_health.get('consecutive_near_timeout', 0))
-            msg.mpc_health_degradation_warning = mpc_health.get('degradation_warning', False)
-            msg.mpc_health_can_recover = mpc_health.get('can_recover', True)
-            
-            # 一致性指标
-            consistency = diag.get('consistency', {})
-            msg.consistency_curvature = float(consistency.get('curvature', 0.0))
-            msg.consistency_velocity_dir = float(consistency.get('velocity_dir', 1.0))
-            msg.consistency_temporal = float(consistency.get('temporal', 1.0))
-            msg.consistency_alpha_soft = float(consistency.get('alpha_soft', 0.0))
-            msg.consistency_data_valid = consistency.get('data_valid', True)
-            
-            # 超时状态
-            timeout = diag.get('timeout', {})
-            msg.timeout_odom = timeout.get('odom_timeout', False)
-            msg.timeout_traj = timeout.get('traj_timeout', False)
-            msg.timeout_traj_grace_exceeded = timeout.get('traj_grace_exceeded', False)
-            msg.timeout_imu = timeout.get('imu_timeout', False)
-            msg.timeout_last_odom_age_ms = float(timeout.get('last_odom_age_ms', 0.0))
-            msg.timeout_last_traj_age_ms = float(timeout.get('last_traj_age_ms', 0.0))
-            msg.timeout_last_imu_age_ms = float(timeout.get('last_imu_age_ms', 0.0))
-            msg.timeout_in_startup_grace = timeout.get('in_startup_grace', False)
-            
-            # 控制命令
-            cmd = diag.get('cmd', {})
-            msg.cmd_vx = float(cmd.get('vx', 0.0))
-            msg.cmd_vy = float(cmd.get('vy', 0.0))
-            msg.cmd_vz = float(cmd.get('vz', 0.0))
-            msg.cmd_omega = float(cmd.get('omega', 0.0))
-            msg.cmd_frame_id = cmd.get('frame_id', '')
-            
-            msg.transition_progress = float(diag.get('transition_progress', 0.0))
+            fill_diagnostics_msg(
+                msg, diag,
+                get_time_func=lambda: self._node.get_clock().now().to_msg()
+            )
             
             self._diag_pub.publish(msg)
         except Exception as e:

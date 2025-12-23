@@ -6,6 +6,7 @@
 """
 from typing import Dict, Any, Optional
 import logging
+import weakref
 
 from universal_controller.config.default_config import DEFAULT_CONFIG
 
@@ -47,6 +48,8 @@ _ROS2_PARAM_DEFINITIONS = [
     ('time_sync.max_odom_age_ms', 100),
     ('time_sync.max_traj_age_ms', 200),
     ('time_sync.max_imu_age_ms', 50),
+    # 诊断配置
+    ('diagnostics.publish_rate', 5),
 ]
 
 
@@ -76,8 +79,9 @@ class ParamLoader:
     支持 ROS1、ROS2 和非 ROS 环境。
     """
     
-    # 记录已初始化参数的节点，避免重复声明
-    _initialized_nodes: set = set()
+    # 使用 WeakSet 记录已初始化参数的节点，避免内存泄漏
+    # 当节点被销毁时，会自动从 set 中移除
+    _initialized_nodes: weakref.WeakSet = weakref.WeakSet()
     
     @staticmethod
     def load(node=None) -> Dict[str, Any]:
@@ -108,14 +112,14 @@ class ParamLoader:
     @staticmethod
     def _declare_all_params(node) -> None:
         """声明所有 ROS2 参数（安全方式，避免重复声明）"""
-        node_id = id(node)
-        if node_id in ParamLoader._initialized_nodes:
+        # 使用 WeakSet，节点销毁后会自动移除
+        if node in ParamLoader._initialized_nodes:
             return
         
         for param_name, default_value in _ROS2_PARAM_DEFINITIONS:
             _safe_declare_parameter(node, param_name, default_value)
         
-        ParamLoader._initialized_nodes.add(node_id)
+        ParamLoader._initialized_nodes.add(node)
     
     @staticmethod
     def _load_ros2_params(node) -> Dict[str, Any]:
@@ -153,6 +157,10 @@ class ParamLoader:
             'max_odom_age_ms': node.get_parameter('time_sync.max_odom_age_ms').value,
             'max_traj_age_ms': node.get_parameter('time_sync.max_traj_age_ms').value,
             'max_imu_age_ms': node.get_parameter('time_sync.max_imu_age_ms').value,
+        }
+        
+        params['diagnostics'] = {
+            'publish_rate': node.get_parameter('diagnostics.publish_rate').value,
         }
         
         return params
@@ -193,6 +201,10 @@ class ParamLoader:
             'max_imu_age_ms': rospy.get_param('time_sync/max_imu_age_ms', 50),
         }
         
+        params['diagnostics'] = {
+            'publish_rate': rospy.get_param('diagnostics/publish_rate', 5),
+        }
+        
         return params
     
     @staticmethod
@@ -219,6 +231,11 @@ class ParamLoader:
             config['watchdog']['odom_timeout_ms'] = ros_params['time_sync']['max_odom_age_ms']
             config['watchdog']['traj_timeout_ms'] = ros_params['time_sync']['max_traj_age_ms']
             config['watchdog']['imu_timeout_ms'] = ros_params['time_sync']['max_imu_age_ms']
+        
+        # 诊断配置
+        if 'diagnostics' in ros_params:
+            config.setdefault('diagnostics', {})
+            config['diagnostics']['publish_rate'] = ros_params['diagnostics']['publish_rate']
     
     @staticmethod
     def _deep_copy(d: Dict[str, Any]) -> Dict[str, Any]:

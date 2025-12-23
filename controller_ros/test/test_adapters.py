@@ -228,17 +228,18 @@ def test_trajectory_adapter_soft_mode_partial_truncate():
     adapter = TrajectoryAdapter()
     ros_msg = MockRosTrajectory()
     ros_msg.soft_enabled = True
-    ros_msg.velocities_flat = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0]  # 6 个值，截断为 4 个
+    ros_msg.velocities_flat = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0]  # 6 个值，截断为 4 个 (1 个速度点)
     
     uc_traj = adapter.to_uc(ros_msg)
     
     assert uc_traj.soft_enabled == True
     assert uc_traj.velocities is not None
-    # 1 个有效速度点，但有 10 个位置点，所以会填充到 10 个
+    # 1 个有效速度点，但有 10 个位置点，所以会用最后一个速度点填充到 10 个
     assert uc_traj.velocities.shape == (10, 4)
     assert uc_traj.velocities[0, 0] == 1.0
-    # 填充的点应该是零
-    assert uc_traj.velocities[1, 0] == 0.0
+    # 填充的点应该是最后一个速度点的值 (不再是零)
+    assert uc_traj.velocities[1, 0] == 1.0
+    assert uc_traj.velocities[9, 0] == 1.0
 
 
 def test_trajectory_adapter_velocity_points_mismatch():
@@ -258,6 +259,39 @@ def test_trajectory_adapter_velocity_points_mismatch():
     # 速度点应该被截断到与位置点相同
     assert uc_traj.velocities.shape == (5, 4)
     assert len(uc_traj.points) == 5
+
+
+def test_trajectory_adapter_velocity_padding():
+    """测试轨迹适配器速度点填充 (速度点少于位置点)"""
+    from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+    
+    adapter = TrajectoryAdapter()
+    ros_msg = MockRosTrajectory()
+    ros_msg.points = [MockRosPoint(i * 0.1, 0, 0) for i in range(10)]  # 10 个位置点
+    ros_msg.soft_enabled = True
+    # 只有 3 个速度点，最后一个是 [3.0, 0.3, 0.0, 0.03]
+    ros_msg.velocities_flat = [
+        1.0, 0.1, 0.0, 0.01,
+        2.0, 0.2, 0.0, 0.02,
+        3.0, 0.3, 0.0, 0.03,
+    ]
+    
+    uc_traj = adapter.to_uc(ros_msg)
+    
+    assert uc_traj.soft_enabled == True
+    assert uc_traj.velocities is not None
+    assert uc_traj.velocities.shape == (10, 4)
+    
+    # 前 3 个点应该是原始值
+    assert uc_traj.velocities[0, 0] == 1.0
+    assert uc_traj.velocities[1, 0] == 2.0
+    assert uc_traj.velocities[2, 0] == 3.0
+    
+    # 后 7 个点应该用最后一个速度点填充
+    for i in range(3, 10):
+        assert uc_traj.velocities[i, 0] == 3.0, f"Point {i} should be padded with last velocity"
+        assert uc_traj.velocities[i, 1] == 0.3
+        assert uc_traj.velocities[i, 3] == 0.03
 
 
 def test_output_adapter_to_ros():

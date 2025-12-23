@@ -60,6 +60,28 @@ ROS 胶水层 - 将 `universal_controller` 纯算法库与 ROS 生态系统集�
 - numpy, scipy
 - tf2_ros (可选，用于坐标变换)
 
+### 安装 universal_controller
+
+`universal_controller` 是纯 Python 算法库，需要确保其在 Python 路径中：
+
+**方法 1: 设置 PYTHONPATH (推荐开发时使用)**
+```bash
+# 假设 universal_controller 和 controller_ros 在同一父目录下
+export PYTHONPATH=$PYTHONPATH:/path/to/AllControlBase
+```
+
+**方法 2: 安装为 Python 包**
+```bash
+cd /path/to/universal_controller
+pip install -e .
+```
+
+**方法 3: 在 .bashrc 中永久设置**
+```bash
+echo 'export PYTHONPATH=$PYTHONPATH:/path/to/AllControlBase' >> ~/.bashrc
+source ~/.bashrc
+```
+
 ### 构建 (ROS1)
 
 ```bash

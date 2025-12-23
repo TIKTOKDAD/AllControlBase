@@ -7,10 +7,11 @@
 
 std_msgs/Header header
 
-# 轨迹模式
+# 轨迹模式 (与 universal_controller.core.enums.TrajectoryMode 对应)
 # 0=MODE_TRACK (跟踪模式)
 # 1=MODE_STOP (停止模式)
-# 2=MODE_HOLD (保持模式)
+# 2=MODE_HOVER (悬停/保持模式，原 MODE_HOLD)
+# 3=MODE_EMERGENCY (紧急模式)
 uint8 mode
 
 # 轨迹点 (3D 位置)

@@ -21,9 +21,17 @@ def _get_clock_time_sec(node: Node) -> float:
     获取节点时钟时间（秒）
     
     使用节点时钟而非系统时间，以支持仿真时间模式。
+    
+    注意: 在仿真时间模式下，如果 /clock 话题还未发布，
+    时钟可能返回 0。此时回退到系统时间。
     """
     try:
-        return node.get_clock().now().nanoseconds * 1e-9
+        clock_time = node.get_clock().now().nanoseconds * 1e-9
+        # 检查时间是否有效 (仿真时间模式下可能为 0)
+        if clock_time > 0:
+            return clock_time
+        else:
+            return time.time()
     except Exception:
         return time.time()
 

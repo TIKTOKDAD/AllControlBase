@@ -42,9 +42,19 @@ def _get_ros_time_sec() -> float:
     获取当前 ROS 时间（秒）
     
     支持仿真时间模式 (use_sim_time=true)
+    
+    注意: 在仿真时间模式下，如果 /clock 话题还未发布，
+    rospy.Time.now() 会返回 0。此时回退到系统时间。
     """
     try:
-        return rospy.Time.now().to_sec()
+        ros_time = rospy.Time.now()
+        # 检查时间是否有效 (仿真时间模式下可能为 0)
+        if ros_time.to_sec() > 0:
+            return ros_time.to_sec()
+        else:
+            # 仿真时间为 0，回退到系统时间
+            import time
+            return time.time()
     except rospy.exceptions.ROSInitException:
         # ROS 未初始化时回退到系统时间
         import time
@@ -408,18 +418,38 @@ class ControllerNode:
             Point3D(x=p.x, y=p.y, z=p.z)
             for p in msg.points
         ]
+        num_points = len(points)
         
-        # 转换速度数组
+        # 处理速度数组 (与 TrajectoryAdapter 保持一致)
         velocities = None
         soft_enabled = msg.soft_enabled
+        
         if soft_enabled and len(msg.velocities_flat) > 0:
             flat_len = len(msg.velocities_flat)
+            
+            # 检查长度是否为 4 的倍数
             if flat_len % 4 != 0:
                 rospy.logwarn_throttle(5.0,
                     f"velocities_flat length {flat_len} is not a multiple of 4, truncating")
                 flat_len = (flat_len // 4) * 4
+            
             if flat_len > 0:
                 velocities = np.array(msg.velocities_flat[:flat_len]).reshape(-1, 4)
+                num_vel_points = velocities.shape[0]
+                
+                # 检查速度点数与位置点数是否匹配
+                if num_vel_points != num_points:
+                    if num_vel_points > num_points:
+                        # 速度点多于位置点，截断
+                        velocities = velocities[:num_points]
+                    else:
+                        # 速度点少于位置点，使用最后一个速度点填充
+                        rospy.logwarn_throttle(5.0,
+                            f"Velocity points ({num_vel_points}) < position points ({num_points}), "
+                            f"padding with last velocity")
+                        last_vel = velocities[-1:, :]
+                        padding = np.tile(last_vel, (num_points - num_vel_points, 1))
+                        velocities = np.vstack([velocities, padding])
             else:
                 # 无有效速度数据，禁用 soft 模式
                 soft_enabled = False

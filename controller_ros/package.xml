@@ -5,6 +5,8 @@
   <description>ROS 胶水层 - 将 universal_controller 纯算法库与 ROS 生态系统集成</description>
   <maintainer email="controller@example.com">Controller Team</maintainer>
   <license>MIT</license>
+  
+  <url type="repository">https://github.com/example/controller_ros</url>
 
   <buildtool_depend>catkin</buildtool_depend>
 
@@ -25,7 +27,20 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
+  
+  <!-- Python 依赖 -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <export>
+    <!-- 
+    外部依赖说明:
+    本包依赖 universal_controller 纯算法库，需要确保其在 PYTHONPATH 中:
+      export PYTHONPATH=$PYTHONPATH:/path/to/universal_controller/..
+    
+    或者将 universal_controller 安装为 Python 包:
+      cd /path/to/universal_controller && pip install -e .
+    -->
   </export>
 </package>

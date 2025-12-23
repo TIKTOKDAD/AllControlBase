@@ -62,15 +62,18 @@ class ControllerNode(Node):
         )
         
         # 8. 创建发布管理器
+        diag_publish_rate = self._params.get('diagnostics', {}).get('publish_rate', 5)
         self._publishers = PublisherManager(
-            self, self._topics, default_frame_id
+            self, self._topics, default_frame_id,
+            diag_publish_rate=diag_publish_rate
         )
         
         # 9. 创建服务管理器
         self._services = ServiceManager(
             self,
             reset_callback=self._handle_reset,
-            get_diagnostics_callback=self._handle_get_diagnostics
+            get_diagnostics_callback=self._handle_get_diagnostics,
+            set_state_callback=self._handle_set_state
         )
         
         # 10. 创建时间同步
@@ -161,7 +164,7 @@ class ControllerNode(Node):
                 'error_message': str(e),
                 'timeout': {
                     'odom_timeout': timeouts.get('odom_timeout', False),
-                    'traj_timeout': timeouts.get('trajectory_timeout', False),
+                    'traj_timeout': timeouts.get('traj_timeout', False),
                     'imu_timeout': timeouts.get('imu_timeout', False),
                 },
                 'cmd': {'vx': 0.0, 'vy': 0.0, 'vz': 0.0, 'omega': 0.0},
@@ -188,6 +191,34 @@ class ControllerNode(Node):
     def _handle_get_diagnostics(self):
         """处理获取诊断请求"""
         return self._controller_bridge.get_diagnostics()
+    
+    def _handle_set_state(self, target_state: int) -> bool:
+        """
+        处理设置状态请求
+        
+        出于安全考虑，只支持请求 STOPPING 状态 (值为 5)。
+        其他状态转换应该由状态机内部逻辑自动控制。
+        
+        Args:
+            target_state: 目标状态值 (ControllerState 枚举)
+        
+        Returns:
+            是否成功
+        """
+        from universal_controller.core.enums import ControllerState
+        
+        # 只允许请求 STOPPING 状态
+        if target_state == ControllerState.STOPPING.value:
+            success = self._controller_bridge.request_stop()
+            if success:
+                self.get_logger().info('Stop requested via service')
+            return success
+        else:
+            self.get_logger().warn(
+                f'Set state to {target_state} not allowed. '
+                f'Only STOPPING ({ControllerState.STOPPING.value}) is supported for safety reasons.'
+            )
+            return False
     
     def shutdown(self):
         """清理资源"""
