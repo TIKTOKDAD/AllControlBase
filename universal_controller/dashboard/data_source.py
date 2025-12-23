@@ -57,19 +57,24 @@ class DashboardDataSource:
     Dashboard 数据源 - 统一数据管理
     
     职责：
-    1. 从 ControllerManager 或 Mock 获取原始数据
+    1. 从 ControllerManager 获取原始数据
     2. 转换为统一的 DisplayData 模型
-    3. 处理所有数据逻辑（如 is_mock_mode 判断）
+    3. 处理所有数据逻辑
     4. 维护历史数据和统计信息
+    
+    注意：
+    - 默认使用真实数据模式，不会自动使用 mock 数据
+    - 如需使用模拟数据，请显式设置 use_mock=True
     """
 
-    def __init__(self, controller_manager=None, config: Dict[str, Any] = None):
+    def __init__(self, controller_manager=None, config: Dict[str, Any] = None, use_mock: bool = False):
         self.manager = controller_manager
         self.config = config or {}
         self._start_time = time.time()
 
-        # 判断是否为模拟模式
-        self._is_mock_mode = controller_manager is None
+        # 只有显式指定 use_mock=True 时才使用模拟模式
+        # 默认为真实数据模式（即使 controller_manager 为 None）
+        self._is_mock_mode = use_mock
 
         # 统计数据
         self._total_cycles = 0
@@ -159,9 +164,13 @@ class DashboardDataSource:
         if self.manager and hasattr(self.manager, '_last_published_diagnostics'):
             return self.manager._last_published_diagnostics or {}
 
-        # 使用模拟数据
-        from ..mock.diagnostics_mock import generate_mock_diagnostics
-        return generate_mock_diagnostics(self._start_time)
+        # 只有在显式启用 mock 模式时才使用模拟数据
+        if self._is_mock_mode:
+            from ..mock.diagnostics_mock import generate_mock_diagnostics
+            return generate_mock_diagnostics(self._start_time)
+        
+        # 默认返回空数据（等待真实数据）
+        return {}
 
     def _update_statistics(self, diagnostics: Dict[str, Any]):
         """更新统计数据"""

@@ -25,23 +25,26 @@ def main():
     """主函数"""
     print("=" * 60)
     print("  Universal Controller Dashboard")
-    print("  版本: v3.17.7")
+    print("  版本: v3.17.12")
     print("=" * 60)
     print()
     print("正在启动可视化界面...")
-    print("提示: 当前使用模拟数据，如需连接真实控制器，请传入 ControllerManager 实例")
+    print("提示: 当前使用模拟数据模式")
+    print("      如需连接真实控制器，请使用 roslaunch controller_ros controller.launch dashboard:=true")
     print()
     
     app = QApplication(sys.argv)
     
-    # 创建数据源 (使用模拟数据)
+    # 创建数据源 (显式启用模拟数据模式)
     data_source = DashboardDataSource(
-        controller_manager=None,  # 可以传入真实的 ControllerManager
-        config=DEFAULT_CONFIG
+        controller_manager=None,
+        config=DEFAULT_CONFIG,
+        use_mock=True  # 显式启用模拟模式
     )
     
     # 创建主窗口
     window = DashboardWindow(data_source)
+    window.setWindowTitle('Universal Controller Dashboard [调试模式]')
     window.show()
     
     print("Dashboard 已启动!")

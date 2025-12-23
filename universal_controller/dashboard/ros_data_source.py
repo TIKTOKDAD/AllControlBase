@@ -459,7 +459,7 @@ class ROSDashboardDataSource:
             tf2_available=self._tf2_available,
             acados_available=ACADOS_AVAILABLE,
             imu_available=True,  # 在 ROS 模式下假设 IMU 可用
-            is_mock_mode=not self._diagnostics_received,
+            is_mock_mode=False,  # ROS 模式永远不是模拟模式
         )
 
     def _build_platform_config(self) -> PlatformConfig:

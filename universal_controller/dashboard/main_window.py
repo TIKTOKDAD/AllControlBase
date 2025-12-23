@@ -230,15 +230,17 @@ class DashboardWindow(QMainWindow):
         event.accept()
 
 
-def run_dashboard(controller_manager=None, config: dict = None):
+def run_dashboard(controller_manager=None, config: dict = None, use_mock: bool = False):
     import sys
     from PyQt5.QtWidgets import QApplication
     app = QApplication(sys.argv)
-    data_source = DashboardDataSource(controller_manager, config)
+    data_source = DashboardDataSource(controller_manager, config, use_mock=use_mock)
     window = DashboardWindow(data_source)
+    if use_mock:
+        window.setWindowTitle('Universal Controller Dashboard [调试模式]')
     window.show()
     sys.exit(app.exec_())
 
 
 if __name__ == '__main__':
-    run_dashboard()
+    run_dashboard(use_mock=True)
