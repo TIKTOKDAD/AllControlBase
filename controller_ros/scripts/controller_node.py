@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 控制器 ROS1 节点
@@ -15,6 +15,38 @@
 """
 import sys
 import os
+
+# 确保 catkin devel 路径在 PYTHONPATH 中
+# roslaunch 有时不会正确设置这个路径
+def _setup_catkin_python_path():
+    """查找并添加 catkin devel python 路径"""
+    # 方法1: 从 ROS_PACKAGE_PATH 推断
+    ros_package_path = os.environ.get('ROS_PACKAGE_PATH', '')
+    for path in ros_package_path.split(':'):
+        if '/src' in path:
+            ws_root = path.rsplit('/src', 1)[0]
+            devel_python = os.path.join(ws_root, 'devel', 'lib', 'python3', 'dist-packages')
+            if os.path.exists(devel_python) and devel_python not in sys.path:
+                sys.path.insert(0, devel_python)
+                return True
+    
+    # 方法2: 从脚本位置推断 (符号链接情况)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # 向上查找 devel 目录
+    current = script_dir
+    for _ in range(10):  # 最多向上查找10层
+        parent = os.path.dirname(current)
+        devel_python = os.path.join(parent, 'devel', 'lib', 'python3', 'dist-packages')
+        if os.path.exists(devel_python) and devel_python not in sys.path:
+            sys.path.insert(0, devel_python)
+            return True
+        if parent == current:
+            break
+        current = parent
+    
+    return False
+
+_setup_catkin_python_path()
 
 # 添加 src 目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
