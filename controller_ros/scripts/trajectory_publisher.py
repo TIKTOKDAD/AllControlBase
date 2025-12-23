@@ -21,6 +21,14 @@
     - 时间间隔建议 0.1s (与 MPC dt 匹配)
 """
 
+import sys
+import os
+
+# 添加 catkin devel 路径 - 用于导入 controller_ros.msg
+_devel_path = '/home/oamr/turtlebot_ws/devel/lib/python3/dist-packages'
+if os.path.exists(_devel_path):
+    sys.path.insert(0, _devel_path)
+
 import rospy
 import numpy as np
 from geometry_msgs.msg import Point
