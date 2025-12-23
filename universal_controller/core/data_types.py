@@ -373,6 +373,7 @@ class DiagnosticsV2:
     
     # 坐标变换状态
     transform_tf2_available: bool
+    transform_tf2_injected: bool
     transform_fallback_duration_ms: float
     transform_accumulated_drift: float
     
@@ -434,6 +435,7 @@ class DiagnosticsV2:
             },
             'transform': {
                 'tf2_available': self.transform_tf2_available,
+                'tf2_injected': self.transform_tf2_injected,
                 'fallback_duration_ms': self.transform_fallback_duration_ms,
                 'accumulated_drift': self.transform_accumulated_drift
             },

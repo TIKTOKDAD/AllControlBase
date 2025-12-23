@@ -112,6 +112,9 @@ class PurePursuitController(ITrajectoryTracker):
     
     def compute(self, state: np.ndarray, trajectory: Trajectory, 
                 consistency: ConsistencyResult) -> ControlOutput:
+        if self._is_shutdown:
+            return self._smooth_stop_command()
+        
         if len(trajectory.points) < 2:
             return self._smooth_stop_command()
         

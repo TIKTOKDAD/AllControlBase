@@ -287,6 +287,7 @@ class DiagnosticsPublisher:
             
             # 坐标变换状态
             transform_tf2_available=not tf2_critical,
+            transform_tf2_injected=transform_status.get('tf2_injected', False),
             transform_fallback_duration_ms=transform_status.get('fallback_duration_ms', 0.0),
             transform_accumulated_drift=transform_status.get('accumulated_drift', 0.0),
             
