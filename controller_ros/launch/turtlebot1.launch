@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<!--
+  TurtleBot1 + ROS Noetic 专用 Launch 文件
+  
+  使用方法:
+    roslaunch controller_ros turtlebot1.launch
+    roslaunch controller_ros turtlebot1.launch dashboard:=true
+    roslaunch controller_ros turtlebot1.launch use_sim_time:=true
+  
+  前置条件:
+    1. TurtleBot1 驱动已启动: roslaunch turtlebot_bringup minimal.launch
+    2. universal_controller 已安装 (pip install -e .)
+    3. 轨迹发布器已启动 (发布 /nn/local_trajectory)
+-->
+<launch>
+  <!-- ========== 参数 ========== -->
+  <arg name="use_sim_time" default="false" doc="Use simulation time"/>
+  <arg name="dashboard" default="false" doc="Launch Dashboard GUI for monitoring"/>
+  <arg name="max_linear" default="0.5" doc="Maximum linear velocity (m/s)"/>
+  <arg name="max_angular" default="1.0" doc="Maximum angular velocity (rad/s)"/>
+  
+  <!-- ========== 全局参数 ========== -->
+  <param name="/use_sim_time" value="$(arg use_sim_time)"/>
+  
+  <!-- ========== 加载配置文件 ========== -->
+  <!-- 基础配置 -->
+  <rosparam file="$(find controller_ros)/config/controller_params.yaml" command="load"/>
+  
+  <!-- TurtleBot1 专用配置 (覆盖基础配置) -->
+  <rosparam file="$(find controller_ros)/config/turtlebot1.yaml" command="load"/>
+  
+  <!-- ========== 覆盖参数 ========== -->
+  <param name="system/platform" value="differential"/>
+  <param name="system/ctrl_freq" value="20"/>
+  
+  <!-- ========== 控制器节点 ========== -->
+  <node pkg="controller_ros" type="controller_node.py" name="universal_controller_node" output="screen">
+    <!-- 
+    控制器节点说明:
+    - 订阅 /odom, /nn/local_trajectory
+    - 发布 /cmd_unified, /controller/diagnostics, /controller/state
+    - 使用 TF2 查询 base_link -> odom 变换
+    
+    紧急停止:
+    - 发送 std_msgs/Empty 到 /controller/emergency_stop 触发紧急停止
+    - 通过 /controller/reset 服务清除紧急停止状态
+    -->
+  </node>
+
+  <!-- ========== cmd_vel 适配器 ========== -->
+  <node pkg="controller_ros" type="cmd_vel_adapter.py" name="cmd_vel_adapter" output="screen">
+    <param name="max_linear" value="$(arg max_linear)"/>
+    <param name="max_angular" value="$(arg max_angular)"/>
+    <!-- 
+    适配器说明:
+    - 订阅 /cmd_unified (UnifiedCmd)
+    - 发布 /cmd_vel (geometry_msgs/Twist)
+    - 应用速度限制保护 TurtleBot1
+    -->
+  </node>
+  
+  <!-- ========== Dashboard 节点 (可选) ========== -->
+  <node pkg="controller_ros" type="dashboard_node.py" name="controller_dashboard" 
+        output="screen" if="$(arg dashboard)">
+    <!-- 
+    Dashboard 可视化监控界面
+    - 订阅 /controller/diagnostics 和 /controller/state
+    - 显示实时状态、MPC 健康、一致性分析等
+    - 需要 PyQt5: pip install PyQt5
+    -->
+  </node>
+</launch>
+
+
+<!-- # 终端 1: TurtleBot 驱动
+roslaunch turtlebot_bringup minimal.launch
+
+# 终端 2: 控制器 (已包含 ACADOS 高性能求解器)
+roslaunch controller_ros turtlebot1.launch
+
+# 终端 3: 你的轨迹发布器
+rosrun your_package trajectory_publisher.py -->

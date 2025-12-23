@@ -1,44 +1,55 @@
 # TurtleBot1 + ROS Noetic 完整部署指南
 
-> 版本: v1.0.0 | 最后更新: 2024-12-23
+> 版本: v1.1.0 | 最后更新: 2024-12-23
 
 本文档提供在 TurtleBot1 机器人上部署 `universal_controller` + `controller_ros` 的完整流程。
 
 ---
 
-## 🚀 快速开始 (最佳部署方案)
+## 🚀 一键安装 (推荐)
 
-如果你想快速部署，按以下步骤执行：
+**最简单的方式：运行一键安装脚本**
 
 ```bash
-# ========== 1. 部署 universal_controller (最佳方案: pip 可编辑安装) ==========
-cd /path/to/AllControlBase/universal_controller
+# 进入 controller_ros/scripts 目录
+cd /path/to/AllControlBase/controller_ros/scripts
 
-# 安装依赖
-pip install numpy scipy PyYAML
+# 添加执行权限
+chmod +x install_all.sh
 
-# 可编辑安装 (推荐！修改代码无需重装)
-pip install -e .
+# 运行安装脚本 (自动安装 ACADOS + universal_controller + controller_ros)
+./install_all.sh
 
-# 验证
-python3 -c "from universal_controller import ControllerManager; print('OK')"
+# 安装完成后，使环境变量生效
+source ~/.bashrc
+```
 
-# ========== 2. 部署 controller_ros ==========
-cd ~/catkin_ws/src
-ln -s /path/to/AllControlBase/controller_ros .
-cd ~/catkin_ws
-catkin_make
-source devel/setup.bash
+脚本会自动完成：
+- ✅ 安装系统依赖
+- ✅ 安装 ACADOS 高性能 MPC 求解器 (必需)
+- ✅ 安装 universal_controller (pip 可编辑模式)
+- ✅ 编译 controller_ros
+- ✅ 配置所有环境变量
+- ✅ 验证安装
 
-# ========== 3. 启动 ==========
-# 终端1: TurtleBot 驱动
+---
+
+## 🎮 启动命令
+
+安装完成后，使用以下命令启动：
+
+```bash
+# 终端 1: 启动 TurtleBot 驱动
 roslaunch turtlebot_bringup minimal.launch
 
-# 终端2: 控制器
+# 终端 2: 启动控制器
 roslaunch controller_ros turtlebot1.launch
 
-# 终端3: 你的轨迹发布器
+# 终端 3: 启动你的轨迹发布器
 rosrun your_package trajectory_publisher.py
+
+# (可选) 带 Dashboard 监控启动
+roslaunch controller_ros turtlebot1.launch dashboard:=true
 ```
 
 ---
@@ -214,13 +225,17 @@ print(f'   控制器状态: {[s.name for s in ControllerState]}')
 "
 ```
 
-#### ACADOS 安装 (可选，推荐)
+#### ACADOS 安装 (必需 - 高性能 MPC 求解器)
 
-ACADOS 是高性能 MPC 求解器，可显著提升控制性能：
+⚠️ **ACADOS 是必需组件**，可将 MPC 求解时间从 50ms 降低到 5-15ms。
+
+> 💡 **推荐**: 使用一键安装脚本 `install_all.sh` 会自动安装 ACADOS
+
+手动安装步骤：
 
 ```bash
 # 1. 安装依赖
-sudo apt install cmake build-essential
+sudo apt install -y cmake build-essential liblapack-dev libblas-dev libboost-all-dev
 
 # 2. 克隆 ACADOS
 cd ~
@@ -230,9 +245,9 @@ git submodule update --recursive --init
 
 # 3. 编译
 mkdir -p build && cd build
-cmake -DACADOS_WITH_QPOASES=ON ..
-make -j4
-sudo make install
+cmake -DACADOS_WITH_QPOASES=ON -DACADOS_WITH_OSQP=ON ..
+make -j$(nproc)
+make install
 
 # 4. 设置环境变量
 echo 'export ACADOS_SOURCE_DIR=~/acados' >> ~/.bashrc
@@ -240,18 +255,21 @@ echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/acados/lib' >> ~/.bashrc
 source ~/.bashrc
 
 # 5. 安装 Python 接口
-pip install ~/acados/interfaces/acados_template
+pip3 install --user ~/acados/interfaces/acados_template
+
+# 6. 验证安装
+python3 -c "from acados_template import AcadosOcp; print('ACADOS OK')"
 ```
 
 #### 备选方案对比
 
 | 方案 | 优点 | 缺点 | 推荐场景 |
 |------|------|------|----------|
-| **pip install -e . (推荐)** | 自动依赖、可编辑、稳定 | 需要 pip | 生产环境、长期使用 |
+| **一键脚本 install_all.sh** | 全自动、包含 ACADOS | 无 | 🏆 首选 |
+| **pip install -e .** | 自动依赖、可编辑 | 需手动装 ACADOS | 已有 ACADOS |
 | PYTHONPATH | 简单快速 | 依赖需手动装、易出错 | 临时测试 |
-| pip install . | 稳定 | 修改代码需重装 | 只运行不修改 |
 
-#### 备选方案 1: PYTHONPATH (仅临时测试用)
+#### 备选方案: PYTHONPATH (仅临时测试用)
 
 ```bash
 # 假设代码在 /home/user/AllControlBase

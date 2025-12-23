@@ -1,0 +1,136 @@
+# turtlebot1.yaml
+# TurtleBot1 + ROS Noetic 专用配置
+#
+# 使用方法:
+#   roslaunch controller_ros turtlebot1.launch
+#
+# 本配置针对 TurtleBot1 的特性进行了优化:
+# - 较低的控制频率 (20Hz)
+# - 保守的速度限制
+# - 适应较低的传感器频率
+# - 禁用 IMU (TurtleBot1 可能没有)
+
+# =============================================================================
+# 系统配置
+# =============================================================================
+system:
+  ctrl_freq: 20                   # 控制频率 (Hz) - TurtleBot1 建议 20Hz
+  platform: "differential"        # 平台类型: 差速车
+
+# =============================================================================
+# ROS 节点配置
+# =============================================================================
+node:
+  use_sim_time: false             # 是否使用仿真时间
+
+# =============================================================================
+# 话题配置
+# =============================================================================
+topics:
+  # 输入话题
+  odom: "/odom"                           # TurtleBot1 里程计
+  imu: ""                                 # IMU (TurtleBot1 可能没有，留空)
+  trajectory: "/nn/local_trajectory"      # 神经网络轨迹输入
+  emergency_stop: "/controller/emergency_stop"
+  
+  # 输出话题
+  cmd_unified: "/cmd_unified"             # 统一控制命令输出
+  diagnostics: "/controller/diagnostics"  # 诊断信息输出
+  state: "/controller/state"              # 控制器状态输出
+
+# =============================================================================
+# TF 配置
+# =============================================================================
+tf:
+  source_frame: "base_link"       # TurtleBot1 机体坐标系
+  target_frame: "odom"            # 里程计坐标系
+  timeout_ms: 50                  # TF 查询超时 (适当放宽)
+  buffer_warmup_timeout_sec: 5.0  # TF buffer 预热超时
+  buffer_warmup_interval_sec: 0.2 # TF buffer 预热检查间隔
+
+# =============================================================================
+# 超时配置 (适应 TurtleBot1 较低传感器频率)
+# =============================================================================
+watchdog:
+  odom_timeout_ms: 500            # 里程计超时 (ms) - 放宽
+  traj_timeout_ms: 1000           # 轨迹超时 (ms) - 放宽
+  imu_timeout_ms: 0               # IMU 超时 (ms) - 禁用
+  startup_grace_ms: 3000          # 启动宽限期 (ms) - 延长
+
+# =============================================================================
+# 诊断配置
+# =============================================================================
+diagnostics:
+  publish_rate: 5                 # 诊断发布降频率
+
+# =============================================================================
+# MPC 配置 (针对 TurtleBot1 优化，使用 ACADOS 高性能求解器)
+# =============================================================================
+mpc:
+  horizon: 15                     # MPC 预测时域 (1.5秒)
+  horizon_degraded: 8             # 降级模式预测时域 (0.8秒)
+  dt: 0.1                         # MPC 时间步长 (秒)
+  
+  # 代价函数权重 (针对 TurtleBot1 调优)
+  weights:
+    position: 10.0                # 位置跟踪权重
+    velocity: 1.0                 # 速度跟踪权重
+    heading: 5.0                  # 航向跟踪权重
+    control_v: 0.2                # 速度控制平滑权重 (稍高，减少抖动)
+    control_omega: 0.2            # 角速度控制平滑权重
+  
+  # ACADOS 高性能求解器配置 (必需)
+  solver:
+    nlp_max_iter: 50              # NLP 求解器最大迭代次数
+    qp_solver: "PARTIAL_CONDENSING_HPIPM"  # QP 求解器类型 (高性能)
+    integrator_type: "ERK"        # 积分器类型 (显式 Runge-Kutta)
+    nlp_solver_type: "SQP_RTI"    # NLP 求解器类型 (实时迭代，最快)
+  
+  # MPC 健康监控参数
+  health_monitor:
+    time_warning_thresh_ms: 10    # 求解时间警告阈值 (ms)
+    time_critical_thresh_ms: 20   # 求解时间临界阈值 (ms)
+    time_recovery_thresh_ms: 8    # 求解时间恢复阈值 (ms)
+    consecutive_warning_limit: 5  # 连续警告次数限制 (放宽)
+  
+  # Fallback 求解器参数 (ACADOS 失败时使用)
+  fallback:
+    lookahead_steps: 3            # 前瞻步数
+    heading_kp: 1.5               # 航向控制增益
+    default_speed_ratio: 0.5      # 默认速度比例
+
+# =============================================================================
+# 速度约束 (TurtleBot1 安全限制)
+# =============================================================================
+constraints:
+  v_max: 0.5                      # 最大线速度 (m/s)
+  v_min: -0.2                     # 最小线速度 (m/s) - 倒车限制
+  omega_max: 1.0                  # 最大角速度 (rad/s)
+  a_max: 0.5                      # 最大加速度 (m/s²)
+  alpha_max: 1.0                  # 最大角加速度 (rad/s²)
+
+# =============================================================================
+# 一致性检查配置 (提升平滑性)
+# =============================================================================
+consistency:
+  enable_soft_head: true          # 启用 Soft Head
+  alpha_soft_threshold: 0.6       # Soft 权重阈值
+  curvature_weight: 0.3           # 曲率权重
+  velocity_direction_weight: 0.3  # 速度方向权重
+  temporal_smoothness_weight: 0.4 # 时序平滑权重
+
+# =============================================================================
+# 安全配置
+# =============================================================================
+safety:
+  enable_backup_controller: true  # 启用备用控制器 (Pure Pursuit)
+  backup_lookahead: 0.5           # Pure Pursuit 前视距离 (m)
+  emergency_decel: 1.0            # 紧急减速度 (m/s²)
+
+# =============================================================================
+# 状态估计配置
+# =============================================================================
+estimator:
+  use_ekf: true                   # 使用 EKF 状态估计
+  process_noise: 0.1              # 过程噪声
+  measurement_noise: 0.05         # 测量噪声
