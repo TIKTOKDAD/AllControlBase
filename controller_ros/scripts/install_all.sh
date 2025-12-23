@@ -230,9 +230,11 @@ print_success "ACADOS 安装完成 ✓"
 # ============================================================================
 print_header "步骤 4: 安装 universal_controller"
 
-cd "$ALLCONTROLBASE_PATH/universal_controller"
+# pyproject.toml 在 AllControlBase 根目录
+cd "$ALLCONTROLBASE_PATH"
 
-# 可编辑安装
+# 可编辑安装 (从根目录安装，因为 pyproject.toml 在根目录)
+print_info "从 $ALLCONTROLBASE_PATH 安装 universal_controller..."
 pip3 install --user -e .
 
 # 验证安装
