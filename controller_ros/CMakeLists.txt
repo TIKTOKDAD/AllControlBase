@@ -12,6 +12,9 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
 )
 
+# 启用 Python 模块安装 (setup.py) - 必须在 generate_messages 之前
+catkin_python_setup()
+
 # 生成消息
 add_message_files(
   FILES
@@ -35,9 +38,6 @@ generate_messages(
   std_msgs
   geometry_msgs
 )
-
-# 启用 Python 模块安装 (setup.py)
-catkin_python_setup()
 
 catkin_package(
   CATKIN_DEPENDS rospy std_msgs geometry_msgs nav_msgs sensor_msgs tf2_ros message_runtime
