@@ -48,6 +48,7 @@ catkin_install_python(PROGRAMS
   scripts/controller_node.py
   scripts/dashboard_node.py
   scripts/cmd_vel_adapter.py
+  scripts/trajectory_publisher.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
