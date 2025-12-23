@@ -23,7 +23,7 @@ from universal_controller.core.enums import ControllerState, PlatformType
 from universal_controller.core.diagnostics_input import DiagnosticsInput
 from universal_controller.config.default_config import DEFAULT_CONFIG, PLATFORM_CONFIG
 from universal_controller.manager.controller_manager import ControllerManager
-from universal_controller.mock.test_data_generator import (
+from universal_controller.tests.fixtures import (
     create_test_trajectory,
     create_test_odom,
     create_test_imu,

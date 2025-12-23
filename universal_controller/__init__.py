@@ -12,7 +12,7 @@
 - 安全可靠: 热备控制器 + 渐进式降级，异常时安全停车
 - 高实时性: ACADOS 求解器，15ms 内完成优化
 - 插件化架构: 核心模块可替换，便于扩展和维护
-- 模块化 Mock: 模拟数据独立到 mock/ 模块，职责分离清晰
+- ROS 兼容: 支持 ROS 环境和独立运行模式，自动检测切换
 - 强类型诊断: DiagnosticsInput 数据类提供类型安全
 - 职责分离: DiagnosticsPublisher 独立处理诊断发布
 
@@ -42,7 +42,9 @@ from .core.enums import ControllerState, PlatformType, HeadingMode, TransformSta
 from .core.data_types import (
     Trajectory, ControlOutput, ConsistencyResult, EstimatorOutput,
     Point3D, Header, Odometry, Imu, DiagnosticsV2, TimeoutStatus,
-    SafetyDecision, MPCHealthStatus
+    SafetyDecision, MPCHealthStatus,
+    # TF2 相关数据类型
+    Vector3, Quaternion, Transform, TransformStamped,
 )
 from .core.diagnostics_input import DiagnosticsInput
 from .core.interfaces import (
@@ -63,6 +65,8 @@ __all__ = [
     'Trajectory', 'ControlOutput', 'ConsistencyResult', 'EstimatorOutput',
     'Point3D', 'Header', 'Odometry', 'Imu', 'DiagnosticsV2', 'TimeoutStatus',
     'SafetyDecision', 'MPCHealthStatus', 'DiagnosticsInput',
+    # TF2 相关数据类型
+    'Vector3', 'Quaternion', 'Transform', 'TransformStamped',
     # 接口
     'IStateEstimator', 'ITrajectoryTracker', 'IConsistencyChecker',
     'ISafetyMonitor', 'ISmoothTransition', 'ICoordinateTransformer',

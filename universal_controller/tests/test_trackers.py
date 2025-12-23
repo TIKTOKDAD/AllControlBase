@@ -18,7 +18,7 @@ from universal_controller.tracker.mpc_controller import MPCController
 from universal_controller.tracker.pure_pursuit import PurePursuitController
 from universal_controller.core.data_types import ConsistencyResult
 from universal_controller.config.default_config import DEFAULT_CONFIG, PLATFORM_CONFIG
-from universal_controller.mock.test_data_generator import create_test_trajectory
+from universal_controller.tests.fixtures import create_test_trajectory
 
 
 def test_mpc_basic_compute():

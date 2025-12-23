@@ -162,7 +162,8 @@ class BasicSafetyMonitor(ISafetyMonitor):
         current_time = get_monotonic_time()
         if self._last_cmd is not None and self._last_time is not None:
             dt = current_time - self._last_time
-            if dt > self.min_dt_for_accel and dt < self.max_dt_for_accel:
+            # 使用非严格不等式，确保边界值也被正确处理
+            if dt >= self.min_dt_for_accel and dt <= self.max_dt_for_accel:
                 # 计算原始加速度
                 raw_ax = (cmd.vx - self._last_cmd.vx) / dt
                 raw_ay = (cmd.vy - self._last_cmd.vy) / dt

@@ -506,6 +506,15 @@ class MPCController(ITrajectoryTracker):
         
         if self._is_initialized:
             logger.info("Reinitializing ACADOS solver with new horizon...")
+            # 先释放旧的求解器资源
+            if self._solver is not None:
+                try:
+                    # ACADOS 求解器没有显式的 close/destroy 方法
+                    # 但将其设为 None 可以让 Python GC 回收资源
+                    self._solver = None
+                except Exception as e:
+                    logger.warning(f"Error releasing old solver: {e}")
+            self._is_initialized = False
             self._initialize_solver()
     
     def get_health_metrics(self) -> Dict[str, Any]:
@@ -519,6 +528,12 @@ class MPCController(ITrajectoryTracker):
         }
     
     def shutdown(self) -> None:
+        """释放资源并重置状态"""
         if self._solver is not None:
             self._solver = None
         self._is_initialized = False
+        # 重置内部状态
+        self._last_cmd = None
+        self._last_solve_time_ms = 0.0
+        self._last_kkt_residual = 0.0
+        self._last_condition_number = 1.0

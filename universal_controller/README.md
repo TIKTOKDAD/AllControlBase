@@ -53,7 +53,7 @@ base_link (机体坐标系)              odom (里程计坐标系)
 - **ROS 兼容**: 支持 ROS 环境和独立运行模式
 - **完整 TF2 支持**: 多跳链式变换查找 (最多 10 跳)
 - **轨迹可视化**: 实时 2D/3D 轨迹显示，支持 Hard/Soft 叠加
-- **模块化 Mock**: 模拟数据独立到 `mock/` 模块，职责分离清晰
+- **模块化架构**: ROS 兼容层独立到 `compat/` 模块，测试数据生成器在 `tests/`
 
 ## ROS 兼容性
 
@@ -152,12 +152,12 @@ universal_controller/
 │   ├── __init__.py
 │   └── controller_manager.py # 控制器管理器
 │
-├── mock/                    # 模拟数据模块 (独立于生产代码)
+├── compat/                  # ROS 兼容层模块 (生产代码，用于独立运行模式)
 │   ├── __init__.py
-│   ├── ros_mock.py          # ROS 模拟类 (MockRospy, MockTF2Buffer)
-│   ├── data_mock.py         # 模拟数据类型 (MockVector3 等)
-│   ├── diagnostics_mock.py  # 模拟诊断数据生成
-│   └── test_data_generator.py # 测试数据生成器 (轨迹、里程计)
+│   └── ros_compat_impl.py   # 独立运行实现 (StandaloneRospy, StandaloneTF2Buffer)
+│
+├── mock/                    # 向后兼容模块 (已弃用，请使用 compat/)
+│   └── __init__.py          # 重导出 ROS 兼容层，带弃用警告
 │
 ├── dashboard/               # 可视化界面
 │   ├── __init__.py
@@ -186,6 +186,7 @@ universal_controller/
 │
 └── tests/                   # 测试模块
     ├── __init__.py
+    ├── test_data_generator.py # 测试数据生成器 (轨迹、里程计)
     ├── test_core.py         # 核心模块测试
     ├── test_components.py   # 组件测试
     ├── test_tf2_transform.py # TF2 变换测试 (F3)

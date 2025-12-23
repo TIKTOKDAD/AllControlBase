@@ -476,3 +476,39 @@ class Imu:
     orientation: Tuple[float, float, float, float] = (0, 0, 0, 1)
     angular_velocity: Tuple[float, float, float] = (0, 0, 0)
     linear_acceleration: Tuple[float, float, float] = (0, 0, 0)
+
+
+# =============================================================================
+# TF2 相关数据类型 (用于坐标变换)
+# =============================================================================
+
+@dataclass
+class Vector3:
+    """3D 向量 (兼容 geometry_msgs/Vector3)"""
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+
+
+@dataclass
+class Quaternion:
+    """四元数 (兼容 geometry_msgs/Quaternion)"""
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    w: float = 1.0
+
+
+@dataclass
+class Transform:
+    """变换 (兼容 geometry_msgs/Transform)"""
+    translation: Vector3 = field(default_factory=Vector3)
+    rotation: Quaternion = field(default_factory=Quaternion)
+
+
+@dataclass
+class TransformStamped:
+    """带时间戳的变换 (兼容 geometry_msgs/TransformStamped)"""
+    header: Header = field(default_factory=Header)
+    child_frame_id: str = ""
+    transform: Transform = field(default_factory=Transform)

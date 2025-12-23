@@ -94,6 +94,16 @@ class DiagnosticsPublisher:
         # 初始化 ROS Publishers
         self._init_ros_publishers()
     
+    @property
+    def cmd_topic(self) -> str:
+        """获取控制命令话题名称"""
+        return self._cmd_topic
+    
+    @property
+    def diagnostics_topic(self) -> str:
+        """获取诊断话题名称"""
+        return self._diagnostics_topic
+    
     def _init_ros_publishers(self) -> None:
         """初始化 ROS Publishers"""
         if not ROS_AVAILABLE:

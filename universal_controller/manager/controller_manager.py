@@ -150,7 +150,7 @@ class ControllerManager:
             from geometry_msgs.msg import Twist
             
             # 使用已存储的话题名称，避免重复读取配置
-            cmd_topic = self._diagnostics_publisher._cmd_topic
+            cmd_topic = self._diagnostics_publisher.cmd_topic
             
             # 控制命令发布器
             self._cmd_pub = rospy.Publisher(

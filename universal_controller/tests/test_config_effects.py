@@ -35,7 +35,7 @@ from universal_controller.safety.state_machine import StateMachine
 from universal_controller.safety.timeout_monitor import TimeoutMonitor
 from universal_controller.health.mpc_health_monitor import MPCHealthMonitor
 from universal_controller.transition.smooth_transition import ExponentialSmoothTransition
-from universal_controller.mock.test_data_generator import (
+from universal_controller.tests.fixtures import (
     create_test_trajectory, create_test_odom, create_test_imu
 )
 

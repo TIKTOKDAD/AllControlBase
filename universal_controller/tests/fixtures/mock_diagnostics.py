@@ -1,7 +1,16 @@
 """
-模拟诊断数据生成
+模拟诊断数据生成器
 
 用于 Dashboard 独立运行时生成模拟的诊断数据。
+
+重要说明:
+=========
+此模块仅用于测试和 Dashboard 演示，不应在生产代码中使用。
+
+使用场景:
+- Dashboard 独立模式测试
+- 单元测试中的诊断数据模拟
+- 集成测试中的数据生成
 """
 import time
 import random
@@ -108,6 +117,13 @@ def generate_mock_diagnostics_degraded(start_time: float = None,
     Args:
         start_time: 起始时间戳
         degradation_level: 降级级别 (0-6)
+            0: INIT
+            1: NORMAL
+            2: SOFT_DISABLED
+            3: MPC_DEGRADED
+            4: BACKUP_ACTIVE
+            5: STOPPING
+            6: STOPPED
     
     Returns:
         模拟的诊断数据字典

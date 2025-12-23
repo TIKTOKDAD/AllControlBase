@@ -118,10 +118,10 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
                 logger.warning(f"TF2 initialization failed: {e}")
                 self._tf2_initialized = False
         else:
-            # 非 ROS 环境，使用模拟 Buffer
+            # 非 ROS 环境，使用独立运行模式的 TF2 Buffer
             self._tf_buffer = tf2_ros.Buffer()
             self._tf2_initialized = True
-            logger.debug("Using mock TF2 buffer")
+            logger.debug("Using standalone TF2 buffer (non-ROS mode)")
     
     def set_tf2_available(self, available: bool) -> None:
         """
@@ -167,18 +167,18 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         if self._tf_buffer is None:
             return
         
-        from ..mock.data_mock import MockTransformStamped, MockHeader, MockTransform, MockVector3, MockQuaternion
+        from ..core.data_types import TransformStamped, Header, Transform, Vector3, Quaternion
         
-        transform = MockTransformStamped()
-        transform.header = MockHeader()
+        transform = TransformStamped()
+        transform.header = Header()
         transform.header.frame_id = parent_frame
-        transform.header.stamp = create_time(stamp if stamp is not None else get_current_time())
+        transform.header.stamp = stamp if stamp is not None else get_current_time()
         transform.child_frame_id = child_frame
         
         q = quaternion_from_euler(0, 0, yaw)
-        transform.transform = MockTransform()
-        transform.transform.translation = MockVector3(x, y, z)
-        transform.transform.rotation = MockQuaternion(q[0], q[1], q[2], q[3])
+        transform.transform = Transform()
+        transform.transform.translation = Vector3(x, y, z)
+        transform.transform.rotation = Quaternion(q[0], q[1], q[2], q[3])
         
         self._tf_buffer.set_transform(transform, "manual")
     
@@ -315,8 +315,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
                 self.fallback_start_time = None
                 self.accumulated_drift = 0.0
                 # 重置漂移估计时间跟踪
-                if hasattr(self, '_last_fallback_update_time'):
-                    self._last_fallback_update_time = None
+                self._last_fallback_update_time = None
                 logger.info("TF2 recovered, drift corrected")
             
             self._last_status = TransformStatus.TF2_OK

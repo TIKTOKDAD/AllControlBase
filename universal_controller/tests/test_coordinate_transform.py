@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from universal_controller.config.default_config import DEFAULT_CONFIG
 from universal_controller.transform.robust_transformer import RobustCoordinateTransformer
-from universal_controller.mock.test_data_generator import (
+from universal_controller.tests.fixtures import (
     create_test_trajectory, 
     create_test_odom,
     create_local_trajectory_with_transform

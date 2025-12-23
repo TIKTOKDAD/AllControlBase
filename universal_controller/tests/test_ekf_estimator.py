@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from universal_controller.estimator.adaptive_ekf import AdaptiveEKFEstimator
 from universal_controller.config.default_config import DEFAULT_CONFIG
-from universal_controller.mock.test_data_generator import create_test_odom, create_test_imu
+from universal_controller.tests.fixtures import create_test_odom, create_test_imu
 
 
 def test_ekf_initialization():

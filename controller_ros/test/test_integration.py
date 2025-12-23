@@ -49,7 +49,7 @@ def test_import_controller_ros_bridge():
 def test_full_integration_pipeline():
     """测试完整的集成管道"""
     from universal_controller.config.default_config import DEFAULT_CONFIG
-    from universal_controller.mock import create_test_odom, create_test_trajectory
+    from universal_controller.tests.test_data_generator import create_test_odom, create_test_trajectory
     from controller_ros.bridge.controller_bridge import ControllerBridge
     
     # 1. 创建桥接层
@@ -133,7 +133,7 @@ def test_adapter_data_flow():
 def test_platform_specific_output():
     """测试不同平台的输出"""
     from universal_controller.config.default_config import DEFAULT_CONFIG
-    from universal_controller.mock import create_test_odom, create_test_trajectory
+    from universal_controller.tests.test_data_generator import create_test_odom, create_test_trajectory
     from controller_ros.bridge.controller_bridge import ControllerBridge
     
     platforms = {
@@ -310,7 +310,7 @@ def test_trajectory_mode_mapping():
 def test_diagnostics_callback():
     """测试诊断回调功能"""
     from universal_controller.config.default_config import DEFAULT_CONFIG
-    from universal_controller.mock import create_test_odom, create_test_trajectory
+    from universal_controller.tests.test_data_generator import create_test_odom, create_test_trajectory
     from controller_ros.bridge.controller_bridge import ControllerBridge
     
     config = DEFAULT_CONFIG.copy()

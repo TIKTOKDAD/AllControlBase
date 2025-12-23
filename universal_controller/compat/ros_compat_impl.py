@@ -1,7 +1,27 @@
 """
-ROS 模拟类
+ROS 兼容层实现 - 独立运行模式
 
-模拟 rospy, tf2_ros 等 ROS 模块，用于非 ROS 环境下的测试和运行。
+提供 rospy, tf2_ros 等 ROS 模块的替代实现，用于非 ROS 环境下的独立运行。
+
+重要说明:
+=========
+这是**生产代码**的一部分，不是测试 mock。
+
+- StandaloneRospy: rospy 模块的替代实现
+- StandaloneTF2Buffer: tf2_ros.Buffer 的替代实现
+- StandaloneTF2Ros: tf2_ros 模块的替代实现
+- StandaloneTFTransformations: tf.transformations 的替代实现
+
+这些类在非 ROS 环境下提供完整的功能支持，使 universal_controller 可以独立运行。
+
+命名约定:
+=========
+- "Standalone" 前缀表示这是独立运行模式的实现
+- 不使用 "Mock" 前缀，因为这不是测试 mock，而是生产代码的替代实现
+
+向后兼容:
+=========
+为保持向后兼容，保留 Mock* 别名，但建议使用 Standalone* 名称。
 """
 import time
 import numpy as np
@@ -9,104 +29,144 @@ import logging
 from collections import deque
 from typing import Optional, Tuple, Any
 
-from .data_mock import MockTransformStamped, MockHeader
-
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# TF2 异常类型
+# =============================================================================
+
 class LookupException(Exception):
-    """TF2 查找异常"""
+    """TF2 查找异常 - 找不到指定的坐标变换"""
     pass
 
 
 class ExtrapolationException(Exception):
-    """TF2 外推异常"""
+    """TF2 外推异常 - 请求的时间超出缓存范围"""
     pass
 
 
 class ConnectivityException(Exception):
-    """TF2 连接异常"""
+    """TF2 连接异常 - 坐标系之间没有连接路径"""
     pass
 
 
-class MockRospy:
-    """模拟 rospy 模块"""
+# =============================================================================
+# StandaloneRospy - rospy 模块的替代实现
+# =============================================================================
+
+class StandaloneRospy:
+    """
+    rospy 模块的独立运行替代实现
+    
+    提供 Time, Duration 类和日志函数，用于非 ROS 环境。
+    """
     
     class Time:
+        """ROS Time 的替代实现"""
+        
         def __init__(self, secs: float = 0, nsecs: int = 0):
             self._secs = secs
             self._nsecs = nsecs
         
         @classmethod
-        def now(cls) -> 'MockRospy.Time':
+        def now(cls) -> 'StandaloneRospy.Time':
+            """获取当前时间"""
             t = time.time()
             secs = int(t)
             nsecs = int((t - secs) * 1e9)
             return cls(secs, nsecs)
         
         @classmethod
-        def from_sec(cls, sec: float) -> 'MockRospy.Time':
+        def from_sec(cls, sec: float) -> 'StandaloneRospy.Time':
+            """从秒数创建时间对象"""
             secs = int(sec)
             nsecs = int((sec - secs) * 1e9)
             return cls(secs, nsecs)
         
         def to_sec(self) -> float:
+            """转换为秒数"""
             return self._secs + self._nsecs * 1e-9
         
-        def __sub__(self, other: 'MockRospy.Time') -> 'MockRospy.Duration':
+        def __sub__(self, other: 'StandaloneRospy.Time') -> 'StandaloneRospy.Duration':
+            """时间相减得到时长"""
             diff = self.to_sec() - other.to_sec()
-            return MockRospy.Duration.from_sec(diff)
+            return StandaloneRospy.Duration.from_sec(diff)
         
-        def __add__(self, other: 'MockRospy.Duration') -> 'MockRospy.Time':
-            return MockRospy.Time.from_sec(self.to_sec() + other.to_sec())
+        def __add__(self, other: 'StandaloneRospy.Duration') -> 'StandaloneRospy.Time':
+            """时间加时长得到新时间"""
+            return StandaloneRospy.Time.from_sec(self.to_sec() + other.to_sec())
+        
+        def __repr__(self) -> str:
+            return f"Time({self.to_sec():.6f})"
     
     class Duration:
+        """ROS Duration 的替代实现"""
+        
         def __init__(self, secs: float = 0, nsecs: int = 0):
             self._secs = secs
             self._nsecs = nsecs
         
         @classmethod
-        def from_sec(cls, sec: float) -> 'MockRospy.Duration':
+        def from_sec(cls, sec: float) -> 'StandaloneRospy.Duration':
+            """从秒数创建时长对象"""
             secs = int(sec)
             nsecs = int((sec - secs) * 1e9)
             return cls(secs, nsecs)
         
         def to_sec(self) -> float:
+            """转换为秒数"""
             return self._secs + self._nsecs * 1e-9
+        
+        def __repr__(self) -> str:
+            return f"Duration({self.to_sec():.6f})"
     
+    # 日志函数
     @staticmethod
     def loginfo(msg: str):
+        """记录信息日志"""
         logger.info(msg)
     
     @staticmethod
     def logwarn(msg: str):
+        """记录警告日志"""
         logger.warning(msg)
     
     @staticmethod
     def logerr(msg: str):
+        """记录错误日志"""
         logger.error(msg)
     
     @staticmethod
+    def logdebug(msg: str):
+        """记录调试日志"""
+        logger.debug(msg)
+    
+    @staticmethod
     def logwarn_throttle(period: float, msg: str):
-        # 简化实现：不做节流，直接输出
+        """节流警告日志（简化实现：不做节流）"""
         logger.warning(msg)
     
     @staticmethod
     def loginfo_throttle(period: float, msg: str):
-        # 简化实现：不做节流，直接输出
+        """节流信息日志（简化实现：不做节流）"""
         logger.info(msg)
     
     @staticmethod
     def logwarn_once(msg: str):
-        # 简化实现：不做去重，直接输出
+        """单次警告日志（简化实现：不做去重）"""
         logger.warning(msg)
 
 
-class MockTF2BufferCore:
+# =============================================================================
+# StandaloneTF2Buffer - tf2_ros.Buffer 的替代实现
+# =============================================================================
+
+class StandaloneTF2Buffer:
     """
-    模拟 tf2_ros.Buffer - 完整 SE(3) 实现
+    tf2_ros.Buffer 的独立运行替代实现
     
-    支持:
+    完整 SE(3) 实现，支持:
     - 直接变换查找
     - 反向变换查找
     - 多跳链式变换查找 (BFS 算法，最多 10 跳)
@@ -120,20 +180,20 @@ class MockTF2BufferCore:
         self._static_transforms = {}
         self._frame_graph = {}  # 帧连接图，用于 BFS
     
-    def set_transform(self, transform: MockTransformStamped, authority: str = "default"):
-        """设置变换"""
+    def set_transform(self, transform, authority: str = "default"):
+        """设置动态变换"""
         key = (transform.header.frame_id, transform.child_frame_id)
         self._transforms[key] = transform
         self._update_frame_graph(transform.header.frame_id, transform.child_frame_id)
     
-    def set_transform_static(self, transform: MockTransformStamped, authority: str = "default"):
+    def set_transform_static(self, transform, authority: str = "default"):
         """设置静态变换"""
         key = (transform.header.frame_id, transform.child_frame_id)
         self._static_transforms[key] = transform
         self._update_frame_graph(transform.header.frame_id, transform.child_frame_id)
     
     def _update_frame_graph(self, parent: str, child: str) -> None:
-        """更新帧连接图"""
+        """更新帧连接图（用于 BFS 查找）"""
         if parent not in self._frame_graph:
             self._frame_graph[parent] = set()
         if child not in self._frame_graph:
@@ -142,9 +202,25 @@ class MockTF2BufferCore:
         self._frame_graph[child].add(parent)
     
     def lookup_transform(self, target_frame: str, source_frame: str, 
-                        time: Any, timeout: Any = None) -> MockTransformStamped:
-        """查找变换"""
-        # 同一坐标系
+                        time: Any, timeout: Any = None):
+        """
+        查找坐标变换
+        
+        Args:
+            target_frame: 目标坐标系
+            source_frame: 源坐标系
+            time: 查询时间
+            timeout: 超时时间
+        
+        Returns:
+            TransformStamped 对象
+        
+        Raises:
+            LookupException: 找不到变换
+        """
+        from ..core.data_types import TransformStamped, Header, Transform, Vector3, Quaternion
+        
+        # 同一坐标系返回单位变换
         if target_frame == source_frame:
             return self._identity_transform(target_frame)
         
@@ -169,19 +245,22 @@ class MockTF2BufferCore:
         
         raise LookupException(f"Transform from {source_frame} to {target_frame} not found")
     
-    def _identity_transform(self, frame_id: str) -> MockTransformStamped:
+    def _identity_transform(self, frame_id: str):
         """返回单位变换"""
-        result = MockTransformStamped()
-        result.header.frame_id = frame_id
+        from ..core.data_types import TransformStamped, Header, Transform, Vector3, Quaternion
+        
+        result = TransformStamped()
+        result.header = Header(frame_id=frame_id)
         result.child_frame_id = frame_id
-        result.transform.rotation.w = 1.0
+        result.transform = Transform()
+        result.transform.rotation = Quaternion(w=1.0)
         return result
     
-    def _bfs_chain_lookup(self, target_frame: str, source_frame: str) -> Optional[MockTransformStamped]:
+    def _bfs_chain_lookup(self, target_frame: str, source_frame: str):
         """
         使用 BFS 算法进行多跳链式查找
         
-        支持任意深度的变换链 (最多 MAX_CHAIN_DEPTH 跳)
+        支持任意深度的变换链（最多 MAX_CHAIN_DEPTH 跳）
         """
         if target_frame not in self._frame_graph or source_frame not in self._frame_graph:
             return None
@@ -209,13 +288,15 @@ class MockTF2BufferCore:
         
         return None
     
-    def _compute_chain_transform(self, path: list) -> Optional[MockTransformStamped]:
+    def _compute_chain_transform(self, path: list):
         """
         计算路径上的组合变换
         
         path: [target_frame, ..., source_frame]
         返回: target_frame <- source_frame 的变换
         """
+        from ..core.data_types import TransformStamped, Header, Transform, Vector3, Quaternion
+        
         if len(path) < 2:
             return None
         
@@ -249,16 +330,14 @@ class MockTF2BufferCore:
         result.child_frame_id = path[-1]  # source_frame
         return result
     
-    def _try_chain_lookup(self, target_frame: str, source_frame: str) -> Optional[MockTransformStamped]:
-        """尝试通过中间帧进行链式查找 (保留兼容性，内部调用 BFS)"""
-        return self._bfs_chain_lookup(target_frame, source_frame)
-    
-    def _compose_transforms(self, t1: MockTransformStamped, t2: MockTransformStamped) -> MockTransformStamped:
+    def _compose_transforms(self, t1, t2):
         """
         组合两个变换: T_result = T1 * T2
         
         对于 SE(3): (R1, p1) * (R2, p2) = (R1*R2, R1*p2 + p1)
         """
+        from ..core.data_types import TransformStamped, Header, Transform, Vector3, Quaternion
+        
         # 提取四元数
         q1 = (t1.transform.rotation.x, t1.transform.rotation.y, 
               t1.transform.rotation.z, t1.transform.rotation.w)
@@ -276,17 +355,12 @@ class MockTF2BufferCore:
         p1 = np.array([t1.transform.translation.x, t1.transform.translation.y, t1.transform.translation.z])
         p_result = R1 @ p2 + p1
         
-        result = MockTransformStamped()
-        result.header.stamp = t1.header.stamp
-        result.header.frame_id = t1.header.frame_id
+        result = TransformStamped()
+        result.header = Header(stamp=t1.header.stamp, frame_id=t1.header.frame_id)
         result.child_frame_id = t2.child_frame_id
-        result.transform.translation.x = p_result[0]
-        result.transform.translation.y = p_result[1]
-        result.transform.translation.z = p_result[2]
-        result.transform.rotation.x = q_result[0]
-        result.transform.rotation.y = q_result[1]
-        result.transform.rotation.z = q_result[2]
-        result.transform.rotation.w = q_result[3]
+        result.transform = Transform()
+        result.transform.translation = Vector3(p_result[0], p_result[1], p_result[2])
+        result.transform.rotation = Quaternion(q_result[0], q_result[1], q_result[2], q_result[3])
         return result
     
     def _quaternion_multiply(self, q1: Tuple[float, float, float, float], 
@@ -319,12 +393,14 @@ class MockTF2BufferCore:
         return (key in self._transforms or key in self._static_transforms or
                 reverse_key in self._transforms or reverse_key in self._static_transforms)
     
-    def _invert_transform(self, transform: MockTransformStamped) -> MockTransformStamped:
+    def _invert_transform(self, transform):
         """
         反转变换 - 完整 SE(3) 逆变换
         
         对于变换 T = (R, t)，其逆变换为 T^-1 = (R^T, -R^T * t)
         """
+        from ..core.data_types import TransformStamped, Header, Transform, Vector3, Quaternion
+        
         t = transform.transform
         q = (t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w)
         
@@ -332,7 +408,7 @@ class MockTF2BufferCore:
         norm_sq = q[0]**2 + q[1]**2 + q[2]**2 + q[3]**2
         
         if norm_sq < 1e-10:
-            # 无效四元数，返回单位变换的逆（即单位变换本身）
+            # 无效四元数，返回单位变换的逆
             logger.warning("Invalid quaternion detected, using identity")
             inv_q = (0.0, 0.0, 0.0, 1.0)
             R = np.eye(3)
@@ -341,10 +417,8 @@ class MockTF2BufferCore:
             if abs(norm_sq - 1.0) > 1e-6:
                 norm = np.sqrt(norm_sq)
                 q = (q[0]/norm, q[1]/norm, q[2]/norm, q[3]/norm)
-                norm_sq = 1.0
             
-            # 四元数求逆: q^-1 = q* / |q|^2 = (-x, -y, -z, w) / |q|^2
-            # 对于单位四元数 |q|^2 = 1
+            # 四元数求逆: q^-1 = q* / |q|^2 = (-x, -y, -z, w)
             inv_q = (-q[0], -q[1], -q[2], q[3])
             
             # 旋转矩阵
@@ -355,27 +429,26 @@ class MockTF2BufferCore:
                 [2*(x*z - y*w), 2*(y*z + x*w), 1 - 2*(x*x + y*y)]
             ])
         
-        # 逆平移
+        # 逆平移: -R^T * t
         translation = np.array([t.translation.x, t.translation.y, t.translation.z])
         inv_translation = -R.T @ translation
         
-        result = MockTransformStamped()
-        result.header.stamp = transform.header.stamp
-        result.header.frame_id = transform.child_frame_id
+        result = TransformStamped()
+        result.header = Header(stamp=transform.header.stamp, frame_id=transform.child_frame_id)
         result.child_frame_id = transform.header.frame_id
-        result.transform.translation.x = inv_translation[0]
-        result.transform.translation.y = inv_translation[1]
-        result.transform.translation.z = inv_translation[2]
-        result.transform.rotation.x = inv_q[0]
-        result.transform.rotation.y = inv_q[1]
-        result.transform.rotation.z = inv_q[2]
-        result.transform.rotation.w = inv_q[3]
+        result.transform = Transform()
+        result.transform.translation = Vector3(inv_translation[0], inv_translation[1], inv_translation[2])
+        result.transform.rotation = Quaternion(inv_q[0], inv_q[1], inv_q[2], inv_q[3])
         return result
 
 
-class MockTF2Ros:
-    """模拟 tf2_ros 模块"""
-    Buffer = MockTF2BufferCore
+# =============================================================================
+# StandaloneTF2Ros - tf2_ros 模块的替代实现
+# =============================================================================
+
+class StandaloneTF2Ros:
+    """tf2_ros 模块的独立运行替代实现"""
+    Buffer = StandaloneTF2Buffer
     TransformListener = lambda self, buffer: None
     TransformBroadcaster = lambda: None
     StaticTransformBroadcaster = lambda: None
@@ -384,15 +457,32 @@ class MockTF2Ros:
     ConnectivityException = ConnectivityException
 
 
-class MockTFTransformations:
-    """模拟 tf.transformations 模块"""
+# =============================================================================
+# StandaloneTFTransformations - tf.transformations 的替代实现
+# =============================================================================
+
+class StandaloneTFTransformations:
+    """tf.transformations 模块的独立运行替代实现"""
     
     @staticmethod
     def euler_from_quaternion(q):
+        """从四元数计算欧拉角"""
         from ..core.ros_compat import euler_from_quaternion
         return euler_from_quaternion(q)
     
     @staticmethod
     def quaternion_from_euler(roll, pitch, yaw):
+        """从欧拉角计算四元数"""
         from ..core.ros_compat import quaternion_from_euler
         return quaternion_from_euler(roll, pitch, yaw)
+
+
+# =============================================================================
+# 向后兼容别名 (已弃用，建议使用 Standalone* 名称)
+# =============================================================================
+
+# 保留 Mock* 别名以保持向后兼容
+MockRospy = StandaloneRospy
+MockTF2BufferCore = StandaloneTF2Buffer
+MockTF2Ros = StandaloneTF2Ros
+MockTFTransformations = StandaloneTFTransformations

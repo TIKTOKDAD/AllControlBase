@@ -53,6 +53,8 @@ class ExponentialSmoothTransition(ISmoothTransition):
         if alpha >= self.completion_threshold or elapsed > self.max_duration:
             self.in_transition = False
             self.from_cmd = None
+            self.start_time = None  # 重置 start_time
+            self.progress = 1.0  # 设置为完成状态
             return new_cmd
         
         return ControlOutput(
@@ -113,6 +115,8 @@ class LinearSmoothTransition(ISmoothTransition):
         if alpha >= 1.0:
             self.in_transition = False
             self.from_cmd = None
+            self.start_time = None  # 重置 start_time
+            self.progress = 1.0  # 设置为完成状态
             return new_cmd
         
         return ControlOutput(

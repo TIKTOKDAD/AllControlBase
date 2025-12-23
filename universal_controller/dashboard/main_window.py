@@ -230,17 +230,37 @@ class DashboardWindow(QMainWindow):
         event.accept()
 
 
-def run_dashboard(controller_manager=None, config: dict = None, use_mock: bool = False):
+def run_dashboard(controller_manager, config: dict = None):
+    """
+    启动 Dashboard 界面
+    
+    Args:
+        controller_manager: ControllerManager 实例（必需）
+        config: 配置字典
+    
+    注意：
+        此函数需要传入有效的 controller_manager。
+        如需测试界面，请使用 tests/run_dashboard_mock.py
+    """
     import sys
     from PyQt5.QtWidgets import QApplication
+    
+    if controller_manager is None:
+        raise ValueError(
+            "controller_manager is required. "
+            "For testing with mock data, use: python -m universal_controller.tests.run_dashboard_mock"
+        )
+    
     app = QApplication(sys.argv)
-    data_source = DashboardDataSource(controller_manager, config, use_mock=use_mock)
+    data_source = DashboardDataSource(controller_manager, config)
     window = DashboardWindow(data_source)
-    if use_mock:
-        window.setWindowTitle('Universal Controller Dashboard [调试模式]')
     window.show()
     sys.exit(app.exec_())
 
 
 if __name__ == '__main__':
-    run_dashboard(use_mock=True)
+    print("错误: 此模块不能直接运行")
+    print("请使用以下方式之一:")
+    print("  1. ROS 模式: roslaunch controller_ros controller.launch dashboard:=true")
+    print("  2. 测试模式: python -m universal_controller.tests.run_dashboard_mock")
+    sys.exit(1)

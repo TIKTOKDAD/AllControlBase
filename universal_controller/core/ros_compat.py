@@ -3,7 +3,7 @@ ROS 兼容层
 
 支持两种运行模式:
 1. 真实 ROS 环境: 使用 rospy, tf2_ros 等
-2. 独立模式: 使用模拟实现，用于测试和非 ROS 环境
+2. 独立模式: 使用替代实现，用于测试和非 ROS 环境
 
 使用方法:
     from universal_controller.core.ros_compat import (
@@ -11,6 +11,10 @@ ROS 兼容层
         Header, Odometry, Imu, TwistStamped,
         ROS_AVAILABLE, TF2_AVAILABLE
     )
+
+命名说明:
+    - 独立模式下的替代实现使用 "Standalone" 前缀
+    - 这些是生产代码的一部分，不是测试 mock
 """
 import time
 import numpy as np
@@ -96,6 +100,7 @@ def euler_from_quaternion(q: Tuple[float, float, float, float]) -> Tuple[float, 
     sinr_cosp = 2 * (w * x + y * z)
     cosr_cosp = 1 - 2 * (x * x + y * y)
     roll = np.arctan2(sinr_cosp, cosr_cosp)
+    
     # Pitch (带数值稳定性保护)
     sinp = 2 * (w * y - z * x)
     sinp = np.clip(sinp, -1.0, 1.0)  # 确保在有效范围内
@@ -104,10 +109,12 @@ def euler_from_quaternion(q: Tuple[float, float, float, float]) -> Tuple[float, 
         pitch = np.copysign(np.pi / 2, sinp)
     else:
         pitch = np.arcsin(sinp)
+    
     # Yaw
     siny_cosp = 2 * (w * z + x * y)
     cosy_cosp = 1 - 2 * (y * y + z * z)
     yaw = np.arctan2(siny_cosp, cosy_cosp)
+    
     return roll, pitch, yaw
 
 
@@ -163,25 +170,29 @@ def angle_difference(angle1: float, angle2: float) -> float:
 
 
 # ============================================================================
-# 导入模拟实现 (用于非 ROS 环境)
+# 导入兼容层实现 (用于非 ROS 环境)
 # ============================================================================
 
 if not ROS_AVAILABLE:
-    from ..mock.ros_mock import MockRospy, MockTF2Ros, MockTFTransformations
-    from ..mock.ros_mock import LookupException, ExtrapolationException, ConnectivityException
+    from ..compat.ros_compat_impl import (
+        StandaloneRospy, StandaloneTF2Ros, StandaloneTFTransformations,
+        LookupException, ExtrapolationException, ConnectivityException
+    )
     
-    # 使用模拟实现
-    rospy = MockRospy()
-    tf2_ros = MockTF2Ros()
-    tft = MockTFTransformations()
+    # 使用独立运行实现
+    rospy = StandaloneRospy()
+    tf2_ros = StandaloneTF2Ros()
+    tft = StandaloneTFTransformations()
 
 if not TF2_AVAILABLE and ROS_AVAILABLE:
     # ROS 可用但 TF2 不可用
-    from ..mock.ros_mock import MockTF2Ros, MockTFTransformations
-    from ..mock.ros_mock import LookupException, ExtrapolationException, ConnectivityException
+    from ..compat.ros_compat_impl import (
+        StandaloneTF2Ros, StandaloneTFTransformations,
+        LookupException, ExtrapolationException, ConnectivityException
+    )
     
-    tf2_ros = MockTF2Ros()
-    tft = MockTFTransformations()
+    tf2_ros = StandaloneTF2Ros()
+    tft = StandaloneTFTransformations()
 
 
 # ============================================================================
@@ -193,7 +204,7 @@ if TF2_AVAILABLE:
     TF2ExtrapolationException = tf2_ros.ExtrapolationException
     TF2ConnectivityException = tf2_ros.ConnectivityException
 else:
-    from ..mock.ros_mock import LookupException, ExtrapolationException, ConnectivityException
+    from ..compat.ros_compat_impl import LookupException, ExtrapolationException, ConnectivityException
     TF2LookupException = LookupException
     TF2ExtrapolationException = ExtrapolationException
     TF2ConnectivityException = ConnectivityException
@@ -237,13 +248,13 @@ def create_time(sec: float):
     """创建时间对象"""
     if ROS_AVAILABLE:
         return rospy.Time.from_sec(sec)
-    from ..mock.ros_mock import MockRospy
-    return MockRospy.Time.from_sec(sec)
+    from ..compat.ros_compat_impl import StandaloneRospy
+    return StandaloneRospy.Time.from_sec(sec)
 
 
 def create_duration(sec: float):
     """创建时长对象"""
     if ROS_AVAILABLE:
         return rospy.Duration.from_sec(sec)
-    from ..mock.ros_mock import MockRospy
-    return MockRospy.Duration.from_sec(sec)
+    from ..compat.ros_compat_impl import StandaloneRospy
+    return StandaloneRospy.Duration.from_sec(sec)

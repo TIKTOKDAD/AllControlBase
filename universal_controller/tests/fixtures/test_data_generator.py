@@ -3,6 +3,15 @@
 
 生成用于测试的轨迹、里程计、IMU 等数据。
 
+重要说明:
+=========
+此模块仅用于测试，不应在生产代码中使用。
+
+使用场景:
+- 单元测试中的输入数据生成
+- 集成测试中的模拟数据
+- 坐标变换测试
+
 默认参数从 TRAJECTORY_CONFIG 获取，确保与配置一致。
 """
 import time
@@ -11,13 +20,13 @@ import numpy as np
 from typing import List, Optional, Tuple
 
 # 导入数据类型
-from ..core.data_types import (
+from ...core.data_types import (
     Trajectory, Point3D, Header, Odometry, Imu, TrajectoryDefaults
 )
-from ..core.enums import TrajectoryMode
+from ...core.enums import TrajectoryMode
 
 # 导入轨迹配置
-from ..config.trajectory_config import TRAJECTORY_CONFIG
+from ...config.trajectory_config import TRAJECTORY_CONFIG
 
 
 def _get_trajectory_default(key: str, fallback: any = None):
@@ -67,7 +76,6 @@ def create_test_trajectory(
     velocities = [] if soft_enabled else None
     
     if trajectory_type == 'sine':
-        # 正弦波轨迹
         amplitude = kwargs.get('amplitude', 0.5)
         wavelength = kwargs.get('wavelength', 3.0)
         speed = kwargs.get('speed', 0.5)
@@ -88,7 +96,6 @@ def create_test_trajectory(
             velocities = np.array(vel_list)
     
     elif trajectory_type == 'circle':
-        # 圆形轨迹
         radius = kwargs.get('radius', 2.0)
         angular_speed = kwargs.get('angular_speed', 0.5)
         
@@ -109,9 +116,8 @@ def create_test_trajectory(
             velocities = np.array(vel_list)
     
     elif trajectory_type == 'straight':
-        # 直线轨迹
         speed = kwargs.get('speed', 1.0)
-        direction = kwargs.get('direction', 0.0)  # 弧度
+        direction = kwargs.get('direction', 0.0)
         
         vel_list = []
         for i in range(num_points):
@@ -130,7 +136,6 @@ def create_test_trajectory(
             velocities = np.array(vel_list)
     
     elif trajectory_type == 'figure8':
-        # 8 字形轨迹
         scale = kwargs.get('scale', 2.0)
         angular_speed = kwargs.get('angular_speed', 0.3)
         
@@ -189,7 +194,6 @@ def create_test_odom(
     Returns:
         Odometry 对象
     """
-    # 从航向角计算四元数 (仅 yaw)
     qx = 0.0
     qy = 0.0
     qz = math.sin(theta / 2)
@@ -242,12 +246,6 @@ def create_test_state_sequence(
     
     用于模拟控制循环的输入数据。
     
-    注意: 此函数生成的轨迹是在 odom 坐标系下的 (frame_id='odom')，
-    因为它会根据当前位置偏移轨迹点。这模拟的是已经变换后的轨迹。
-    
-    如果需要测试坐标变换功能，应该使用 create_test_trajectory() 
-    生成局部坐标系的轨迹 (frame_id='base_link')。
-    
     Args:
         num_steps: 步数
         dt: 时间步长，默认从 TRAJECTORY_CONFIG 获取
@@ -265,33 +263,26 @@ def create_test_state_sequence(
     x, y, theta = initial_state
     vx, vy = 0.0, 0.0
     
-    # 获取默认轨迹点数
     default_num_points = _get_trajectory_default('default_num_points', 20)
     
     for i in range(num_steps):
-        # 创建轨迹 (从当前位置开始)
-        # 注意: 这里使用 frame_id='odom' 因为我们会手动偏移轨迹点
         traj = create_test_trajectory(
             num_points=default_num_points,
             dt=dt,
             trajectory_type=trajectory_type,
-            frame_id='odom',  # 偏移后的轨迹在 odom 坐标系
+            frame_id='odom',
             **kwargs
         )
         
-        # 偏移轨迹到当前位置 (模拟坐标变换后的结果)
         for j, pt in enumerate(traj.points):
-            # 旋转并平移
             px = pt.x * math.cos(theta) - pt.y * math.sin(theta) + x
             py = pt.x * math.sin(theta) + pt.y * math.cos(theta) + y
             traj.points[j] = Point3D(px, py, pt.z)
         
-        # 创建里程计
         odom = create_test_odom(x, y, 0.0, theta, vx, vy)
         
         sequence.append((odom, traj))
         
-        # 简单的运动学更新 (模拟跟踪)
         if len(traj.points) > 1:
             target = traj.points[1]
             dx = target.x - x
@@ -301,20 +292,17 @@ def create_test_state_sequence(
             if dist > 0.01:
                 target_theta = math.atan2(dy, dx)
                 theta_error = target_theta - theta
-                # 归一化角度
                 while theta_error > math.pi:
                     theta_error -= 2 * math.pi
                 while theta_error < -math.pi:
                     theta_error += 2 * math.pi
                 
-                # 简单的比例控制
                 omega = 2.0 * theta_error
                 omega = max(-1.0, min(1.0, omega))
                 
                 speed = min(1.0, dist / dt)
                 vx = speed
                 
-                # 更新状态
                 x += vx * math.cos(theta) * dt
                 y += vx * math.sin(theta) * dt
                 theta += omega * dt
@@ -348,13 +336,11 @@ def create_local_trajectory_with_transform(
     Returns:
         (local_traj, odom_traj): 局部坐标系轨迹 (base_link) 和 odom 坐标系轨迹
     """
-    # 使用配置默认值
     if num_points is None:
         num_points = _get_trajectory_default('default_num_points', 20)
     if dt is None:
         dt = _get_trajectory_default('default_dt_sec', 0.1)
     
-    # 创建局部坐标系轨迹
     local_traj = create_test_trajectory(
         num_points=num_points,
         dt=dt,
@@ -364,7 +350,6 @@ def create_local_trajectory_with_transform(
         **kwargs
     )
     
-    # 手动变换到 odom 坐标系 (用于验证)
     cos_theta = math.cos(robot_theta)
     sin_theta = math.sin(robot_theta)
     

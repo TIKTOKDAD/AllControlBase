@@ -22,8 +22,8 @@ from universal_controller.core.data_types import Trajectory, Point3D, Header, Od
 from universal_controller.core.enums import TransformStatus
 from universal_controller.config.default_config import DEFAULT_CONFIG
 
-# 使用 mock 模块中的测试数据生成器
-from universal_controller.mock.test_data_generator import create_test_trajectory, create_test_odom
+# 使用测试数据生成器
+from universal_controller.tests.fixtures import create_test_trajectory, create_test_odom
 
 
 def test_tf2_transform_basic():
@@ -243,9 +243,9 @@ def test_tf2_reset():
 
 def test_tf2_full_se3_inverse():
     """测试完整 SE(3) 逆变换 - 包含 roll/pitch/yaw"""
-    from universal_controller.mock.ros_mock import MockTF2BufferCore
-    from universal_controller.mock.data_mock import (
-        MockTransformStamped, MockHeader, MockTransform, MockVector3, MockQuaternion
+    from universal_controller.compat.ros_compat_impl import MockTF2BufferCore
+    from universal_controller.core.data_types import (
+        TransformStamped, Header, Transform, Vector3, Quaternion
     )
     from universal_controller.core.ros_compat import quaternion_from_euler, euler_from_quaternion
     
@@ -256,12 +256,12 @@ def test_tf2_full_se3_inverse():
     q = quaternion_from_euler(roll, pitch, yaw)
     tx, ty, tz = 1.0, 2.0, 0.5
     
-    transform = MockTransformStamped()
-    transform.header = MockHeader(frame_id="world")
+    transform = TransformStamped()
+    transform.header = Header(frame_id="world")
     transform.child_frame_id = "body"
-    transform.transform = MockTransform(
-        translation=MockVector3(tx, ty, tz),
-        rotation=MockQuaternion(q[0], q[1], q[2], q[3])
+    transform.transform = Transform(
+        translation=Vector3(tx, ty, tz),
+        rotation=Quaternion(q[0], q[1], q[2], q[3])
     )
     
     buffer.set_transform(transform, "test")
@@ -308,9 +308,9 @@ def test_tf2_full_se3_inverse():
 
 def test_tf2_chain_lookup():
     """测试链式变换查找 (A->B->C)"""
-    from universal_controller.mock.ros_mock import MockTF2BufferCore
-    from universal_controller.mock.data_mock import (
-        MockTransformStamped, MockHeader, MockTransform, MockVector3, MockQuaternion
+    from universal_controller.compat.ros_compat_impl import MockTF2BufferCore
+    from universal_controller.core.data_types import (
+        TransformStamped, Header, Transform, Vector3, Quaternion
     )
     from universal_controller.core.ros_compat import quaternion_from_euler, euler_from_quaternion
     
@@ -318,23 +318,23 @@ def test_tf2_chain_lookup():
     
     # 设置 world -> odom 变换
     q1 = quaternion_from_euler(0, 0, np.pi/4)  # 45度
-    t1 = MockTransformStamped()
-    t1.header = MockHeader(frame_id="world")
+    t1 = TransformStamped()
+    t1.header = Header(frame_id="world")
     t1.child_frame_id = "odom"
-    t1.transform = MockTransform(
-        translation=MockVector3(1.0, 0.0, 0.0),
-        rotation=MockQuaternion(q1[0], q1[1], q1[2], q1[3])
+    t1.transform = Transform(
+        translation=Vector3(1.0, 0.0, 0.0),
+        rotation=Quaternion(q1[0], q1[1], q1[2], q1[3])
     )
     buffer.set_transform(t1, "test")
     
     # 设置 odom -> base_link 变换
     q2 = quaternion_from_euler(0, 0, np.pi/4)  # 再 45度
-    t2 = MockTransformStamped()
-    t2.header = MockHeader(frame_id="odom")
+    t2 = TransformStamped()
+    t2.header = Header(frame_id="odom")
     t2.child_frame_id = "base_link"
-    t2.transform = MockTransform(
-        translation=MockVector3(1.0, 0.0, 0.0),
-        rotation=MockQuaternion(q2[0], q2[1], q2[2], q2[3])
+    t2.transform = Transform(
+        translation=Vector3(1.0, 0.0, 0.0),
+        rotation=Quaternion(q2[0], q2[1], q2[2], q2[3])
     )
     buffer.set_transform(t2, "test")
     
@@ -361,9 +361,9 @@ def test_tf2_chain_lookup():
 
 def test_tf2_multi_hop_chain_lookup():
     """测试多跳链式变换查找 (A->B->C->D->E)"""
-    from universal_controller.mock.ros_mock import MockTF2BufferCore
-    from universal_controller.mock.data_mock import (
-        MockTransformStamped, MockHeader, MockTransform, MockVector3, MockQuaternion
+    from universal_controller.compat.ros_compat_impl import MockTF2BufferCore
+    from universal_controller.core.data_types import (
+        TransformStamped, Header, Transform, Vector3, Quaternion
     )
     from universal_controller.core.ros_compat import quaternion_from_euler, euler_from_quaternion
     
@@ -378,12 +378,12 @@ def test_tf2_multi_hop_chain_lookup():
         
         # 每个变换: 平移 (1, 0, 0)，旋转 15度
         q = quaternion_from_euler(0, 0, np.pi/12)  # 15度
-        t = MockTransformStamped()
-        t.header = MockHeader(frame_id=parent)
+        t = TransformStamped()
+        t.header = Header(frame_id=parent)
         t.child_frame_id = child
-        t.transform = MockTransform(
-            translation=MockVector3(1.0, 0.0, 0.0),
-            rotation=MockQuaternion(q[0], q[1], q[2], q[3])
+        t.transform = Transform(
+            translation=Vector3(1.0, 0.0, 0.0),
+            rotation=Quaternion(q[0], q[1], q[2], q[3])
         )
         buffer.set_transform(t, "test")
     

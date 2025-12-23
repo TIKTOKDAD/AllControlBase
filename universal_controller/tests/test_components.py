@@ -22,16 +22,8 @@ from universal_controller.tracker.pure_pursuit import PurePursuitController
 from universal_controller.tracker.mpc_controller import MPCController
 from universal_controller.health.mpc_health_monitor import MPCHealthMonitor
 
-# 使用 mock 模块中的测试数据生成器
-from universal_controller.mock.test_data_generator import (
-    create_test_trajectory,
-    create_test_odom,
-    create_test_imu
-)
-
-
-# 使用 mock 模块中的测试数据生成器
-from universal_controller.mock.test_data_generator import (
+# 使用测试数据生成器
+from universal_controller.tests.fixtures import (
     create_test_trajectory,
     create_test_odom,
     create_test_imu

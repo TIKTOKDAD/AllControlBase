@@ -3,11 +3,13 @@
 
 从 ControllerManager 获取数据并转换为统一的 DisplayData 模型。
 所有数据处理逻辑集中在此，面板只负责显示。
+
+注意：此模块仅用于直接访问 ControllerManager 的场景。
+ROS 模式下请使用 ros_data_source.py 中的 ROSDashboardDataSource。
 """
 
 import time
 import math
-import numpy as np
 from typing import Dict, Any, Optional
 from collections import deque
 
@@ -62,19 +64,25 @@ class DashboardDataSource:
     3. 处理所有数据逻辑
     4. 维护历史数据和统计信息
     
-    注意：
-    - 默认使用真实数据模式，不会自动使用 mock 数据
-    - 如需使用模拟数据，请显式设置 use_mock=True
+    使用场景：
+    - 直接嵌入到使用 ControllerManager 的应用中
+    - 需要传入有效的 controller_manager 实例
+    
+    ROS 模式：
+    - 请使用 ROSDashboardDataSource (ros_data_source.py)
     """
 
-    def __init__(self, controller_manager=None, config: Dict[str, Any] = None, use_mock: bool = False):
+    def __init__(self, controller_manager=None, config: Dict[str, Any] = None):
+        """
+        初始化数据源
+        
+        Args:
+            controller_manager: ControllerManager 实例（必需）
+            config: 配置字典
+        """
         self.manager = controller_manager
         self.config = config or {}
         self._start_time = time.time()
-
-        # 只有显式指定 use_mock=True 时才使用模拟模式
-        # 默认为真实数据模式（即使 controller_manager 为 None）
-        self._is_mock_mode = use_mock
 
         # 统计数据
         self._total_cycles = 0
@@ -163,13 +171,8 @@ class DashboardDataSource:
         """获取原始诊断数据"""
         if self.manager and hasattr(self.manager, '_last_published_diagnostics'):
             return self.manager._last_published_diagnostics or {}
-
-        # 只有在显式启用 mock 模式时才使用模拟数据
-        if self._is_mock_mode:
-            from ..mock.diagnostics_mock import generate_mock_diagnostics
-            return generate_mock_diagnostics(self._start_time)
         
-        # 默认返回空数据（等待真实数据）
+        # 没有 manager 时返回空数据
         return {}
 
     def _update_statistics(self, diagnostics: Dict[str, Any]):
@@ -205,14 +208,13 @@ class DashboardDataSource:
                 self._alpha_history.append(consistency.get('alpha_soft', 0))
 
     def _build_environment_status(self) -> EnvironmentStatus:
-        """构建环境状态 - 统一处理 mock 模式"""
+        """构建环境状态"""
         return EnvironmentStatus(
             ros_available=ROS_AVAILABLE,
             tf2_available=TF2_AVAILABLE,
             acados_available=ACADOS_AVAILABLE,
-            # IMU 在 mock 模式下不可用
-            imu_available=not self._is_mock_mode,
-            is_mock_mode=self._is_mock_mode,
+            imu_available=True,
+            is_mock_mode=False,  # 此数据源不支持 mock 模式
         )
 
     def _build_platform_config(self) -> PlatformConfig:
@@ -339,7 +341,7 @@ class DashboardDataSource:
             slip_probability=est.get('slip_probability', 0),
             imu_drift_detected=est.get('imu_drift_detected', False),
             imu_bias=(bias[0], bias[1], bias[2]),
-            imu_available=est.get('imu_available', False) and not self._is_mock_mode,
+            imu_available=est.get('imu_available', False),
             ekf_enabled=ekf_enabled,
             slip_detection_enabled=slip_detection_enabled,
             drift_correction_enabled=drift_correction_enabled,
@@ -355,8 +357,8 @@ class DashboardDataSource:
         fallback_ms = transform.get('fallback_duration_ms', 0)
 
         return TransformStatus(
-            tf2_available=TF2_AVAILABLE and not self._is_mock_mode,
-            fallback_active=fallback_ms > 0 or self._is_mock_mode,
+            tf2_available=TF2_AVAILABLE,
+            fallback_active=fallback_ms > 0,
             fallback_duration_ms=fallback_ms,
             accumulated_drift=transform.get('accumulated_drift', 0),
             target_frame='odom',

@@ -102,7 +102,13 @@ class PurePursuitController(ITrajectoryTracker):
         self._manual_heading = heading
     
     def shutdown(self) -> None:
+        """关闭控制器并重置状态"""
         self._is_shutdown = True
+        # 重置内部状态
+        self.last_cmd = None
+        self._last_turn_direction = None
+        self._current_position = None
+        self._manual_heading = None
     
     def compute(self, state: np.ndarray, trajectory: Trajectory, 
                 consistency: ConsistencyResult) -> ControlOutput:

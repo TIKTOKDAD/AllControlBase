@@ -13,8 +13,8 @@ from universal_controller.core.enums import ControllerState
 from universal_controller.config.default_config import DEFAULT_CONFIG, PLATFORM_CONFIG
 from universal_controller.manager.controller_manager import ControllerManager
 
-# 使用 mock 模块中的测试数据生成器
-from universal_controller.mock.test_data_generator import (
+# 使用测试数据生成器
+from universal_controller.tests.fixtures import (
     create_test_trajectory,
     create_test_odom,
     create_test_imu
