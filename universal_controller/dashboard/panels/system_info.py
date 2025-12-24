@@ -143,8 +143,16 @@ class SystemInfoPanel(QGroupBox):
         # 控制策略 - 需要诊断数据
         main_ctrl = 'MPC (ACADOS)' if env.acados_available else 'MPC (Fallback)'
         self.main_ctrl_label.findChild(QLabel, 'value').setText(main_ctrl)
+        
+        # 当前使用的控制器 - 用颜色区分
         current = f'● {ctrl.current_controller}'
-        self.current_ctrl_label.findChild(QLabel, 'value').setText(current)
+        current_label = self.current_ctrl_label.findChild(QLabel, 'value')
+        current_label.setText(current)
+        if ctrl.current_controller == 'MPC':
+            current_label.setStyleSheet(f'color: {COLORS["success"]};')  # 绿色 - MPC
+        else:
+            current_label.setStyleSheet(f'color: {COLORS["warning"]};')  # 黄色 - Backup
+        
         self.soft_head_led.set_status(ctrl.soft_head_enabled)
 
         # 功能开关 - 从统一数据获取
