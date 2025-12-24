@@ -86,8 +86,13 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         
         # 如果没有有效数据，返回保守的 alpha 值
         if total_effective_weight < 1e-6:
+            # 防御性检查：确保 confidence 是有效数值
+            confidence = trajectory.confidence
+            if confidence is None or not np.isfinite(confidence):
+                confidence = 0.5  # 使用保守的默认值
+            
             return ConsistencyResult(
-                alpha=0.5 * trajectory.confidence,  # 保守估计
+                alpha=0.5 * confidence,  # 保守估计
                 kappa_consistency=kappa_consistency,
                 v_dir_consistency=v_dir_consistency,
                 temporal_smooth=temporal_smooth,
@@ -96,11 +101,16 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
             )
         
         # 使用有效权重计算 alpha
+        # 防御性检查：确保 confidence 是有效数值
+        confidence = trajectory.confidence
+        if confidence is None or not np.isfinite(confidence):
+            confidence = 0.5  # 使用保守的默认值
+        
         alpha = (
             (max(effective_kappa, 1e-6) ** effective_w_kappa) *
             (max(effective_v_dir, 1e-6) ** effective_w_velocity) *
             (max(effective_temporal, 1e-6) ** effective_w_temporal)
-        ) ** (1.0 / total_effective_weight) * trajectory.confidence
+        ) ** (1.0 / total_effective_weight) * confidence
         
         return ConsistencyResult(
             alpha=alpha, kappa_consistency=kappa_consistency,

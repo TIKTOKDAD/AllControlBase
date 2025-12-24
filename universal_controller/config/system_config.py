@@ -19,11 +19,12 @@ SYSTEM_CONFIG = {
 }
 
 # 超时配置 (Watchdog)
+# 注意: 0 或负数表示禁用该数据源的超时检测
 WATCHDOG_CONFIG = {
-    'odom_timeout_ms': 200,       # 里程计超时 (ms)
-    'traj_timeout_ms': 200,       # 轨迹超时 (ms)
+    'odom_timeout_ms': 200,       # 里程计超时 (ms)，<=0 禁用
+    'traj_timeout_ms': 200,       # 轨迹超时 (ms)，<=0 禁用
     'traj_grace_ms': 100,         # 轨迹宽限期 (ms)
-    'imu_timeout_ms': 100,        # IMU 超时 (ms)
+    'imu_timeout_ms': 100,        # IMU 超时 (ms)，<=0 禁用
     'startup_grace_ms': 1000,     # 启动宽限期 (ms)
 }
 
@@ -31,15 +32,18 @@ WATCHDOG_CONFIG = {
 DIAGNOSTICS_CONFIG = {
     'topic': '/controller/diagnostics',  # 诊断话题名称
     'cmd_topic': '/cmd_unified',         # 控制命令话题名称
+    'publish_rate': 10,                  # 诊断发布降频率 (每 N 次控制循环发布一次)
 }
 
 # 系统配置验证规则
+# 注意: 超时配置允许 <=0 表示禁用，所以最小值设为 None (无下限)
 SYSTEM_VALIDATION_RULES = {
     'system.ctrl_freq': (1, 1000, '控制频率 (Hz)'),
     'system.gravity': (0.1, 20.0, '重力加速度 (m/s²)'),
     'system.long_pause_threshold': (0.01, 10.0, '长时间暂停检测阈值 (秒)'),
     'system.ekf_reset_threshold': (0.1, 60.0, 'EKF 重置阈值 (秒)'),
-    'watchdog.odom_timeout_ms': (1, 10000, '里程计超时 (ms)'),
-    'watchdog.traj_timeout_ms': (1, 10000, '轨迹超时 (ms)'),
-    'watchdog.imu_timeout_ms': (1, 10000, 'IMU 超时 (ms)'),
+    'watchdog.odom_timeout_ms': (None, 10000, '里程计超时 (ms)，<=0 禁用'),
+    'watchdog.traj_timeout_ms': (None, 10000, '轨迹超时 (ms)，<=0 禁用'),
+    'watchdog.imu_timeout_ms': (None, 10000, 'IMU 超时 (ms)，<=0 禁用'),
+    'diagnostics.publish_rate': (1, 100, '诊断发布降频率'),
 }

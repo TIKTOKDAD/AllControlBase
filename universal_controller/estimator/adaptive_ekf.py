@@ -306,33 +306,49 @@ class AdaptiveEKFEstimator(IStateEstimator):
         if imu.orientation is not None:
             # 检查四元数有效性
             q = imu.orientation
-            if hasattr(q, '__len__') and len(q) == 4:
-                qx, qy, qz, qw = q[0], q[1], q[2], q[3]
-                
-                # 检查各分量是否为 NaN 或 Inf
-                if not (np.isfinite(qx) and np.isfinite(qy) and 
-                        np.isfinite(qz) and np.isfinite(qw)):
-                    # 四元数包含无效值
-                    use_imu_orientation = False
+            try:
+                # 尝试提取四元数分量
+                # 支持多种数据格式：tuple, list, numpy array, 或带索引的自定义对象
+                if hasattr(q, '__len__') and len(q) == 4:
+                    qx, qy, qz, qw = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+                elif hasattr(q, 'x') and hasattr(q, 'y') and hasattr(q, 'z') and hasattr(q, 'w'):
+                    # 支持 geometry_msgs/Quaternion 风格的对象
+                    qx, qy, qz, qw = float(q.x), float(q.y), float(q.z), float(q.w)
                 else:
-                    norm_sq = qx*qx + qy*qy + qz*qz + qw*qw
-                    
-                    # 四元数有效性检查:
-                    # 1. 范数不能太小（接近零向量）
-                    # 2. 范数应该接近 1（单位四元数）
-                    is_valid = (
-                        norm_sq > QUATERNION_NORM_SQ_MIN and
-                        norm_sq < QUATERNION_NORM_SQ_MAX
-                    )
-                    
-                    if is_valid:
-                        roll, pitch, _ = euler_from_quaternion(q)
+                    # 不支持的格式
+                    qx, qy, qz, qw = None, None, None, None
+                
+                if qx is not None:
+                    # 检查各分量是否为 NaN 或 Inf
+                    if not (np.isfinite(qx) and np.isfinite(qy) and 
+                            np.isfinite(qz) and np.isfinite(qw)):
+                        # 四元数包含无效值
+                        use_imu_orientation = False
+                    else:
+                        norm_sq = qx*qx + qy*qy + qz*qz + qw*qw
                         
-                        # 额外检查: roll 和 pitch 应该在合理范围内
-                        # 使用配置的最大倾斜角阈值
-                        if abs(roll) < self.max_tilt_angle and abs(pitch) < self.max_tilt_angle:
-                            use_imu_orientation = True
-        
+                        # 四元数有效性检查:
+                        # 1. 范数不能太小（接近零向量）
+                        # 2. 范数应该接近 1（单位四元数）
+                        is_valid = (
+                            norm_sq > QUATERNION_NORM_SQ_MIN and
+                            norm_sq < QUATERNION_NORM_SQ_MAX
+                        )
+                        
+                        if is_valid:
+                            roll, pitch, _ = euler_from_quaternion((qx, qy, qz, qw))
+                            
+                            # 额外检查: roll 和 pitch 应该在合理范围内
+                            # 使用配置的最大倾斜角阈值
+                            if abs(roll) < self.max_tilt_angle and abs(pitch) < self.max_tilt_angle:
+                                use_imu_orientation = True
+            except (TypeError, ValueError, IndexError, AttributeError) as e:
+                # 四元数数据格式错误，使用默认姿态
+                # 只在首次遇到时记录警告，避免日志泛滥
+                if not hasattr(self, '_quaternion_error_logged'):
+                    logger.warning(f"Invalid quaternion format in IMU data: {e}")
+                    self._quaternion_error_logged = True
+                use_imu_orientation = False
         if use_imu_orientation:
             # 加速度计静止时的期望测量值 (比力 = -g_body)
             g_measured_x = g * np.sin(pitch)

@@ -4,21 +4,29 @@
 从 ROS 参数服务器加载配置。
 支持 ROS1 和 ROS2，以及非 ROS 环境。
 
-配置映射说明:
-- ROS 参数 (YAML) -> universal_controller 配置
-- system.ctrl_freq -> system.ctrl_freq
-- system.platform -> system.platform
-- watchdog.* -> watchdog.*
-- mpc.* -> mpc.*
-- attitude.* -> attitude.*
+设计说明:
+=========
+本模块采用"以 DEFAULT_CONFIG 为模板"的策略加载 ROS 参数：
+1. 深拷贝 DEFAULT_CONFIG 作为基础配置
+2. 递归遍历 DEFAULT_CONFIG 的结构
+3. 对于每个配置项，尝试从 ROS 参数服务器读取对应值
+4. 如果 ROS 参数存在，则覆盖默认值；否则保留默认值
 
-重构说明:
-- 使用策略模式统一 ROS1/ROS2 参数加载逻辑
-- 参数定义集中管理，避免重复
+这种设计的优点：
+- 无需维护单独的参数定义列表
+- 自动支持所有嵌套配置
+- 新增配置项无需修改本模块
+- 配置结构由 universal_controller 统一定义
+
+配置映射规则:
+- YAML 中的 `group/key` 映射到 `config['group']['key']`
+- 支持任意深度的嵌套，如 `mpc/weights/position` -> `config['mpc']['weights']['position']`
+- 特殊映射: `tf/*` -> `transform/*` (ROS 习惯用 tf，算法库用 transform)
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from abc import ABC, abstractmethod
 import logging
+import copy
 
 from universal_controller.config.default_config import DEFAULT_CONFIG
 from .ros_compat import ROS_VERSION
@@ -27,53 +35,33 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# 参数定义 (ROS1 和 ROS2 共享)
+# 话题配置 (独立于算法配置，仅 ROS 层使用)
 # =============================================================================
-PARAM_DEFINITIONS = {
-    'system': {
-        'ctrl_freq': 50,
-        'platform': 'differential',
-    },
-    'node': {
-        'use_sim_time': False,
-    },
-    'topics': {
-        'odom': '/odom',
-        'imu': '/imu',
-        'trajectory': '/nn/local_trajectory',
-        'cmd_unified': '/cmd_unified',
-        'diagnostics': '/controller/diagnostics',
-        'state': '/controller/state',
-        'emergency_stop': '/controller/emergency_stop',
-        'attitude_cmd': '/controller/attitude_cmd',
-    },
-    'tf': {
-        'source_frame': 'base_link',
-        'target_frame': 'odom',
-        'timeout_ms': 10,
-        'buffer_warmup_timeout_sec': 2.0,
-        'buffer_warmup_interval_sec': 0.1,
-    },
-    'watchdog': {
-        'odom_timeout_ms': 200,
-        'traj_timeout_ms': 500,
-        'imu_timeout_ms': 100,
-        'startup_grace_ms': 1000,
-    },
-    'diagnostics': {
-        'publish_rate': 5,
-    },
-    'mpc': {
-        'horizon': 20,
-        'horizon_degraded': 10,
-        'dt': 0.1,
-    },
-    'attitude': {
-        'mass': 1.5,
-        'roll_max': 0.5,
-        'pitch_max': 0.5,
-        'hover_yaw_compensation': True,
-    },
+TOPICS_DEFAULTS = {
+    'odom': '/odom',
+    'imu': '/imu',
+    'trajectory': '/nn/local_trajectory',
+    'cmd_unified': '/cmd_unified',
+    'diagnostics': '/controller/diagnostics',
+    'state': '/controller/state',
+    'emergency_stop': '/controller/emergency_stop',
+    'attitude_cmd': '/controller/attitude_cmd',
+}
+
+# TF 配置 (ROS 层使用，部分映射到 transform)
+TF_DEFAULTS = {
+    'source_frame': 'base_link',
+    'target_frame': 'odom',
+    'timeout_ms': 10,
+    'buffer_warmup_timeout_sec': 2.0,
+    'buffer_warmup_interval_sec': 0.1,
+    'retry_interval_cycles': 50,
+    'max_retries': -1,
+}
+
+# 节点配置 (仅 ROS 层使用)
+NODE_DEFAULTS = {
+    'use_sim_time': False,
 }
 
 
@@ -84,26 +72,64 @@ class ParamLoaderStrategy(ABC):
     """参数加载策略基类"""
     
     @abstractmethod
-    def get_param(self, group: str, key: str, default: Any) -> Any:
-        """获取单个参数"""
+    def get_param(self, param_path: str, default: Any) -> Any:
+        """
+        获取单个参数
+        
+        Args:
+            param_path: 参数路径，如 'mpc/weights/position'
+            default: 默认值
+        
+        Returns:
+            参数值，如果不存在则返回默认值
+        """
         pass
     
-    def load_group(self, group: str) -> Dict[str, Any]:
-        """加载一组参数"""
-        if group not in PARAM_DEFINITIONS:
-            return {}
-        
-        result = {}
-        for key, default in PARAM_DEFINITIONS[group].items():
-            result[key] = self.get_param(group, key, default)
-        return result
+    @abstractmethod
+    def has_param(self, param_path: str) -> bool:
+        """检查参数是否存在"""
+        pass
+
+
+class ROS1ParamStrategy(ParamLoaderStrategy):
+    """ROS1 参数加载策略
     
-    def load_all(self) -> Dict[str, Any]:
-        """加载所有参数"""
-        params = {}
-        for group in PARAM_DEFINITIONS:
-            params[group] = self.load_group(group)
-        return params
+    ROS1 参数命名空间说明:
+    - rosparam load 在 launch 文件根级别使用时，参数加载到全局命名空间 /
+    - 例如 YAML 中的 system/ctrl_freq 会被加载为 /system/ctrl_freq
+    - rospy.get_param('system/ctrl_freq') 会自动解析相对路径到全局路径
+    """
+    
+    def __init__(self):
+        import rospy
+        self._rospy = rospy
+    
+    def get_param(self, param_path: str, default: Any) -> Any:
+        """获取 ROS1 参数
+        
+        Args:
+            param_path: 参数路径，如 'mpc/weights/position'
+            default: 默认值
+        
+        Returns:
+            参数值，如果不存在则返回默认值
+        
+        Note:
+            ROS1 的 get_param 会自动处理相对路径:
+            - 'system/ctrl_freq' 会解析为 '/system/ctrl_freq'
+            - 不需要手动添加 '/' 前缀
+        """
+        # 特殊处理 use_sim_time (全局参数)
+        if param_path == 'node/use_sim_time':
+            return self._rospy.get_param('/use_sim_time', default)
+        
+        return self._rospy.get_param(param_path, default)
+    
+    def has_param(self, param_path: str) -> bool:
+        """检查参数是否存在"""
+        if param_path == 'node/use_sim_time':
+            return self._rospy.has_param('/use_sim_time')
+        return self._rospy.has_param(param_path)
 
 
 class ROS2ParamStrategy(ParamLoaderStrategy):
@@ -111,65 +137,52 @@ class ROS2ParamStrategy(ParamLoaderStrategy):
     
     def __init__(self, node):
         self._node = node
-        self._declare_all_params()
+        self._declared_params: set = set()
     
-    def _declare_all_params(self) -> None:
-        """
-        声明所有 ROS2 参数
+    def _declare_if_needed(self, param_path: str, default: Any) -> None:
+        """如果参数未声明，则声明它"""
+        # ROS2 使用 . 作为分隔符
+        ros2_path = param_path.replace('/', '.')
         
-        使用 has_parameter() 检查参数是否已声明，避免重复声明异常。
-        这比使用类变量跟踪更可靠，因为：
-        1. 不依赖全局状态
-        2. 正确处理节点重建场景
-        3. 避免内存泄漏
-        """
-        for group, params in PARAM_DEFINITIONS.items():
-            for key, default in params.items():
-                param_name = f"{group}.{key}"
-                self._safe_declare(param_name, default)
-    
-    def _safe_declare(self, name: str, default: Any) -> None:
-        """
-        安全声明参数
+        if ros2_path in self._declared_params:
+            return
         
-        如果参数已存在则跳过，避免重复声明异常。
-        """
         try:
-            # 检查参数是否已声明
-            if self._node.has_parameter(name):
-                return
-            self._node.declare_parameter(name, default)
+            if not self._node.has_parameter(ros2_path):
+                self._node.declare_parameter(ros2_path, default)
+            self._declared_params.add(ros2_path)
         except Exception:
-            # 忽略声明失败（可能是参数已存在或其他原因）
             pass
     
-    def get_param(self, group: str, key: str, default: Any) -> Any:
+    def get_param(self, param_path: str, default: Any) -> Any:
         """获取 ROS2 参数"""
-        param_name = f"{group}.{key}"
-        return self._node.get_parameter(param_name).value
-
-
-class ROS1ParamStrategy(ParamLoaderStrategy):
-    """ROS1 参数加载策略"""
+        ros2_path = param_path.replace('/', '.')
+        self._declare_if_needed(param_path, default)
+        
+        try:
+            return self._node.get_parameter(ros2_path).value
+        except Exception:
+            return default
     
-    def __init__(self):
-        import rospy
-        self._rospy = rospy
-    
-    def get_param(self, group: str, key: str, default: Any) -> Any:
-        """获取 ROS1 参数"""
-        # ROS1 使用 / 分隔符，特殊处理 use_sim_time
-        if group == 'node' and key == 'use_sim_time':
-            return self._rospy.get_param('/use_sim_time', default)
-        return self._rospy.get_param(f'{group}/{key}', default)
+    def has_param(self, param_path: str) -> bool:
+        """检查参数是否存在"""
+        ros2_path = param_path.replace('/', '.')
+        try:
+            return self._node.has_parameter(ros2_path)
+        except Exception:
+            return False
 
 
 class DefaultParamStrategy(ParamLoaderStrategy):
     """默认参数策略 (非 ROS 环境)"""
     
-    def get_param(self, group: str, key: str, default: Any) -> Any:
+    def get_param(self, param_path: str, default: Any) -> Any:
         """返回默认值"""
         return default
+    
+    def has_param(self, param_path: str) -> bool:
+        """非 ROS 环境，参数不存在"""
+        return False
 
 
 # =============================================================================
@@ -181,6 +194,16 @@ class ParamLoader:
     
     从 ROS 参数服务器加载配置，并与默认配置合并。
     支持 ROS1、ROS2 和非 ROS 环境。
+    
+    使用示例:
+        # ROS1
+        config = ParamLoader.load(None)
+        
+        # ROS2
+        config = ParamLoader.load(node)
+        
+        # 获取话题配置
+        topics = ParamLoader.get_topics(None)
     """
     
     @staticmethod
@@ -202,60 +225,191 @@ class ParamLoader:
             node: ROS2 节点 (ROS2) 或 None (ROS1/非 ROS)
         
         Returns:
-            合并后的配置字典
+            合并后的配置字典，包含:
+            - DEFAULT_CONFIG 中的所有配置（可能被 ROS 参数覆盖）
+            - 'tf' 配置（ROS 层特有，用于 TF2InjectionManager）
         """
-        config = ParamLoader._deep_copy(DEFAULT_CONFIG)
+        # 1. 深拷贝默认配置
+        config = copy.deepcopy(DEFAULT_CONFIG)
         
+        # 2. 获取加载策略
         strategy = ParamLoader._get_strategy(node)
-        ros_params = strategy.load_all()
-        ParamLoader._merge_params(config, ros_params)
         
+        # 3. 递归加载 ROS 参数，覆盖默认值
+        ParamLoader._load_recursive(config, '', strategy)
+        
+        # 4. 加载 TF 配置并处理映射
+        tf_config = ParamLoader.get_tf_config(node)
+        
+        # 4.1 将 TF 配置存储到 config 中（供 TF2InjectionManager 使用）
+        config['tf'] = tf_config
+        
+        # 4.2 将部分 TF 配置映射到 transform 配置（供 CoordinateTransformer 使用）
+        ParamLoader._apply_tf_to_transform(config, tf_config)
+        
+        # 5. 日志
+        platform = config.get('system', {}).get('platform', 'unknown')
+        ctrl_freq = config.get('system', {}).get('ctrl_freq', 50)
+        v_max = config.get('constraints', {}).get('v_max', 'N/A')
         logger.info(
-            f"Loaded config: platform={config.get('system', {}).get('platform', 'unknown')}, "
-            f"ctrl_freq={config.get('system', {}).get('ctrl_freq', 50)}Hz"
+            f"Loaded config: platform={platform}, ctrl_freq={ctrl_freq}Hz, v_max={v_max}"
         )
+        
         return config
     
     @staticmethod
-    def _merge_params(config: Dict[str, Any], ros_params: Dict[str, Any]):
+    def _load_recursive(config: Dict[str, Any], prefix: str, 
+                        strategy: ParamLoaderStrategy) -> None:
         """
-        合并 ROS 参数到配置
+        递归加载 ROS 参数
         
-        直接映射策略:
-        - system.* -> system.*
-        - watchdog.* -> watchdog.*
-        - mpc.* -> mpc.*
-        - attitude.* -> attitude.*
-        - tf.* -> transform.*
+        遍历 config 字典的结构，对于每个叶子节点，尝试从 ROS 参数服务器读取值。
+        
+        Args:
+            config: 配置字典（会被原地修改）
+            prefix: 当前路径前缀，如 'mpc/weights'
+            strategy: 参数加载策略
         """
-        # 直接映射的组
-        direct_groups = ['system', 'watchdog', 'mpc', 'attitude', 'diagnostics']
-        for group in direct_groups:
-            if group in ros_params:
-                config.setdefault(group, {})
-                for key, value in ros_params[group].items():
-                    config[group][key] = value
-        
-        # TF 配置 -> transform 配置
-        if 'tf' in ros_params:
-            config.setdefault('transform', {})
-            config['transform']['source_frame'] = ros_params['tf'].get('source_frame', 'base_link')
-            config['transform']['target_frame'] = ros_params['tf'].get('target_frame', 'odom')
+        for key, value in config.items():
+            # 构建参数路径
+            param_path = f"{prefix}/{key}" if prefix else key
+            
+            if isinstance(value, dict):
+                # 递归处理嵌套字典
+                ParamLoader._load_recursive(value, param_path, strategy)
+            else:
+                # 叶子节点：尝试从 ROS 参数服务器读取
+                ros_value = strategy.get_param(param_path, value)
+                
+                # 类型转换：确保类型一致
+                config[key] = ParamLoader._convert_type(ros_value, value)
     
     @staticmethod
-    def _deep_copy(d: Dict[str, Any]) -> Dict[str, Any]:
-        """深拷贝字典"""
-        import copy
-        return copy.deepcopy(d)
+    def _convert_type(ros_value: Any, default_value: Any) -> Any:
+        """
+        类型转换
+        
+        确保从 ROS 参数服务器读取的值与默认值类型一致。
+        这是必要的，因为 YAML 可能将 0.5 解析为 int 0 或 float 0.5。
+        
+        Args:
+            ros_value: 从 ROS 读取的值
+            default_value: 默认值
+        
+        Returns:
+            类型转换后的值
+        """
+        if default_value is None:
+            return ros_value
+        
+        default_type = type(default_value)
+        
+        # 特殊处理：bool 和 int 在 Python 中有继承关系
+        if default_type == bool:
+            if isinstance(ros_value, bool):
+                return ros_value
+            return bool(ros_value)
+        
+        # 数值类型转换
+        if default_type == int and not isinstance(ros_value, bool):
+            try:
+                return int(ros_value)
+            except (ValueError, TypeError):
+                return default_value
+        
+        if default_type == float:
+            try:
+                return float(ros_value)
+            except (ValueError, TypeError):
+                return default_value
+        
+        # 字符串
+        if default_type == str:
+            return str(ros_value) if ros_value is not None else default_value
+        
+        # 列表
+        if default_type == list:
+            if isinstance(ros_value, list):
+                return ros_value
+            return default_value
+        
+        return ros_value
+    
+    @staticmethod
+    def _apply_tf_to_transform(config: Dict[str, Any], 
+                                tf_config: Dict[str, Any]) -> None:
+        """
+        将 TF 配置应用到 transform 配置
+        
+        ROS 习惯使用 'tf' 作为坐标变换配置的名称，
+        而 universal_controller 使用 'transform'。
+        
+        映射规则:
+        - tf.source_frame -> transform.source_frame
+        - tf.target_frame -> transform.target_frame
+        - tf.timeout_ms -> transform.tf2_timeout_ms
+        """
+        if 'transform' not in config:
+            config['transform'] = {}
+        
+        transform = config['transform']
+        
+        # 直接映射
+        if 'source_frame' in tf_config:
+            transform['source_frame'] = tf_config['source_frame']
+        if 'target_frame' in tf_config:
+            transform['target_frame'] = tf_config['target_frame']
+        
+        # 名称映射
+        if 'timeout_ms' in tf_config:
+            transform['tf2_timeout_ms'] = tf_config['timeout_ms']
     
     @staticmethod
     def get_topics(node=None) -> Dict[str, str]:
-        """获取话题配置"""
+        """
+        获取话题配置
+        
+        话题配置是 ROS 层特有的，不在 DEFAULT_CONFIG 中。
+        """
         strategy = ParamLoader._get_strategy(node)
-        return strategy.load_group('topics')
+        topics = {}
+        
+        for key, default in TOPICS_DEFAULTS.items():
+            param_path = f"topics/{key}"
+            topics[key] = strategy.get_param(param_path, default)
+        
+        return topics
     
     @staticmethod
     def get_tf_config(node=None) -> Dict[str, Any]:
-        """获取 TF 配置"""
+        """
+        获取 TF 配置
+        
+        TF 配置是 ROS 层特有的，部分映射到 transform 配置。
+        """
         strategy = ParamLoader._get_strategy(node)
-        return strategy.load_group('tf')
+        tf_config = {}
+        
+        for key, default in TF_DEFAULTS.items():
+            param_path = f"tf/{key}"
+            value = strategy.get_param(param_path, default)
+            tf_config[key] = ParamLoader._convert_type(value, default)
+        
+        return tf_config
+    
+    @staticmethod
+    def get_node_config(node=None) -> Dict[str, Any]:
+        """
+        获取节点配置
+        
+        节点配置是 ROS 层特有的，如 use_sim_time。
+        """
+        strategy = ParamLoader._get_strategy(node)
+        node_config = {}
+        
+        for key, default in NODE_DEFAULTS.items():
+            param_path = f"node/{key}"
+            value = strategy.get_param(param_path, default)
+            node_config[key] = ParamLoader._convert_type(value, default)
+        
+        return node_config

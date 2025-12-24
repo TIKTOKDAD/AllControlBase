@@ -122,7 +122,7 @@ class ControllerNodeROS1(ControllerNodeBase):
         self._create_ros_interfaces()
         
         # 8. 初始化诊断发布辅助器
-        diag_publish_rate = self._params.get('diagnostics', {}).get('publish_rate', 5)
+        diag_publish_rate = self._params.get('diagnostics', {}).get('publish_rate', 10)
         self._diag_throttler = DiagnosticsThrottler(publish_rate=diag_publish_rate)
         
         # 9. 创建控制定时器

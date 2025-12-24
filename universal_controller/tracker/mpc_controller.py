@@ -75,6 +75,10 @@ class MPCController(ITrajectoryTracker):
         self._is_initialized = False
         self._initialize_solver()
         
+        # Horizon 调整节流 - 防止频繁重新初始化求解器导致资源泄漏
+        self._last_horizon_change_time: Optional[float] = None
+        self._horizon_change_min_interval = mpc_config.get('horizon_change_min_interval', 1.0)  # 秒
+        
         self._last_solve_time_ms = 0.0
         self._last_kkt_residual = 0.0
         self._last_condition_number = 1.0
@@ -497,12 +501,32 @@ class MPCController(ITrajectoryTracker):
         return result
     
     def set_horizon(self, horizon: int) -> None:
-        """动态调整预测 horizon"""
+        """
+        动态调整预测 horizon
+        
+        注意：频繁调整 horizon 会导致 ACADOS 求解器重新初始化，
+        这是一个相对昂贵的操作。为防止资源泄漏和性能问题，
+        此方法有最小调用间隔限制。
+        
+        Args:
+            horizon: 新的预测时域长度
+        """
         if horizon == self.horizon:
             return
         
+        # 节流检查：防止频繁重新初始化
+        current_time = time.time()
+        if self._last_horizon_change_time is not None:
+            elapsed = current_time - self._last_horizon_change_time
+            if elapsed < self._horizon_change_min_interval:
+                logger.debug(
+                    f"Horizon change throttled: {elapsed:.2f}s < {self._horizon_change_min_interval}s"
+                )
+                return
+        
         old_horizon = self.horizon
         self.horizon = horizon
+        self._last_horizon_change_time = current_time
         logger.info(f"MPC horizon changed from {old_horizon} to {horizon}")
         
         if self._is_initialized:
@@ -512,6 +536,7 @@ class MPCController(ITrajectoryTracker):
                 try:
                     # ACADOS 求解器没有显式的 close/destroy 方法
                     # 将其设为 None 并强制 GC 回收资源
+                    # 注意：ACADOS Python 绑定在 __del__ 中会释放 C 资源
                     self._solver = None
                     gc.collect()  # 强制垃圾回收，确保资源及时释放
                 except Exception as e:

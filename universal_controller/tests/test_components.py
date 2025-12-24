@@ -266,6 +266,47 @@ def test_timeout_monitor():
     print("✓ test_timeout_monitor passed")
 
 
+def test_timeout_monitor_disabled_timeout():
+    """测试超时监控器禁用超时检测功能
+    
+    验证当超时阈值 <= 0 时，对应的超时检测被禁用。
+    这是 TurtleBot1 等没有 IMU 的平台的常见配置。
+    """
+    config = DEFAULT_CONFIG.copy()
+    
+    # 设置 IMU 超时为负数，表示禁用
+    config['watchdog']['imu_timeout_ms'] = -1
+    config['watchdog']['startup_grace_ms'] = 10  # 短启动宽限期
+    
+    monitor = TimeoutMonitor(config)
+    
+    # 更新 odom 以启动监控器
+    monitor.update_odom(time.time())
+    
+    # 等待启动宽限期过后
+    time.sleep(0.02)
+    
+    # 检查状态：即使没有 IMU 数据，imu_timeout 也应该是 False
+    status = monitor.check()
+    assert status.in_startup_grace == False, "Should be out of startup grace"
+    assert status.imu_timeout == False, "IMU timeout should be disabled when threshold <= 0"
+    
+    # 测试 odom 超时禁用
+    config2 = DEFAULT_CONFIG.copy()
+    config2['watchdog']['odom_timeout_ms'] = 0  # 0 也表示禁用
+    config2['watchdog']['startup_grace_ms'] = 10
+    
+    monitor2 = TimeoutMonitor(config2)
+    monitor2.update_trajectory(time.time())  # 只更新轨迹，不更新 odom
+    
+    time.sleep(0.02)
+    
+    status2 = monitor2.check()
+    assert status2.odom_timeout == False, "Odom timeout should be disabled when threshold <= 0"
+    
+    print("✓ test_timeout_monitor_disabled_timeout passed")
+
+
 def test_safety_monitor():
     """测试安全监控器 (v3.17)"""
     config = DEFAULT_CONFIG.copy()
@@ -302,6 +343,9 @@ def test_safety_monitor():
 def test_mpc_horizon_dynamic_adjustment():
     """测试 MPC horizon 动态调整 (v3.17.3)"""
     config = DEFAULT_CONFIG.copy()
+    # 设置较短的节流间隔以便测试
+    config['mpc'] = config.get('mpc', {}).copy()
+    config['mpc']['horizon_change_min_interval'] = 0.0  # 禁用节流
     platform_config = PLATFORM_CONFIG['differential']
     mpc = MPCController(config, platform_config)
     

@@ -2,7 +2,66 @@
 
 ## 重构日期: 2024-12-24 (更新)
 
-## 最新更新: controller_ros 代码优化
+## 最新更新: 配置传递链路修复
+
+### 1. 修复超时监控器负数阈值处理
+
+**问题**: `TimeoutMonitor` 不支持负数超时阈值作为"禁用"标志。当 `imu_timeout_ms = -1` 时，IMU 会被错误地判定为超时。
+
+**影响**: TurtleBot1 等没有 IMU 的平台配置 `imu_timeout_ms: -1` 无法正确禁用 IMU 超时检测。
+
+**解决方案**: 修改 `TimeoutMonitor.check()` 方法，当超时阈值 <= 0 时禁用对应的超时检测。
+
+**修改文件**:
+- `universal_controller/safety/timeout_monitor.py` - 添加 `<= 0` 禁用检查
+- `universal_controller/config/system_config.py` - 更新注释和验证规则
+- `universal_controller/tests/test_components.py` - 添加 `test_timeout_monitor_disabled_timeout` 测试
+
+### 2. 修复 TF 配置传递到 TF2InjectionManager
+
+**问题**: `ParamLoader.load()` 返回的配置不包含 `tf` 键，导致 `TF2InjectionManager` 无法获取 YAML 中配置的 TF 参数。
+
+**影响**: `buffer_warmup_timeout_sec`, `retry_interval_cycles` 等 TF 配置无法生效。
+
+**解决方案**: 修改 `ParamLoader.load()` 方法，将 TF 配置存储到 `config['tf']` 中。
+
+**修改文件**:
+- `controller_ros/src/controller_ros/utils/param_loader.py` - 将 TF 配置添加到返回的 config 中
+- `controller_ros/test/test_param_loader.py` - 添加 `test_load_includes_tf_config` 测试
+
+### 3. 统一 diagnostics.publish_rate 配置
+
+**问题**: `diagnostics.publish_rate` 在 YAML 中配置，但不在 `DEFAULT_CONFIG` 中，导致配置无法被 `ParamLoader` 加载。
+
+**影响**: YAML 中的 `diagnostics.publish_rate` 配置被忽略，代码使用硬编码默认值。
+
+**解决方案**: 
+1. 在 `DIAGNOSTICS_CONFIG` 中添加 `publish_rate` 配置
+2. 统一所有代码中的默认值为 10
+
+**修改文件**:
+- `universal_controller/config/system_config.py` - 添加 `publish_rate: 10`
+- `controller_ros/scripts/controller_node.py` - 更新默认值为 10
+- `controller_ros/src/controller_ros/node/controller_node.py` - 更新默认值为 10
+- `controller_ros/src/controller_ros/io/publishers.py` - 更新默认值为 10
+- `controller_ros/src/controller_ros/utils/diagnostics_publisher.py` - 更新默认值为 10
+- `controller_ros/config/controller_params.yaml` - 更新默认值为 10
+- `controller_ros/test/test_param_loader.py` - 添加 `test_load_includes_diagnostics_publish_rate` 测试
+
+### 4. 清理 ROS1 参数加载器无效代码
+
+**问题**: `ROS1ParamStrategy.get_param()` 中有一行无效代码 `ros_path = param_path.replace('/', '/')`。
+
+**影响**: 无功能影响，但降低代码可读性。
+
+**解决方案**: 删除无效代码，添加详细注释说明 ROS1 参数解析机制。
+
+**修改文件**:
+- `controller_ros/src/controller_ros/utils/param_loader.py` - 删除无效代码，添加文档
+
+---
+
+## 之前的更新: controller_ros 代码优化
 
 ### 1. TF2 注入逻辑提取为独立类
 

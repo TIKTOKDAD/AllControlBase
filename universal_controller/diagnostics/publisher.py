@@ -80,6 +80,10 @@ class DiagnosticsPublisher:
         self._callbacks: List[Callable[[Dict[str, Any]], None]] = []
         self._callbacks_lock = threading.Lock()
         
+        # 回调失败计数（用于自动移除持续失败的回调）
+        self._callback_fail_counts: Dict[int, int] = {}  # callback id -> fail count
+        self._callback_max_failures = 5  # 连续失败超过此次数后移除回调
+        
         # ROS Publishers
         self._diagnostics_pub: Optional[Any] = None
         self._cmd_pub: Optional[Any] = None
@@ -126,21 +130,40 @@ class DiagnosticsPublisher:
         
         Args:
             callback: 回调函数，签名为 callback(diagnostics: Dict[str, Any]) -> None
+        
+        Note:
+            如果回调连续失败超过 5 次，会被自动移除以防止日志泛滥
         """
         with self._callbacks_lock:
             if callback not in self._callbacks:
                 self._callbacks.append(callback)
+                self._callback_fail_counts[id(callback)] = 0
     
     def remove_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """移除诊断回调函数（线程安全）"""
         with self._callbacks_lock:
             if callback in self._callbacks:
                 self._callbacks.remove(callback)
+                self._callback_fail_counts.pop(id(callback), None)
     
     def clear_callbacks(self) -> None:
         """清除所有回调函数（线程安全）"""
         with self._callbacks_lock:
             self._callbacks.clear()
+            self._callback_fail_counts.clear()
+    
+    def remove_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """移除诊断回调函数（线程安全）"""
+        with self._callbacks_lock:
+            if callback in self._callbacks:
+                self._callbacks.remove(callback)
+                self._callback_fail_counts.pop(id(callback), None)
+    
+    def clear_callbacks(self) -> None:
+        """清除所有回调函数（线程安全）"""
+        with self._callbacks_lock:
+            self._callbacks.clear()
+            self._callback_fail_counts.clear()
     
     def publish(self,
                 current_time: float,
@@ -183,11 +206,39 @@ class DiagnosticsPublisher:
         with self._callbacks_lock:
             callbacks_copy = list(self._callbacks)
         
+        callbacks_to_remove = []
         for callback in callbacks_copy:
             try:
                 callback(diag_dict)
+                # 成功时重置失败计数
+                with self._callbacks_lock:
+                    self._callback_fail_counts[id(callback)] = 0
             except Exception as e:
-                logger.warning(f"Callback error: {e}")
+                callback_id = id(callback)
+                with self._callbacks_lock:
+                    fail_count = self._callback_fail_counts.get(callback_id, 0) + 1
+                    self._callback_fail_counts[callback_id] = fail_count
+                
+                if fail_count >= self._callback_max_failures:
+                    logger.warning(
+                        f"Callback {callback} failed {fail_count} times consecutively, removing it. "
+                        f"Last error: {e}"
+                    )
+                    callbacks_to_remove.append(callback)
+                elif fail_count == 1:
+                    # 首次失败记录警告
+                    logger.warning(f"Callback error: {e}")
+                else:
+                    # 后续失败使用 debug 级别
+                    logger.debug(f"Callback error (fail #{fail_count}): {e}")
+        
+        # 移除持续失败的回调
+        if callbacks_to_remove:
+            with self._callbacks_lock:
+                for callback in callbacks_to_remove:
+                    if callback in self._callbacks:
+                        self._callbacks.remove(callback)
+                        self._callback_fail_counts.pop(id(callback), None)
         
         # ROS 发布
         self._publish_to_ros(diag_dict)

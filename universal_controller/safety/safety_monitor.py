@@ -2,12 +2,15 @@
 from typing import Dict, Any, Optional
 from collections import deque
 import numpy as np
+import logging
 
 from ..core.interfaces import ISafetyMonitor
 from ..core.data_types import ControlOutput, SafetyDecision
 from ..core.enums import ControllerState, PlatformType
 from ..core.diagnostics_input import DiagnosticsInput
 from ..core.ros_compat import get_monotonic_time
+
+logger = logging.getLogger(__name__)
 
 
 class BasicSafetyMonitor(ISafetyMonitor):
@@ -94,15 +97,39 @@ class BasicSafetyMonitor(ISafetyMonitor):
         # 应用低通滤波（指数移动平均）
         if self._filtered_ax is None:
             # 第一次调用时初始化滤波器
-            # 使用限幅后的原始值初始化，避免零初始化导致的收敛延迟
-            # 同时限制异常大的初始值
-            max_init_accel = self.a_max * 2.0  # 允许初始值为限制的 2 倍
+            # 
+            # 初始化策略:
+            # 1. 如果原始值在合理范围内 (< 2 * a_max)，使用原始值初始化
+            #    这避免了零初始化导致的收敛延迟
+            # 2. 如果原始值异常大 (>= 2 * a_max)，可能是传感器故障或启动瞬态
+            #    使用零初始化，让滤波器从安全状态开始收敛
+            # 3. 预热期间使用更宽松的安全阈值，避免误报
+            
+            max_init_accel = self.a_max * 2.0
             max_init_alpha = self.alpha_max * 2.0
             
-            self._filtered_ax = np.clip(raw_ax, -max_init_accel, max_init_accel)
-            self._filtered_ay = np.clip(raw_ay, -max_init_accel, max_init_accel)
-            self._filtered_az = np.clip(raw_az, -max_init_accel, max_init_accel)
-            self._filtered_alpha = np.clip(raw_alpha, -max_init_alpha, max_init_alpha)
+            # 检测是否有异常大的初始值
+            raw_accel_magnitude = np.sqrt(raw_ax**2 + raw_ay**2 + raw_az**2)
+            is_anomalous = raw_accel_magnitude >= max_init_accel or abs(raw_alpha) >= max_init_alpha
+            
+            if is_anomalous:
+                # 异常值：使用零初始化，更安全
+                self._filtered_ax = 0.0
+                self._filtered_ay = 0.0
+                self._filtered_az = 0.0
+                self._filtered_alpha = 0.0
+                logger.debug(
+                    f"Anomalous initial acceleration detected "
+                    f"(magnitude={raw_accel_magnitude:.2f}, alpha={raw_alpha:.2f}), "
+                    f"using zero initialization"
+                )
+            else:
+                # 正常值：使用限幅后的原始值初始化
+                self._filtered_ax = np.clip(raw_ax, -max_init_accel, max_init_accel)
+                self._filtered_ay = np.clip(raw_ay, -max_init_accel, max_init_accel)
+                self._filtered_az = np.clip(raw_az, -max_init_accel, max_init_accel)
+                self._filtered_alpha = np.clip(raw_alpha, -max_init_alpha, max_init_alpha)
+            
             # 重置预热计数
             self._filter_warmup_count = 0
         

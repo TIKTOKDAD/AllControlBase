@@ -55,6 +55,7 @@ tf:
 watchdog:
   odom_timeout_ms: 500            # 里程计超时 (ms) - 放宽
   traj_timeout_ms: 1000           # 轨迹超时 (ms) - 放宽
+  traj_grace_ms: 500              # 轨迹超时宽限期 (ms) - 放宽，适应低频传感器
   imu_timeout_ms: -1              # IMU 超时 (ms) - 禁用 (TurtleBot1 无 IMU)
   startup_grace_ms: 3000          # 启动宽限期 (ms) - 延长
 
@@ -114,24 +115,47 @@ constraints:
 # 一致性检查配置 (提升平滑性)
 # =============================================================================
 consistency:
-  enable_soft_head: true          # 启用 Soft Head
-  alpha_soft_threshold: 0.6       # Soft 权重阈值
-  curvature_weight: 0.3           # 曲率权重
-  velocity_direction_weight: 0.3  # 速度方向权重
-  temporal_smoothness_weight: 0.4 # 时序平滑权重
+  kappa_thresh: 0.5               # 曲率一致性阈值
+  v_dir_thresh: 0.8               # 速度方向一致性阈值
+  temporal_smooth_thresh: 0.5     # 时序平滑度阈值
+  alpha_min: 0.1                  # α 最小值
+  weights:
+    kappa: 0.3                    # 曲率权重 (原 curvature_weight)
+    velocity: 0.3                 # 速度方向权重 (原 velocity_direction_weight)
+    temporal: 0.4                 # 时序平滑权重 (原 temporal_smoothness_weight)
 
 # =============================================================================
 # 安全配置
 # =============================================================================
 safety:
-  enable_backup_controller: true  # 启用备用控制器 (Pure Pursuit)
-  backup_lookahead: 0.5           # Pure Pursuit 前视距离 (m)
+  v_stop_thresh: 0.05             # 停车速度阈值 (m/s)
+  stopping_timeout: 5.0           # 停车超时时间 (秒)
   emergency_decel: 1.0            # 紧急减速度 (m/s²)
 
 # =============================================================================
-# 状态估计配置
+# 备份控制器配置 (Pure Pursuit)
 # =============================================================================
-estimator:
-  use_ekf: true                   # 使用 EKF 状态估计
-  process_noise: 0.1              # 过程噪声
-  measurement_noise: 0.05         # 测量噪声
+backup:
+  lookahead_dist: 0.5             # 前瞻距离 (m) (原 safety.backup_lookahead)
+  min_lookahead: 0.3              # 最小前瞻距离 (m)
+  max_lookahead: 1.5              # 最大前瞻距离 (m)
+  kp_heading: 1.5                 # 航向增益
+
+# =============================================================================
+# EKF 状态估计配置
+# =============================================================================
+ekf:
+  use_odom_orientation_fallback: true   # 使用里程计航向作为备选
+  imu_motion_compensation: false        # IMU 运动补偿 (TurtleBot1 无 IMU)
+  
+  # 过程噪声 (TurtleBot1 调优)
+  process_noise:
+    position: 0.01                # 位置过程噪声
+    velocity: 0.1                 # 速度过程噪声
+    orientation: 0.05             # 航向过程噪声
+    angular_velocity: 0.1         # 角速度过程噪声
+  
+  # 测量噪声
+  measurement_noise:
+    odom_position: 0.05           # 里程计位置噪声 (TurtleBot1 精度较低)
+    odom_velocity: 0.1            # 里程计速度噪声

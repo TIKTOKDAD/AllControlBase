@@ -73,6 +73,9 @@ def test_mpc_velocity_constraints():
 def test_mpc_horizon_adjustment():
     """测试 MPC horizon 动态调整"""
     config = DEFAULT_CONFIG.copy()
+    # 设置较短的节流间隔以便测试
+    config['mpc'] = config.get('mpc', {}).copy()
+    config['mpc']['horizon_change_min_interval'] = 0.0  # 禁用节流
     platform_config = PLATFORM_CONFIG['differential']
     mpc = MPCController(config, platform_config)
     

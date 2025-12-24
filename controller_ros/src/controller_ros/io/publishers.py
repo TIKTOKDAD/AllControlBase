@@ -33,7 +33,7 @@ class PublisherManager:
     
     def __init__(self, node: Node, topics: Dict[str, str],
                  default_frame_id: str = 'base_link',
-                 diag_publish_rate: int = 5):
+                 diag_publish_rate: int = 10):
         """
         初始化发布管理器
         

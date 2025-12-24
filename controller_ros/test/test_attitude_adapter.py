@@ -83,41 +83,10 @@ class TestAttitudeAdapter:
         assert cmd.thrust == pytest.approx(1.0)
 
 
-class TestParamLoader:
-    """测试 ParamLoader 类"""
-    
-    def test_deep_copy(self):
-        """测试深拷贝"""
-        from controller_ros.utils.param_loader import ParamLoader
-        
-        original = {'a': {'b': 1}}
-        copied = ParamLoader._deep_copy(original)
-        
-        copied['a']['b'] = 2
-        assert original['a']['b'] == 1
-    
-    def test_merge_params(self):
-        """测试参数合并"""
-        from controller_ros.utils.param_loader import ParamLoader
-        
-        config = {
-            'system': {'ctrl_freq': 50, 'platform': 'differential'},
-            'watchdog': {'odom_timeout_ms': 100},
-        }
-        
-        ros_params = {
-            'system': {'ctrl_freq': 100, 'platform': 'quadrotor'},
-            'watchdog': {'odom_timeout_ms': 200, 'traj_timeout_ms': 500},
-            'mpc': {'horizon': 30},
-        }
-        
-        ParamLoader._merge_params(config, ros_params)
-        
-        assert config['system']['ctrl_freq'] == 100
-        assert config['system']['platform'] == 'quadrotor'
-        assert config['watchdog']['odom_timeout_ms'] == 200
-        assert config['watchdog']['traj_timeout_ms'] == 500
-        assert config['mpc']['horizon'] == 30
+# 注意: TestParamLoader 测试类已移除
+# 这些测试针对旧版 ParamLoader API (_deep_copy, _merge_params)
+# 新版 ParamLoader 使用 copy.deepcopy 和 _load_recursive
+# 相关测试已移至 test_param_loader.py
 
 
 class TestTimeSync:
@@ -225,53 +194,10 @@ class TestAttitudeAdapterToRos:
             pytest.skip("ROS messages not available")
 
 
-class TestParamLoaderMerge:
-    """测试 ParamLoader 合并逻辑"""
-    
-    def test_merge_existing_keys(self):
-        """测试合并已存在的键"""
-        from controller_ros.utils.param_loader import ParamLoader
-        
-        config = {
-            'system': {'ctrl_freq': 50, 'platform': 'differential'},
-        }
-        
-        ros_params = {
-            'system': {'ctrl_freq': 100},  # 覆盖已存在的键
-        }
-        
-        ParamLoader._merge_params(config, ros_params)
-        
-        assert config['system']['ctrl_freq'] == 100
-        assert config['system']['platform'] == 'differential'  # 保留
-    
-    def test_merge_empty_ros_params(self):
-        """测试空 ROS 参数合并"""
-        from controller_ros.utils.param_loader import ParamLoader
-        
-        config = {'system': {'ctrl_freq': 50}}
-        ros_params = {}
-        
-        ParamLoader._merge_params(config, ros_params)
-        
-        assert config['system']['ctrl_freq'] == 50
-    
-    def test_merge_adds_to_existing_section(self):
-        """测试向已存在的节添加新键"""
-        from controller_ros.utils.param_loader import ParamLoader
-        
-        config = {
-            'watchdog': {'odom_timeout_ms': 100},
-        }
-        
-        ros_params = {
-            'watchdog': {'odom_timeout_ms': 200, 'traj_timeout_ms': 500},
-        }
-        
-        ParamLoader._merge_params(config, ros_params)
-        
-        assert config['watchdog']['odom_timeout_ms'] == 200
-        assert config['watchdog']['traj_timeout_ms'] == 500
+# 注意: TestParamLoader 和 TestParamLoaderMerge 测试类已移除
+# 这些测试针对旧版 ParamLoader API (_deep_copy, _merge_params)
+# 新版 ParamLoader 使用 copy.deepcopy 和 _load_recursive
+# 相关测试已移至 test_param_loader.py
 
 
 class TestAttitudeCommandDataclass:

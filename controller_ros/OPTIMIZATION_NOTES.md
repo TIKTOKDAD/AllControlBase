@@ -137,3 +137,17 @@ class ROS2ParamStrategy:
 - `test_tf2_injection_manager.py` - 14 tests passed
 - `test_diagnostics_publisher.py` - 34 tests passed
 - `test_time_sync.py` - 27 tests passed
+- `test_base_node.py` - 23 tests passed
+- 完整测试套件: 192 passed, 3 skipped
+
+### 6. 更新测试代码以使用新的 TF2InjectionManager API
+
+**文件**: `test/test_base_node.py`
+
+**问题**: 测试代码使用了旧的属性名 `_tf2_injected`、`_tf2_injection_attempted`，但基类现在使用 `TF2InjectionManager` 管理这些状态。
+
+**修复**: 更新测试代码使用新的 API：
+- `mock.node._is_tf2_injected` (属性)
+- `mock.node._tf2_injection_manager.is_injected`
+- `mock.node._tf2_injection_manager.injection_attempted`
+- `mock.node._tf2_injection_manager._retry_counter`

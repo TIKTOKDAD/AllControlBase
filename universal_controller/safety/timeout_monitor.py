@@ -33,10 +33,19 @@ class TimeoutMonitor:
         self._traj_timeout_start: Optional[float] = None
     
     def update_odom(self, stamp: float) -> None:
-        """更新 odom 时间戳
+        """
+        更新 odom 时间戳
         
         Args:
-            stamp: 消息时间戳（秒），仅用于日志，内部使用接收时间
+            stamp: 消息时间戳（秒）
+                   - 用于计算消息延迟（如果启用）
+                   - 内部超时检测使用接收时间（单调时钟），不受系统时间跳变影响
+        
+        Note:
+            超时检测基于接收时间而非消息时间戳，原因：
+            1. 消息时间戳可能受系统时间同步影响
+            2. 接收时间更能反映实际的数据新鲜度
+            3. 使用单调时钟避免时间跳变导致的误判
         """
         receive_time = get_monotonic_time()
         self._last_odom_time = receive_time
@@ -44,7 +53,12 @@ class TimeoutMonitor:
             self._startup_time = receive_time
     
     def update_trajectory(self, stamp: float) -> None:
-        """更新轨迹时间戳"""
+        """
+        更新轨迹时间戳
+        
+        Args:
+            stamp: 消息时间戳（秒），参见 update_odom 的说明
+        """
         receive_time = get_monotonic_time()
         self._last_traj_time = receive_time
         self._traj_timeout_start = None
@@ -52,7 +66,12 @@ class TimeoutMonitor:
             self._startup_time = receive_time
     
     def update_imu(self, stamp: float) -> None:
-        """更新 IMU 时间戳"""
+        """
+        更新 IMU 时间戳
+        
+        Args:
+            stamp: 消息时间戳（秒），参见 update_odom 的说明
+        """
         receive_time = get_monotonic_time()
         self._last_imu_time = receive_time
         if self._startup_time is None:
@@ -64,6 +83,9 @@ class TimeoutMonitor:
         Args:
             current_time: 当前时间（秒），如果为 None 则使用单调时钟
                          注意：为保持一致性，建议不传入此参数
+        
+        Note:
+            超时阈值 <= 0 表示禁用该数据源的超时检测
         """
         # 使用单调时钟，忽略外部传入的时间
         monotonic_now = get_monotonic_time()
@@ -86,10 +108,12 @@ class TimeoutMonitor:
         traj_age_ms = self._compute_age_ms(self._last_traj_time, monotonic_now)
         imu_age_ms = self._compute_age_ms(self._last_imu_time, monotonic_now)
         
-        odom_timeout = odom_age_ms > self.odom_timeout_ms
-        imu_timeout = imu_age_ms > self.imu_timeout_ms
+        # 超时阈值 <= 0 表示禁用超时检测
+        odom_timeout = self.odom_timeout_ms > 0 and odom_age_ms > self.odom_timeout_ms
+        imu_timeout = self.imu_timeout_ms > 0 and imu_age_ms > self.imu_timeout_ms
         
-        traj_timeout = traj_age_ms > self.traj_timeout_ms
+        # 轨迹超时检测（支持禁用）
+        traj_timeout = self.traj_timeout_ms > 0 and traj_age_ms > self.traj_timeout_ms
         traj_grace_exceeded = False
         
         if traj_timeout:

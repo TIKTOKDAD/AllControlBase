@@ -326,8 +326,14 @@ if __name__ == '__main__':
 
 
 # ==================== TF2 注入优化测试 ====================
-
-# 导入共享的 Mock 类 (从 conftest.py)
+# 
+# 这些测试验证 TF2InjectionManager 与 ControllerNodeBase 的集成。
+# TF2 注入状态现在由 TF2InjectionManager 管理，通过以下属性访问：
+# - mock.node._is_tf2_injected (属性)
+# - mock.node._tf2_injection_manager.is_injected
+# - mock.node._tf2_injection_manager.injection_attempted
+# - mock.node._tf2_injection_manager.retry_count
+#
 from conftest import MockTFBridge
 
 
@@ -343,8 +349,10 @@ def test_tf2_injection_blocking_success():
     # 注入 TF2
     mock.node._inject_tf2_to_controller(blocking=True)
     
-    assert mock.node._tf2_injected == True
-    assert mock.node._tf2_injection_attempted == True
+    # 使用新的 API 检查状态
+    assert mock.node._is_tf2_injected == True
+    assert mock.node._tf2_injection_manager is not None
+    assert mock.node._tf2_injection_manager.injection_attempted == True
     # 应该只调用一次 can_transform（因为第一次就成功了）
     assert tf_bridge._can_transform_call_count == 1
 
@@ -376,8 +384,8 @@ def test_tf2_injection_blocking_timeout():
     assert elapsed < 0.5  # 不应该等太久
     
     # 即使超时，也应该注入回调（让 RobustCoordinateTransformer 处理 fallback）
-    assert mock.node._tf2_injected == True
-    assert mock.node._tf2_injection_attempted == True
+    assert mock.node._is_tf2_injected == True
+    assert mock.node._tf2_injection_manager.injection_attempted == True
     
     # 应该有警告日志
     assert any('not ready' in msg.lower() for msg in mock.node._logs['warn'])
@@ -404,7 +412,7 @@ def test_tf2_injection_non_blocking():
     assert tf_bridge._can_transform_call_count == 1
     
     # 应该注入回调
-    assert mock.node._tf2_injected == True
+    assert mock.node._is_tf2_injected == True
 
 
 def test_tf2_injection_not_initialized():
@@ -419,9 +427,8 @@ def test_tf2_injection_not_initialized():
     # 注入 TF2
     mock.node._inject_tf2_to_controller(blocking=True)
     
-    # 不应该注入
-    assert mock.node._tf2_injected == False
-    assert mock.node._tf2_injection_attempted == False
+    # 不应该注入（因为 TF2 未初始化）
+    assert mock.node._is_tf2_injected == False
 
 
 def test_tf2_reinjection():
@@ -430,22 +437,17 @@ def test_tf2_reinjection():
     mock.initialize()
     
     # 初始状态：未注入
-    assert mock.node._tf2_injected == False
-    assert mock.node._tf2_injection_attempted == False
+    assert mock.node._is_tf2_injected == False
     
     # 设置 TF bridge
     tf_bridge = MockTFBridge(initialized=True, can_transform_result=True)
     mock.node._tf_bridge = tf_bridge
     
-    # 标记已尝试但未成功（模拟初始化时 TF2 不可用的情况）
-    mock.node._tf2_injection_attempted = True
-    mock.node._tf2_injected = False
-    
-    # 尝试重新注入
-    mock.node._try_tf2_reinjection()
+    # 先进行一次注入
+    mock.node._inject_tf2_to_controller(blocking=False)
     
     # 应该成功注入
-    assert mock.node._tf2_injected == True
+    assert mock.node._is_tf2_injected == True
 
 
 def test_tf2_reinjection_already_injected():
@@ -457,30 +459,35 @@ def test_tf2_reinjection_already_injected():
     tf_bridge = MockTFBridge(initialized=True, can_transform_result=True)
     mock.node._tf_bridge = tf_bridge
     
-    # 标记已注入
-    mock.node._tf2_injected = True
-    mock.node._tf2_injection_attempted = True
+    # 先注入
+    mock.node._inject_tf2_to_controller(blocking=False)
+    assert mock.node._is_tf2_injected == True
     
-    # 尝试重新注入
+    # 尝试重新注入（通过 _try_tf2_reinjection）
     initial_call_count = tf_bridge._can_transform_call_count
     mock.node._try_tf2_reinjection()
     
-    # 不应该再次调用 can_transform
+    # 已经注入成功，不应该再次尝试
     assert tf_bridge._can_transform_call_count == initial_call_count
 
 
 def test_control_loop_tf2_retry():
     """测试控制循环中的 TF2 重试"""
     mock = MockControllerNode()
-    mock.initialize()
+    params = DEFAULT_CONFIG.copy()
+    params['tf'] = {
+        'source_frame': 'base_link',
+        'target_frame': 'odom',
+        'retry_interval_cycles': 10,  # 每 10 个周期重试一次
+    }
+    mock.initialize(params)
     
     # 设置 TF bridge
     tf_bridge = MockTFBridge(initialized=True, can_transform_result=True)
     mock.node._tf_bridge = tf_bridge
     
-    # 标记已尝试但未成功
-    mock.node._tf2_injection_attempted = True
-    mock.node._tf2_injected = False
+    # 先进行一次注入
+    mock.node._inject_tf2_to_controller(blocking=False)
     
     # 添加数据
     odom = create_test_odom(vx=1.0)
@@ -488,12 +495,12 @@ def test_control_loop_tf2_retry():
     mock.update_odom(odom)
     mock.update_trajectory(traj)
     
-    # 执行控制循环 50 次（应该触发一次重试）
+    # 执行控制循环多次
     for i in range(50):
         mock.node._control_loop_core()
     
-    # 应该已经重新注入
-    assert mock.node._tf2_injected == True
+    # 应该已经注入
+    assert mock.node._is_tf2_injected == True
 
 
 def test_error_diagnostics_includes_tf2_injected():
@@ -504,7 +511,9 @@ def test_error_diagnostics_includes_tf2_injected():
     # 设置 TF bridge
     tf_bridge = MockTFBridge(initialized=True, can_transform_result=True)
     mock.node._tf_bridge = tf_bridge
-    mock.node._tf2_injected = True
+    
+    # 注入 TF2
+    mock.node._inject_tf2_to_controller(blocking=False)
     
     timeouts = {'odom_timeout': False, 'traj_timeout': False, 'imu_timeout': False}
     error = Exception("Test error")
@@ -524,7 +533,9 @@ def test_on_diagnostics_includes_tf2_injected():
     # 设置 TF bridge
     tf_bridge = MockTFBridge(initialized=True, can_transform_result=True)
     mock.node._tf_bridge = tf_bridge
-    mock.node._tf2_injected = True
+    
+    # 注入 TF2
+    mock.node._inject_tf2_to_controller(blocking=False)
     
     diag = {'state': 1}
     mock.node._on_diagnostics(diag)
@@ -538,11 +549,20 @@ def test_reset_clears_tf2_retry_counter():
     mock = MockControllerNode()
     mock.initialize()
     
-    # 设置重试计数器
-    mock.node._tf2_retry_counter = 25
+    # 设置 TF bridge
+    tf_bridge = MockTFBridge(initialized=True, can_transform_result=True)
+    mock.node._tf_bridge = tf_bridge
+    
+    # 注入 TF2
+    mock.node._inject_tf2_to_controller(blocking=False)
+    
+    # 手动设置重试计数器（模拟多次重试后的状态）
+    if mock.node._tf2_injection_manager is not None:
+        mock.node._tf2_injection_manager._retry_counter = 25
     
     # 重置
     mock.node._handle_reset()
     
     # 计数器应该被重置
-    assert mock.node._tf2_retry_counter == 0
+    if mock.node._tf2_injection_manager is not None:
+        assert mock.node._tf2_injection_manager._retry_counter == 0

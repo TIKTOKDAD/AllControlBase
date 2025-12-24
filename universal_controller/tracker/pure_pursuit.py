@@ -450,17 +450,27 @@ class PurePursuitController(ITrajectoryTracker):
                         if vel.ndim == 0:
                             # 0维数组 (标量)
                             v_soft = abs(float(vel))
+                        elif vel.size == 0:
+                            # 空数组
+                            v_soft = self.v_max * self.default_speed_ratio
                         elif len(vel) >= 2:
-                            # 多维速度向量
+                            # 多维速度向量 [vx, vy, ...]
                             v_soft = np.sqrt(vel[0]**2 + vel[1]**2)
                         elif len(vel) == 1:
                             # 单元素数组
                             v_soft = abs(float(vel[0]))
                         else:
+                            # 不应该到达这里，但作为安全保护
                             v_soft = self.v_max * self.default_speed_ratio
-                    elif hasattr(vel, '__len__') and len(vel) >= 2:
+                    elif hasattr(vel, '__len__'):
                         # 列表或元组
-                        v_soft = np.sqrt(vel[0]**2 + vel[1]**2)
+                        if len(vel) >= 2:
+                            v_soft = np.sqrt(float(vel[0])**2 + float(vel[1])**2)
+                        elif len(vel) == 1:
+                            v_soft = abs(float(vel[0]))
+                        else:
+                            # 空列表/元组
+                            v_soft = self.v_max * self.default_speed_ratio
                     elif np.isscalar(vel):
                         # 纯标量
                         v_soft = abs(float(vel))

@@ -87,7 +87,7 @@ class DiagnosticsThrottler:
     供 ROS1 和 ROS2 节点共享使用。
     """
     
-    def __init__(self, publish_rate: int = 5):
+    def __init__(self, publish_rate: int = 10):
         """
         初始化诊断节流器
         

@@ -60,7 +60,7 @@ class ControllerNode(ControllerNodeBase, Node):
         self._create_ros_interfaces()
         
         # 7. 创建控制定时器
-        # 统一从 system.ctrl_freq 读取控制频率 (ParamLoader._merge_params 已将 node.control_rate 合并到此)
+        # 从 system.ctrl_freq 读取控制频率
         control_rate = self._params.get('system', {}).get('ctrl_freq', 50)
         control_period = 1.0 / control_rate
         self._control_timer = self.create_timer(
@@ -80,7 +80,7 @@ class ControllerNode(ControllerNodeBase, Node):
         self._create_subscriptions()
         
         # 创建发布管理器
-        diag_publish_rate = self._params.get('diagnostics', {}).get('publish_rate', 5)
+        diag_publish_rate = self._params.get('diagnostics', {}).get('publish_rate', 10)
         self._publishers = PublisherManager(
             self, self._topics, self._default_frame_id,
             diag_publish_rate=diag_publish_rate
