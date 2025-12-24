@@ -114,11 +114,11 @@ class TrajectoryVisualizer:
             rospy.loginfo("  4. 完成4个点后按 's' 保存")
             rospy.loginfo("  5. 按 'r' 重置, 'q' 退出")
             rospy.loginfo("-" * 50)
-            rospy.loginfo("建议的4个标定点:")
-            rospy.loginfo("  点1: (0.3, 0.0)  - 正前方 30cm")
-            rospy.loginfo("  点2: (0.5, 0.0)  - 正前方 50cm")
-            rospy.loginfo("  点3: (0.5, -0.2) - 右前方")
-            rospy.loginfo("  点4: (0.5, 0.2)  - 左前方")
+            rospy.loginfo("Suggested calibration points:")
+            rospy.loginfo("  Point 1: (1.5, 0.0)  - front 1.5m")
+            rospy.loginfo("  Point 2: (2.5, 0.0)  - front 2.5m")
+            rospy.loginfo("  Point 3: (2.0, -0.5) - front-right")
+            rospy.loginfo("  Point 4: (2.0, 0.5)  - front-left")
         else:
             rospy.loginfo("TrajectoryVisualizer 运行模式")
             rospy.loginfo(f"  图像输入: {self.image_topic}")
@@ -354,10 +354,10 @@ class TrajectoryVisualizer:
     
     def _draw_ground_grid(self, image):
         """绘制地面网格 (验证标定)"""
-        # 绘制 x 方向线 (每 0.2m)
-        for x in np.arange(0.2, 1.2, 0.2):
+        # 绘制 x 方向线 (每 0.5m, 从 1.0m 到 3.0m)
+        for x in np.arange(1.0, 3.5, 0.5):
             pts = []
-            for y in np.arange(-0.5, 0.6, 0.1):
+            for y in np.arange(-1.0, 1.1, 0.1):
                 pt = self.project_point(x, y)
                 if pt:
                     pts.append(pt)
@@ -365,10 +365,10 @@ class TrajectoryVisualizer:
                 for i in range(len(pts) - 1):
                     cv2.line(image, pts[i], pts[i+1], (100, 100, 100), 1)
         
-        # 绘制 y 方向线 (每 0.2m)
-        for y in np.arange(-0.4, 0.5, 0.2):
+        # 绘制 y 方向线 (每 0.5m)
+        for y in np.arange(-1.0, 1.1, 0.5):
             pts = []
-            for x in np.arange(0.2, 1.2, 0.1):
+            for x in np.arange(1.0, 3.5, 0.1):
                 pt = self.project_point(x, y)
                 if pt:
                     pts.append(pt)
