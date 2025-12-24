@@ -17,11 +17,8 @@
 import rospy
 import cv2
 import numpy as np
-import tf2_ros
-import tf2_geometry_msgs
 from cv_bridge import CvBridge, CvBridgeError
-from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import PointStamped
+from sensor_msgs.msg import Image
 from controller_ros.msg import LocalTrajectoryV4
 
 class TrajectoryVisualizer:
@@ -34,8 +31,6 @@ class TrajectoryVisualizer:
         self.image_topic = rospy.get_param('~image_topic', '/usb_cam/image_raw')
         self.trajectory_topic = rospy.get_param('~trajectory_topic', '/nn/local_trajectory')
         self.output_topic = rospy.get_param('~output_topic', '/trajectory_overlay/image')
-        self.camera_frame = rospy.get_param('~camera_frame', 'usb_cam')
-        self.base_frame = rospy.get_param('~base_frame', 'base_footprint')
         
         # 相机内参
         self.fx = rospy.get_param('~fx', 525.0)
@@ -43,11 +38,30 @@ class TrajectoryVisualizer:
         self.cx = rospy.get_param('~cx', 319.5)
         self.cy = rospy.get_param('~cy', 239.5)
         
+        # 畸变系数 (k1, k2, p1, p2, k3)
+        self.dist_coeffs = np.array([
+            rospy.get_param('~k1', 0.0),
+            rospy.get_param('~k2', 0.0),
+            rospy.get_param('~p1', 0.0),
+            rospy.get_param('~p2', 0.0),
+            rospy.get_param('~k3', 0.0)
+        ], dtype=np.float64)
+        
         # 相机外参 (相对于 base_footprint)
         self.cam_x = rospy.get_param('~cam_x', 0.08)    # 前方距离 (m)
         self.cam_y = rospy.get_param('~cam_y', 0.0)     # 左右偏移 (m)
         self.cam_z = rospy.get_param('~cam_z', 0.50)    # 高度 (m)
         self.cam_pitch = rospy.get_param('~cam_pitch', 0.0)  # 俯仰角 (rad)
+        
+        # 构建相机内参矩阵
+        self.camera_matrix = np.array([
+            [self.fx, 0, self.cx],
+            [0, self.fy, self.cy],
+            [0, 0, 1]
+        ], dtype=np.float64)
+        
+        # 预计算外参矩阵
+        self._build_extrinsic_matrix()
         
         # 显示参数
         self.show_window = rospy.get_param('~show_window', True)
@@ -56,10 +70,6 @@ class TrajectoryVisualizer:
         
         # CV Bridge
         self.bridge = CvBridge()
-        
-        # TF2
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         
         # 数据缓存
         self.latest_trajectory = None
@@ -83,9 +93,40 @@ class TrajectoryVisualizer:
         rospy.loginfo(f"  图像输入: {self.image_topic}")
         rospy.loginfo(f"  轨迹输入: {self.trajectory_topic}")
         rospy.loginfo(f"  图像输出: {self.output_topic}")
-        rospy.loginfo(f"  相机坐标系: {self.camera_frame}")
-        rospy.loginfo(f"  基准坐标系: {self.base_frame}")
         rospy.loginfo(f"  显示窗口: {self.show_window}")
+        rospy.loginfo(f"  相机内参: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}")
+        rospy.loginfo(f"  畸变系数: {self.dist_coeffs}")
+        rospy.loginfo(f"  相机外参: x={self.cam_x}, y={self.cam_y}, z={self.cam_z}, pitch={self.cam_pitch}")
+    
+    def _build_extrinsic_matrix(self):
+        """构建外参矩阵 (base_footprint → camera_optical)"""
+        # 坐标系转换: base(x前,y左,z上) → cam_optical(x右,y下,z前)
+        R_base_to_cam = np.array([
+            [0, -1, 0],   # cam_x = -base_y
+            [0, 0, -1],   # cam_y = -base_z
+            [1, 0, 0]     # cam_z = base_x
+        ], dtype=np.float64)
+        
+        # 俯仰旋转 (绕相机 x 轴)
+        cos_p = np.cos(self.cam_pitch)
+        sin_p = np.sin(self.cam_pitch)
+        R_pitch = np.array([
+            [1, 0, 0],
+            [0, cos_p, -sin_p],
+            [0, sin_p, cos_p]
+        ], dtype=np.float64)
+        
+        # 组合旋转
+        self.R_cam_base = R_pitch @ R_base_to_cam
+        
+        # 相机位置
+        self.t_cam_in_base = np.array([self.cam_x, self.cam_y, self.cam_z], dtype=np.float64)
+        
+        # 计算 rvec (旋转向量) 用于 cv2.projectPoints
+        self.rvec, _ = cv2.Rodrigues(self.R_cam_base)
+        
+        # 计算 tvec (平移向量): t = -R @ t_cam
+        self.tvec = -self.R_cam_base @ self.t_cam_in_base
     
     def trajectory_callback(self, msg):
         """轨迹回调"""
@@ -122,9 +163,9 @@ class TrajectoryVisualizer:
         self.frame_count += 1
     
     def overlay_trajectory(self, image, trajectory):
-        """在图像上叠加轨迹点 - 简化版，直接使用2D投影"""
-        # 直接使用简化的2D投影，起始点固定在底部中间
-        points_2d = self.project_points_manual(trajectory.points, image.shape)
+        """在图像上叠加轨迹点"""
+        # 使用 OpenCV projectPoints (更精准，支持畸变校正)
+        points_2d = self.project_points_opencv(trajectory.points, image.shape)
         
         # 绘制轨迹
         if points_2d:
@@ -132,89 +173,53 @@ class TrajectoryVisualizer:
         
         return image
     
-    def project_points_manual(self, points, image_shape):
+    def project_points_opencv(self, points, image_shape):
         """
-        标准 3D→2D 投影 - 使用齐次变换矩阵
+        使用 OpenCV projectPoints 进行精准投影
         
-        坐标系定义:
-        - base_footprint: x前, y左, z上, 原点在地面两轮中心
-        - camera optical: x右, y下, z前 (OpenCV/ROS 标准)
-        
-        变换流程:
-        1. P_base: 轨迹点在 base_footprint 坐标系的坐标
-        2. P_cam = T_cam_base @ P_base: 变换到相机坐标系
-        3. p = K @ P_cam: 针孔投影到图像平面
+        优点:
+        - 支持畸变校正
+        - 经过广泛验证的标准实现
+        - 数值稳定性好
         """
         h, w = image_shape[:2]
-        points_2d = []
         
-        # ============ 构建相机内参矩阵 K ============
-        K = np.array([
-            [self.fx, 0, self.cx],
-            [0, self.fy, self.cy],
-            [0, 0, 1]
-        ])
+        if not points:
+            return []
         
-        # ============ 构建外参变换矩阵 T_cam_base ============
-        # 相机在 base_footprint 中的位置
-        t_cam_in_base = np.array([self.cam_x, self.cam_y, self.cam_z])
+        # 构建 3D 点数组 (N x 3)
+        points_3d = np.array([[pt.x, pt.y, pt.z] for pt in points], dtype=np.float64)
         
-        # 相机姿态: 先绕 base 的 y 轴旋转 pitch (向下为正)
-        # 然后坐标系转换: base(x前,y左,z上) → cam_optical(x右,y下,z前)
+        # 使用 OpenCV projectPoints
+        # 这个函数会自动处理畸变
+        points_2d, _ = cv2.projectPoints(
+            points_3d,
+            self.rvec,
+            self.tvec,
+            self.camera_matrix,
+            self.dist_coeffs
+        )
         
-        # 坐标系转换矩阵 (不含俯仰)
-        # base_x(前) → cam_z(前)
-        # base_y(左) → cam_-x(右的负方向，即左)  
-        # base_z(上) → cam_-y(下的负方向，即上)
-        R_base_to_cam_optical = np.array([
-            [0, -1, 0],   # cam_x = -base_y
-            [0, 0, -1],   # cam_y = -base_z
-            [1, 0, 0]     # cam_z = base_x
-        ])
-        
-        # 俯仰旋转矩阵 (绕相机的 x 轴，即 base 的 -y 轴)
-        # 正 pitch = 相机向下看
-        cos_p = np.cos(self.cam_pitch)
-        sin_p = np.sin(self.cam_pitch)
-        R_pitch = np.array([
-            [1, 0, 0],
-            [0, cos_p, -sin_p],
-            [0, sin_p, cos_p]
-        ])
-        
-        # 组合旋转: 先坐标系转换，再俯仰
-        R_cam_base = R_pitch @ R_base_to_cam_optical
-        
-        # 平移: 相机看到的点 = 点在base中的位置 - 相机在base中的位置
-        # 然后旋转到相机坐标系
-        
-        for pt in points:
-            # 轨迹点在 base_footprint 坐标系 (地面点, z 通常为 0)
-            P_base = np.array([pt.x, pt.y, pt.z])
+        # 转换格式并过滤
+        result = []
+        for i, pt_2d in enumerate(points_2d):
+            u, v = pt_2d[0]
             
-            # 变换到相机坐标系
-            P_rel = P_base - t_cam_in_base  # 相对于相机的位置
-            P_cam = R_cam_base @ P_rel      # 旋转到相机坐标系
+            # 检查点是否在相机前方 (通过变换后的 z 坐标)
+            P_cam = self.R_cam_base @ (points_3d[i] - self.t_cam_in_base)
+            if P_cam[2] <= 0.01:  # 点在相机后方
+                continue
             
-            # 相机坐标系中: x右, y下, z前
-            x_cam, y_cam, z_cam = P_cam
+            u_int = int(round(u))
+            v_int = int(round(v))
             
-            # 只投影相机前方的点 (z > 0)
-            if z_cam > 0.01:
-                # 针孔相机投影
-                u = self.fx * x_cam / z_cam + self.cx
-                v = self.fy * y_cam / z_cam + self.cy
-                
-                u_int = int(round(u))
-                v_int = int(round(v))
-                
-                # 允许稍微超出图像范围
-                if -100 <= u_int < w + 100 and -100 <= v_int < h + 100:
-                    u_int = max(0, min(w - 1, u_int))
-                    v_int = max(0, min(h - 1, v_int))
-                    points_2d.append((u_int, v_int))
+            # 检查是否在图像范围内
+            if -100 <= u_int < w + 100 and -100 <= v_int < h + 100:
+                u_int = max(0, min(w - 1, u_int))
+                v_int = max(0, min(h - 1, v_int))
+                result.append((u_int, v_int))
         
-        return points_2d
+        return result
     
     def draw_trajectory_on_image(self, image, points_2d, depths=None):
         """在图像上绘制轨迹"""
