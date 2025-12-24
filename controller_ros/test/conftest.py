@@ -11,11 +11,23 @@ import pytest
 import sys
 import os
 
-# 添加 src 目录到路径
+# 使用统一的路径管理器
 _test_dir = os.path.dirname(__file__)
+_src_path = os.path.join(_test_dir, '..', 'src')
+if _src_path not in sys.path:
+    sys.path.insert(0, _src_path)
+
+# 导入路径管理器 (会自动设置所有必要路径)
+try:
+    import controller_ros._path_manager
+except ImportError:
+    # 如果路径管理器不可用，手动添加路径
+    pass
+
+# 添加 fixtures 目录
 _fixtures_dir = os.path.join(_test_dir, 'fixtures')
-sys.path.insert(0, os.path.join(_test_dir, '..', 'src'))
-sys.path.insert(0, _test_dir)
+if _test_dir not in sys.path:
+    sys.path.insert(0, _test_dir)
 
 # =============================================================================
 # 从 fixtures 模块导入所有 Mock 类
