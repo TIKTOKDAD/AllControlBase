@@ -12,7 +12,7 @@ class StatusLED(QWidget):
     
     def __init__(self, text: str = '', parent=None):
         super().__init__(parent)
-        self._text = text
+        self._text = text  # 保存原始文本
         self._status = None
         self._setup_ui()
     
@@ -37,15 +37,18 @@ class StatusLED(QWidget):
         
         Args:
             status: True=成功, False=失败, None=不可用
-            text: 显示文本
+            text: 显示文本 (如果为 None，保留原始文本)
         """
         self._status = status
         
-        if text:
+        # 只有明确传入非 None 且非 '无数据' 的文本时才更新标签
+        # '无数据' 是状态描述，不应替换功能名称
+        if text is not None and text != '无数据':
+            self._text = text
             self.label.setText(text)
         
         if status is None:
-            # 数据不可用状态
+            # 数据不可用状态 - 保留功能名称，只改变样式
             color = COLORS.get('unavailable', COLORS['disabled'])
             symbol = '?'
             self.label.setStyleSheet(f'color: {color};')

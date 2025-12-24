@@ -148,11 +148,11 @@ class SystemInfoPanel(QGroupBox):
         self.soft_head_led.set_status(ctrl.soft_head_enabled)
 
         # 功能开关 - 从统一数据获取
-        # 注意：需要传入文本参数，否则 LED 不会更新显示文本
-        self.ekf_led.set_status(estimator.ekf_enabled, '✓ 启用' if estimator.ekf_enabled else '✗ 禁用')
-        self.slip_led.set_status(estimator.slip_detection_enabled, '✓ 启用' if estimator.slip_detection_enabled else '✗ 禁用')
-        self.drift_led.set_status(estimator.drift_correction_enabled, '✓ 启用' if estimator.drift_correction_enabled else '✗ 禁用')
-        self.heading_led.set_status(estimator.heading_fallback_enabled, '✓ 启用' if estimator.heading_fallback_enabled else '✗ 禁用')
+        # 保留功能名称，只更新 LED 状态
+        self.ekf_led.set_status(estimator.ekf_enabled)
+        self.slip_led.set_status(estimator.slip_detection_enabled)
+        self.drift_led.set_status(estimator.drift_correction_enabled)
+        self.heading_led.set_status(estimator.heading_fallback_enabled)
 
         # 坐标系
         self.target_frame_label.findChild(QLabel, 'value').setText(transform.target_frame)
@@ -161,22 +161,22 @@ class SystemInfoPanel(QGroupBox):
         self.fallback_duration_label.findChild(QLabel, 'value').setText(f'{transform.fallback_duration_ms:.0f} ms')
 
     def _show_unavailable_dynamic(self):
-        """显示动态数据不可用状态 (保留静态配置)"""
+        """显示动态数据不可用状态 (保留静态配置和功能名称)"""
         from ..styles import COLORS
         unavailable_style = f'color: {COLORS["unavailable"]};'
         
         # 控制策略显示不可用
         self.current_ctrl_label.findChild(QLabel, 'value').setText('无数据')
         self.current_ctrl_label.findChild(QLabel, 'value').setStyleSheet(unavailable_style)
-        self.soft_head_led.set_status(None, '无数据')
+        self.soft_head_led.set_status(None)  # 保留 "Soft Head" 名称
         
-        # 功能开关显示不可用
-        self.ekf_led.set_status(None, '无数据')
-        self.slip_led.set_status(None, '无数据')
-        self.drift_led.set_status(None, '无数据')
-        self.heading_led.set_status(None, '无数据')
+        # 功能开关显示不可用 - 只设置状态，保留功能名称
+        self.ekf_led.set_status(None)      # 保留 "自适应EKF"
+        self.slip_led.set_status(None)     # 保留 "打滑检测"
+        self.drift_led.set_status(None)    # 保留 "漂移校正"
+        self.heading_led.set_status(None)  # 保留 "航向备选"
         
         # 坐标系显示不可用
-        self.tf2_fallback_led.set_status(None, '无数据')
+        self.tf2_fallback_led.set_status(None)  # 保留 "TF2降级"
         self.fallback_duration_label.findChild(QLabel, 'value').setText('--')
         self.fallback_duration_label.findChild(QLabel, 'value').setStyleSheet(unavailable_style)
