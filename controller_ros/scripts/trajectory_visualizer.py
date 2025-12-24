@@ -5,24 +5,37 @@
 
 功能:
 - 订阅相机图像和轨迹数据
-- 将轨迹点从 base_footprint 坐标系投影到图像平面
+- 使用单应性变换将地面轨迹点投影到图像平面
+- 支持标定模式：通过点击图像标定地面-图像对应关系
 - 实时显示叠加后的图像
 
 使用方法:
+    # 正常运行 (需要先标定)
     roslaunch controller_ros trajectory_visualizer.launch
-    或
-    rosrun controller_ros trajectory_visualizer.py
+    
+    # 标定模式
+    roslaunch controller_ros trajectory_visualizer.launch calibration_mode:=true
+    
+标定步骤:
+    1. 在机器人前方地面放置4个标记点，测量其相对于 base_footprint 的坐标 (x, y)
+    2. 启动标定模式
+    3. 按顺序点击图像中的4个标记点
+    4. 输入对应的地面坐标
+    5. 按 's' 保存标定结果
 """
 
 import rospy
 import cv2
 import numpy as np
+import yaml
+import os
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
 from controller_ros.msg import LocalTrajectoryV4
 
+
 class TrajectoryVisualizer:
-    """轨迹可视化器 - 在图像上叠加轨迹点"""
+    """轨迹可视化器 - 使用单应性变换投影轨迹点"""
     
     def __init__(self):
         rospy.init_node('trajectory_visualizer', anonymous=False)
@@ -32,41 +45,28 @@ class TrajectoryVisualizer:
         self.trajectory_topic = rospy.get_param('~trajectory_topic', '/nn/local_trajectory')
         self.output_topic = rospy.get_param('~output_topic', '/trajectory_overlay/image')
         
-        # 相机内参
-        self.fx = rospy.get_param('~fx', 525.0)
-        self.fy = rospy.get_param('~fy', 525.0)
-        self.cx = rospy.get_param('~cx', 319.5)
-        self.cy = rospy.get_param('~cy', 239.5)
+        # 标定文件路径
+        default_calib_file = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 
+            'config', 'homography_calib.yaml'
+        )
+        self.calib_file = rospy.get_param('~calibration_file', default_calib_file)
         
-        # 畸变系数 (k1, k2, p1, p2, k3)
-        self.dist_coeffs = np.array([
-            rospy.get_param('~k1', 0.0),
-            rospy.get_param('~k2', 0.0),
-            rospy.get_param('~p1', 0.0),
-            rospy.get_param('~p2', 0.0),
-            rospy.get_param('~k3', 0.0)
-        ], dtype=np.float64)
-        
-        # 相机外参 (相对于 base_footprint)
-        self.cam_x = rospy.get_param('~cam_x', 0.08)    # 前方距离 (m)
-        self.cam_y = rospy.get_param('~cam_y', 0.0)     # 左右偏移 (m)
-        self.cam_z = rospy.get_param('~cam_z', 0.50)    # 高度 (m)
-        self.cam_pitch = rospy.get_param('~cam_pitch', 0.0)  # 俯仰角 (rad, 正值向下看)
-        
-        # 构建相机内参矩阵
-        self.camera_matrix = np.array([
-            [self.fx, 0, self.cx],
-            [0, self.fy, self.cy],
-            [0, 0, 1]
-        ], dtype=np.float64)
-        
-        # 预计算外参矩阵
-        self._build_extrinsic_matrix()
+        # 模式
+        self.calibration_mode = rospy.get_param('~calibration_mode', False)
+        self.show_window = rospy.get_param('~show_window', True)
         
         # 显示参数
-        self.show_window = rospy.get_param('~show_window', True)
         self.point_radius = rospy.get_param('~point_radius', 8)
         self.line_thickness = rospy.get_param('~line_thickness', 3)
+        
+        # 单应性矩阵
+        self.H = None  # 地面坐标 -> 图像坐标
+        
+        # 标定数据
+        self.calib_image_points = []  # 图像上点击的点
+        self.calib_ground_points = []  # 对应的地面坐标
+        self.current_image = None
         
         # CV Bridge
         self.bridge = CvBridge()
@@ -75,13 +75,18 @@ class TrajectoryVisualizer:
         self.latest_trajectory = None
         self.trajectory_stamp = None
         
+        # 加载标定
+        if not self.calibration_mode:
+            self._load_calibration()
+        
         # 订阅
         self.image_sub = rospy.Subscriber(
             self.image_topic, Image, self.image_callback, queue_size=1
         )
-        self.traj_sub = rospy.Subscriber(
-            self.trajectory_topic, LocalTrajectoryV4, self.trajectory_callback, queue_size=1
-        )
+        if not self.calibration_mode:
+            self.traj_sub = rospy.Subscriber(
+                self.trajectory_topic, LocalTrajectoryV4, self.trajectory_callback, queue_size=1
+            )
         
         # 发布
         self.image_pub = rospy.Publisher(self.output_topic, Image, queue_size=1)
@@ -89,44 +94,168 @@ class TrajectoryVisualizer:
         # 统计
         self.frame_count = 0
         
-        rospy.loginfo(f"TrajectoryVisualizer 已启动:")
-        rospy.loginfo(f"  图像输入: {self.image_topic}")
-        rospy.loginfo(f"  轨迹输入: {self.trajectory_topic}")
-        rospy.loginfo(f"  图像输出: {self.output_topic}")
-        rospy.loginfo(f"  显示窗口: {self.show_window}")
-        rospy.loginfo(f"  相机内参: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}")
-        rospy.loginfo(f"  畸变系数: {self.dist_coeffs}")
-        rospy.loginfo(f"  相机外参: x={self.cam_x}, y={self.cam_y}, z={self.cam_z}, pitch={self.cam_pitch}")
+        # 设置鼠标回调
+        if self.calibration_mode and self.show_window:
+            cv2.namedWindow('Calibration')
+            cv2.setMouseCallback('Calibration', self._mouse_callback)
+        
+        self._print_startup_info()
     
-    def _build_extrinsic_matrix(self):
-        """构建外参矩阵 (base_footprint → camera_optical)"""
-        # 坐标系转换: base(x前,y左,z上) → cam_optical(x右,y下,z前)
-        R_base_to_cam = np.array([
-            [0, -1, 0],   # cam_x = -base_y
-            [0, 0, -1],   # cam_y = -base_z
-            [1, 0, 0]     # cam_z = base_x
-        ], dtype=np.float64)
+    def _print_startup_info(self):
+        """打印启动信息"""
+        rospy.loginfo("=" * 50)
+        if self.calibration_mode:
+            rospy.loginfo("TrajectoryVisualizer 标定模式")
+            rospy.loginfo("-" * 50)
+            rospy.loginfo("操作说明:")
+            rospy.loginfo("  1. 在地面放置4个标记点")
+            rospy.loginfo("  2. 点击图像中的标记点 (按顺序)")
+            rospy.loginfo("  3. 在终端输入对应的地面坐标 (x y)")
+            rospy.loginfo("  4. 完成4个点后按 's' 保存")
+            rospy.loginfo("  5. 按 'r' 重置, 'q' 退出")
+            rospy.loginfo("-" * 50)
+            rospy.loginfo("建议的4个标定点:")
+            rospy.loginfo("  点1: (0.3, 0.0)  - 正前方 30cm")
+            rospy.loginfo("  点2: (0.5, 0.0)  - 正前方 50cm")
+            rospy.loginfo("  点3: (0.5, -0.2) - 右前方")
+            rospy.loginfo("  点4: (0.5, 0.2)  - 左前方")
+        else:
+            rospy.loginfo("TrajectoryVisualizer 运行模式")
+            rospy.loginfo(f"  图像输入: {self.image_topic}")
+            rospy.loginfo(f"  轨迹输入: {self.trajectory_topic}")
+            rospy.loginfo(f"  标定文件: {self.calib_file}")
+            if self.H is not None:
+                rospy.loginfo("  单应性矩阵: 已加载 ✓")
+            else:
+                rospy.logwarn("  单应性矩阵: 未加载! 请先运行标定模式")
+        rospy.loginfo("=" * 50)
+    
+    def _load_calibration(self):
+        """加载标定文件"""
+        if not os.path.exists(self.calib_file):
+            rospy.logwarn(f"标定文件不存在: {self.calib_file}")
+            rospy.logwarn("请先运行标定模式: calibration_mode:=true")
+            return False
         
-        # 俯仰旋转 (绕相机 x 轴)
-        cos_p = np.cos(self.cam_pitch)
-        sin_p = np.sin(self.cam_pitch)
-        R_pitch = np.array([
-            [1, 0, 0],
-            [0, cos_p, -sin_p],
-            [0, sin_p, cos_p]
-        ], dtype=np.float64)
+        try:
+            with open(self.calib_file, 'r') as f:
+                data = yaml.safe_load(f)
+            
+            self.H = np.array(data['homography_matrix'], dtype=np.float64)
+            self.calib_ground_points = data.get('ground_points', [])
+            self.calib_image_points = data.get('image_points', [])
+            
+            rospy.loginfo(f"已加载标定文件: {self.calib_file}")
+            return True
+        except Exception as e:
+            rospy.logerr(f"加载标定文件失败: {e}")
+            return False
+    
+    def _save_calibration(self):
+        """保存标定结果"""
+        if self.H is None:
+            rospy.logerr("没有有效的单应性矩阵，无法保存")
+            return False
         
-        # 组合旋转
-        self.R_cam_base = R_pitch @ R_base_to_cam
+        # 确保目录存在
+        os.makedirs(os.path.dirname(self.calib_file), exist_ok=True)
         
-        # 相机位置
-        self.t_cam_in_base = np.array([self.cam_x, self.cam_y, self.cam_z], dtype=np.float64)
+        data = {
+            'homography_matrix': self.H.tolist(),
+            'ground_points': self.calib_ground_points,
+            'image_points': self.calib_image_points,
+            'description': '地面坐标(x,y) -> 图像坐标(u,v) 单应性变换'
+        }
         
-        # 计算 rvec (旋转向量) 用于 cv2.projectPoints
-        self.rvec, _ = cv2.Rodrigues(self.R_cam_base)
+        try:
+            with open(self.calib_file, 'w') as f:
+                yaml.dump(data, f, default_flow_style=False)
+            rospy.loginfo(f"标定结果已保存: {self.calib_file}")
+            return True
+        except Exception as e:
+            rospy.logerr(f"保存标定文件失败: {e}")
+            return False
+    
+    def _mouse_callback(self, event, x, y, flags, param):
+        """鼠标点击回调 (标定模式)"""
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if len(self.calib_image_points) >= 4:
+                rospy.logwarn("已有4个点，按 'r' 重置或 's' 保存")
+                return
+            
+            self.calib_image_points.append([x, y])
+            rospy.loginfo(f"点 {len(self.calib_image_points)}: 图像坐标 ({x}, {y})")
+            
+            # 请求输入地面坐标
+            print(f"\n请输入点 {len(self.calib_image_points)} 的地面坐标 (x y): ", end='')
+    
+    def _compute_homography(self):
+        """计算单应性矩阵"""
+        if len(self.calib_image_points) < 4 or len(self.calib_ground_points) < 4:
+            rospy.logerr("需要至少4个对应点")
+            return False
         
-        # 计算 tvec (平移向量): t = -R @ t_cam
-        self.tvec = -self.R_cam_base @ self.t_cam_in_base
+        # 地面点 (x, y) -> 图像点 (u, v)
+        src_pts = np.array(self.calib_ground_points, dtype=np.float32)
+        dst_pts = np.array(self.calib_image_points, dtype=np.float32)
+        
+        # 计算单应性矩阵
+        self.H, status = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        
+        if self.H is None:
+            rospy.logerr("计算单应性矩阵失败")
+            return False
+        
+        rospy.loginfo("单应性矩阵计算成功!")
+        rospy.loginfo(f"H = \n{self.H}")
+        
+        # 计算重投影误差
+        reproj_error = self._compute_reprojection_error()
+        rospy.loginfo(f"重投影误差: {reproj_error:.2f} 像素")
+        
+        return True
+    
+    def _compute_reprojection_error(self):
+        """计算重投影误差"""
+        if self.H is None:
+            return float('inf')
+        
+        total_error = 0
+        for i, (gp, ip) in enumerate(zip(self.calib_ground_points, self.calib_image_points)):
+            projected = self.project_point(gp[0], gp[1])
+            if projected:
+                error = np.sqrt((projected[0] - ip[0])**2 + (projected[1] - ip[1])**2)
+                total_error += error
+        
+        return total_error / len(self.calib_ground_points)
+    
+    def project_point(self, x, y):
+        """
+        使用单应性矩阵将地面点投影到图像
+        
+        参数:
+            x, y: 地面坐标 (base_footprint 坐标系, 米)
+        
+        返回:
+            (u, v): 图像像素坐标，或 None 如果投影失败
+        """
+        if self.H is None:
+            return None
+        
+        # 齐次坐标
+        pt = np.array([x, y, 1.0], dtype=np.float64)
+        
+        # 投影
+        result = self.H @ pt
+        
+        # 归一化
+        if abs(result[2]) < 1e-10:
+            return None
+        
+        u = result[0] / result[2]
+        v = result[1] / result[2]
+        
+        return (int(round(u)), int(round(v)))
     
     def trajectory_callback(self, msg):
         """轨迹回调"""
@@ -134,116 +263,153 @@ class TrajectoryVisualizer:
         self.trajectory_stamp = rospy.Time.now()
     
     def image_callback(self, msg):
-        """图像回调 - 主处理函数"""
+        """图像回调"""
         try:
-            # 转换图像
             cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
         except CvBridgeError as e:
             rospy.logerr(f"CV Bridge 错误: {e}")
             return
         
-        # 叠加轨迹
-        if self.latest_trajectory is not None:
-            cv_image = self.overlay_trajectory(cv_image, self.latest_trajectory)
+        self.current_image = cv_image.copy()
         
-        # 添加状态信息
-        cv_image = self.draw_status(cv_image)
-        
-        # 发布
-        try:
-            self.image_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, 'bgr8'))
-        except CvBridgeError as e:
-            rospy.logerr(f"发布图像错误: {e}")
-        
-        # 显示窗口
-        if self.show_window:
-            cv2.imshow('Trajectory Overlay', cv_image)
-            cv2.waitKey(1)
+        if self.calibration_mode:
+            self._handle_calibration_mode(cv_image)
+        else:
+            self._handle_normal_mode(cv_image)
         
         self.frame_count += 1
     
-    def overlay_trajectory(self, image, trajectory):
-        """在图像上叠加轨迹点 (真实 3D 投影)"""
-        # 构建完整轨迹: 原点 (0,0,0) + 网络输出的 8 个点
-        # 所有点都在地面 z=0 (地面机器人)
-        points_3d = [(0.0, 0.0, 0.0)]  # 原点
-        for pt in trajectory.points:
-            points_3d.append((pt.x, pt.y, 0.0))  # z=0 地面
+    def _handle_calibration_mode(self, image):
+        """处理标定模式"""
+        # 绘制已标定的点
+        for i, pt in enumerate(self.calib_image_points):
+            cv2.circle(image, tuple(pt), 10, (0, 255, 0), -1)
+            cv2.circle(image, tuple(pt), 10, (255, 255, 255), 2)
+            cv2.putText(image, str(i + 1), (pt[0] + 15, pt[1] + 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # 显示地面坐标
+            if i < len(self.calib_ground_points):
+                gp = self.calib_ground_points[i]
+                text = f"({gp[0]:.2f}, {gp[1]:.2f})"
+                cv2.putText(image, text, (pt[0] + 15, pt[1] + 25),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         
-        # 统一投影所有点
-        all_points_2d = self.project_points_opencv(points_3d, image.shape)
+        # 如果有单应性矩阵，绘制网格验证
+        if self.H is not None:
+            self._draw_ground_grid(image)
+        
+        # 状态信息
+        status = f"标定模式 - 已选择 {len(self.calib_image_points)}/4 个点"
+        cv2.putText(image, status, (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        if len(self.calib_image_points) >= 4 and self.H is not None:
+            cv2.putText(image, "按 's' 保存, 'r' 重置", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+        # 显示
+        if self.show_window:
+            cv2.imshow('Calibration', image)
+            key = cv2.waitKey(1) & 0xFF
+            self._handle_key(key)
+    
+    def _handle_key(self, key):
+        """处理键盘输入"""
+        if key == ord('s'):
+            # 保存
+            if self._save_calibration():
+                rospy.loginfo("标定完成! 可以退出标定模式了")
+        elif key == ord('r'):
+            # 重置
+            self.calib_image_points = []
+            self.calib_ground_points = []
+            self.H = None
+            rospy.loginfo("已重置标定数据")
+        elif key == ord('q'):
+            rospy.signal_shutdown("用户退出")
+    
+    def _handle_normal_mode(self, image):
+        """处理正常运行模式"""
+        # 叠加轨迹
+        if self.latest_trajectory is not None and self.H is not None:
+            image = self.overlay_trajectory(image, self.latest_trajectory)
+        elif self.H is None:
+            cv2.putText(image, "未标定! 请先运行标定模式", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        # 状态信息
+        image = self.draw_status(image)
+        
+        # 发布
+        try:
+            self.image_pub.publish(self.bridge.cv2_to_imgmsg(image, 'bgr8'))
+        except CvBridgeError as e:
+            rospy.logerr(f"发布图像错误: {e}")
+        
+        # 显示
+        if self.show_window:
+            cv2.imshow('Trajectory Overlay', image)
+            cv2.waitKey(1)
+    
+    def _draw_ground_grid(self, image):
+        """绘制地面网格 (验证标定)"""
+        # 绘制 x 方向线 (每 0.2m)
+        for x in np.arange(0.2, 1.2, 0.2):
+            pts = []
+            for y in np.arange(-0.5, 0.6, 0.1):
+                pt = self.project_point(x, y)
+                if pt:
+                    pts.append(pt)
+            if len(pts) >= 2:
+                for i in range(len(pts) - 1):
+                    cv2.line(image, pts[i], pts[i+1], (100, 100, 100), 1)
+        
+        # 绘制 y 方向线 (每 0.2m)
+        for y in np.arange(-0.4, 0.5, 0.2):
+            pts = []
+            for x in np.arange(0.2, 1.2, 0.1):
+                pt = self.project_point(x, y)
+                if pt:
+                    pts.append(pt)
+            if len(pts) >= 2:
+                for i in range(len(pts) - 1):
+                    cv2.line(image, pts[i], pts[i+1], (100, 100, 100), 1)
+    
+    def overlay_trajectory(self, image, trajectory):
+        """在图像上叠加轨迹点"""
+        # 投影所有轨迹点
+        points_2d = []
+        for pt in trajectory.points:
+            projected = self.project_point(pt.x, pt.y)
+            if projected:
+                h, w = image.shape[:2]
+                # 允许稍微超出边界
+                if -50 <= projected[0] < w + 50 and -50 <= projected[1] < h + 50:
+                    u = max(0, min(w - 1, projected[0]))
+                    v = max(0, min(h - 1, projected[1]))
+                    points_2d.append((u, v))
         
         # 绘制轨迹
-        if all_points_2d:
-            self.draw_trajectory_on_image(image, all_points_2d)
+        if points_2d:
+            self.draw_trajectory_on_image(image, points_2d)
         
         return image
     
-    def project_points_opencv(self, points_3d, image_shape):
-        """
-        使用 OpenCV projectPoints 进行精准投影
-        
-        参数:
-            points_3d: list of (x, y, z) tuples，在 base_footprint 坐标系中
-            image_shape: 图像尺寸
-        
-        返回:
-            list of (u, v) 像素坐标
-        """
-        h, w = image_shape[:2]
-        
-        if not points_3d:
-            return []
-        
-        # 构建 3D 点数组 (N x 3)
-        points_array = np.array(points_3d, dtype=np.float64)
-        
-        # 使用 OpenCV projectPoints (自动处理畸变)
-        points_2d, _ = cv2.projectPoints(
-            points_array,
-            self.rvec,
-            self.tvec,
-            self.camera_matrix,
-            self.dist_coeffs
-        )
-        
-        # 转换格式并过滤
-        result = []
-        for i, pt_2d in enumerate(points_2d):
-            u, v = pt_2d[0]
-            
-            # 检查点是否在相机前方
-            P_cam = self.R_cam_base @ (points_array[i] - self.t_cam_in_base)
-            if P_cam[2] <= 0.01:  # 点在相机后方
-                continue
-            
-            u_int = int(round(u))
-            v_int = int(round(v))
-            
-            # 允许稍微超出边界，但裁剪到图像范围
-            if -100 <= u_int < w + 100 and -100 <= v_int < h + 100:
-                u_int = max(0, min(w - 1, u_int))
-                v_int = max(0, min(h - 1, v_int))
-                result.append((u_int, v_int))
-        
-        return result
-    
-    def draw_trajectory_on_image(self, image, points_2d, depths=None):
+    def draw_trajectory_on_image(self, image, points_2d):
         """在图像上绘制轨迹"""
         if not points_2d:
             return
         
-        # 颜色渐变: 近处绿色 -> 远处红色
         num_points = len(points_2d)
         
         # 绘制连线
         for i in range(len(points_2d) - 1):
-            # 颜色渐变
             ratio = i / max(num_points - 1, 1)
             color = (
-                int(255 * ratio),      # B: 0 -> 255
+                int(255 * ratio),       # B: 0 -> 255
                 int(255 * (1 - ratio)), # G: 255 -> 0
-                0                       # R: 0
+                0                        # R: 0
             )
             cv2.line(image, points_2d[i], points_2d[i + 1], color, self.line_thickness)
         
@@ -252,11 +418,14 @@ class TrajectoryVisualizer:
             ratio = i / max(num_points - 1, 1)
             
             if i == 0:
-                # 第一个点 (当前位置) - 红色大圆
-                color = (0, 0, 255)
+                # 第一个点 - 绿色大圆
+                color = (0, 255, 0)
                 radius = self.point_radius + 4
+            elif i == num_points - 1:
+                # 最后一个点 - 蓝色
+                color = (255, 100, 0)
+                radius = self.point_radius + 2
             else:
-                # 其他点 - 渐变色
                 color = (
                     int(255 * ratio),
                     int(255 * (1 - ratio)),
@@ -265,45 +434,75 @@ class TrajectoryVisualizer:
                 radius = self.point_radius
             
             cv2.circle(image, pt, radius, color, -1)
-            cv2.circle(image, pt, radius, (255, 255, 255), 1)  # 白色边框
+            cv2.circle(image, pt, radius, (255, 255, 255), 1)
             
             # 显示点序号
-            cv2.putText(image, str(i), (pt[0] + 10, pt[1] - 5),
+            cv2.putText(image, str(i + 1), (pt[0] + 10, pt[1] - 5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
     
     def draw_status(self, image):
         """绘制状态信息"""
         h, w = image.shape[:2]
         
-        # 背景半透明矩形
+        # 背景
         overlay = image.copy()
-        cv2.rectangle(overlay, (5, 5), (250, 80), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (5, 5), (220, 70), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.5, image, 0.5, 0, image)
         
-        # 状态文字
+        # 状态
         traj_count = len(self.latest_trajectory.points) if self.latest_trajectory else 0
-        status_lines = [
-            f"Frame: {self.frame_count}",
-            f"Traj points: {traj_count + 1} (origin + {traj_count})",  # 原点 + 网络输出
-            f"Mode: {'TRACK' if self.latest_trajectory and self.latest_trajectory.mode == 1 else 'STOP' if self.latest_trajectory else 'N/A'}"
-        ]
+        mode_str = 'TRACK' if self.latest_trajectory and self.latest_trajectory.mode == 1 else 'STOP'
         
-        y_offset = 25
-        for line in status_lines:
-            cv2.putText(image, line, (10, y_offset),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            y_offset += 20
+        cv2.putText(image, f"Frame: {self.frame_count}", (10, 25),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.putText(image, f"Points: {traj_count}", (10, 45),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.putText(image, f"Mode: {mode_str}", (10, 65),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
         return image
     
     def run(self):
         """运行"""
-        rospy.loginfo("TrajectoryVisualizer 正在运行...")
-        rospy.spin()
+        if self.calibration_mode:
+            rospy.loginfo("进入标定模式...")
+            self._run_calibration()
+        else:
+            rospy.loginfo("TrajectoryVisualizer 正在运行...")
+            rospy.spin()
         
-        # 清理
         if self.show_window:
             cv2.destroyAllWindows()
+    
+    def _run_calibration(self):
+        """运行标定流程"""
+        rate = rospy.Rate(30)
+        
+        while not rospy.is_shutdown():
+            # 检查是否需要输入地面坐标
+            if len(self.calib_image_points) > len(self.calib_ground_points):
+                try:
+                    # 非阻塞检查输入
+                    import select
+                    import sys
+                    if select.select([sys.stdin], [], [], 0.0)[0]:
+                        line = sys.stdin.readline().strip()
+                        if line:
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                x, y = float(parts[0]), float(parts[1])
+                                self.calib_ground_points.append([x, y])
+                                rospy.loginfo(f"地面坐标: ({x}, {y})")
+                                
+                                # 如果有4个点，计算单应性矩阵
+                                if len(self.calib_ground_points) >= 4:
+                                    self._compute_homography()
+                            else:
+                                rospy.logwarn("请输入两个数字: x y")
+                except Exception as e:
+                    pass
+            
+            rate.sleep()
 
 
 def main():
