@@ -179,15 +179,21 @@ class TrajectoryVisualizer:
     def _mouse_callback(self, event, x, y, flags, param):
         """鼠标点击回调 (标定模式)"""
         if event == cv2.EVENT_LBUTTONDOWN:
+            # 检查是否还有未输入地面坐标的点
+            if len(self.calib_image_points) > len(self.calib_ground_points):
+                rospy.logwarn("Please enter ground coord first before clicking next point!")
+                return
+            
             if len(self.calib_image_points) >= 4:
-                rospy.logwarn("已有4个点，按 'r' 重置或 's' 保存")
+                rospy.logwarn("4 points already selected. Press 'r' to reset or 's' to save")
                 return
             
             self.calib_image_points.append([x, y])
-            rospy.loginfo(f"点 {len(self.calib_image_points)}: 图像坐标 ({x}, {y})")
+            pt_num = len(self.calib_image_points)
+            rospy.loginfo(f"Point {pt_num}: image coord ({x}, {y})")
             
             # 请求输入地面坐标
-            print(f"\n请输入点 {len(self.calib_image_points)} 的地面坐标 (x y): ", end='')
+            print(f"\nEnter ground coord for point {pt_num} (x y): ", end='', flush=True)
     
     def _compute_homography(self):
         """计算单应性矩阵"""
