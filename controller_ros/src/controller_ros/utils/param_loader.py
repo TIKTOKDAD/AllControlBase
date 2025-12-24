@@ -16,7 +16,7 @@
 - 使用策略模式统一 ROS1/ROS2 参数加载逻辑
 - 参数定义集中管理，避免重复
 """
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional
 from abc import ABC, abstractmethod
 import logging
 
@@ -109,40 +109,38 @@ class ParamLoaderStrategy(ABC):
 class ROS2ParamStrategy(ParamLoaderStrategy):
     """ROS2 参数加载策略"""
     
-    _initialized_node_names: Set[str] = set()
-    
     def __init__(self, node):
         self._node = node
         self._declare_all_params()
     
     def _declare_all_params(self) -> None:
-        """声明所有 ROS2 参数"""
-        node_name = self._get_node_name()
-        if node_name in self._initialized_node_names:
-            return
+        """
+        声明所有 ROS2 参数
         
+        使用 has_parameter() 检查参数是否已声明，避免重复声明异常。
+        这比使用类变量跟踪更可靠，因为：
+        1. 不依赖全局状态
+        2. 正确处理节点重建场景
+        3. 避免内存泄漏
+        """
         for group, params in PARAM_DEFINITIONS.items():
             for key, default in params.items():
                 param_name = f"{group}.{key}"
                 self._safe_declare(param_name, default)
-        
-        self._initialized_node_names.add(node_name)
-    
-    def _get_node_name(self) -> str:
-        """获取节点唯一标识"""
-        try:
-            return self._node.get_fully_qualified_name()
-        except AttributeError:
-            try:
-                return self._node.get_name()
-            except AttributeError:
-                return str(id(self._node))
     
     def _safe_declare(self, name: str, default: Any) -> None:
-        """安全声明参数"""
+        """
+        安全声明参数
+        
+        如果参数已存在则跳过，避免重复声明异常。
+        """
         try:
+            # 检查参数是否已声明
+            if self._node.has_parameter(name):
+                return
             self._node.declare_parameter(name, default)
         except Exception:
+            # 忽略声明失败（可能是参数已存在或其他原因）
             pass
     
     def get_param(self, group: str, key: str, default: Any) -> Any:

@@ -79,6 +79,11 @@ class DiagnosticsThrottler:
     - 状态变化时立即发布
     - 强制发布
     
+    首次调用行为:
+        首次调用 should_publish() 时会立即返回 True，确保控制器启动后
+        立即发布一次诊断信息。这通过将 _counter 初始化为 publish_rate - 1
+        实现，使得首次 _counter += 1 后满足发布条件。
+    
     供 ROS1 和 ROS2 节点共享使用。
     """
     
@@ -88,9 +93,14 @@ class DiagnosticsThrottler:
         
         Args:
             publish_rate: 发布间隔（每 N 次控制循环发布一次诊断）
+        
+        Note:
+            _counter 初始化为 publish_rate - 1，这样首次调用 should_publish()
+            时 _counter 会递增到 publish_rate，满足发布条件，实现"首次立即发布"。
         """
         self._publish_rate = max(1, publish_rate)
         # 初始化为 publish_rate - 1，确保首次调用时立即发布
+        # 首次调用: _counter += 1 -> _counter == publish_rate -> 满足发布条件
         self._counter = self._publish_rate - 1
         self._last_state: Optional[int] = None
     

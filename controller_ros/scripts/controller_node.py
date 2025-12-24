@@ -42,8 +42,9 @@ from controller_ros.node.base_node import ControllerNodeBase
 from controller_ros.io import DataManager
 from controller_ros.adapters import OutputAdapter, AttitudeAdapter
 from controller_ros.utils.diagnostics_publisher import fill_diagnostics_msg, DiagnosticsThrottler
-from controller_ros.utils.ros_compat import TF2Compat, get_time_sec
+from controller_ros.utils.ros_compat import get_time_sec
 from controller_ros.utils.param_loader import ParamLoader
+from controller_ros.bridge import TFBridge
 
 # 默认话题名常量
 DEFAULT_STATE_TOPIC = '/controller/state'
@@ -111,8 +112,8 @@ class ControllerNodeROS1(ControllerNodeBase):
         else:
             self._attitude_adapter = None
         
-        # 5. 创建 TF2 桥接
-        self._tf_bridge = TF2Compat(node=None)
+        # 5. 创建 TF2 桥接 (统一使用 TFBridge，ROS1 传 None)
+        self._tf_bridge = TFBridge(node=None)
         
         # 6. 注入 TF2 到坐标变换器
         self._inject_tf2_to_controller()

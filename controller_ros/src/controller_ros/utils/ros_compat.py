@@ -105,7 +105,23 @@ def get_time_sec(node=None) -> float:
 
 # 保留旧函数名作为别名，保持向后兼容
 def get_current_time() -> float:
-    """获取当前 ROS 时间（秒）- 已废弃，请使用 get_time_sec()"""
+    """
+    获取当前 ROS 时间（秒）
+    
+    .. deprecated:: 1.0.0
+        此函数已废弃，请使用 :func:`get_time_sec` 替代。
+        将在未来版本中移除。
+    
+    Returns:
+        当前时间（秒）
+    """
+    import warnings
+    warnings.warn(
+        "get_current_time() is deprecated, use get_time_sec() instead. "
+        "This function will be removed in a future version.",
+        DeprecationWarning,
+        stacklevel=2
+    )
     return get_time_sec(None)
 
 

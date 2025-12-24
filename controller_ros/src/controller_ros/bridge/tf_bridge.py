@@ -3,6 +3,9 @@ TF2 桥接层
 
 管理 TF2 Buffer 和 Listener，提供坐标变换查询。
 支持 ROS1 和 ROS2。
+
+注意:
+    TF2 注入逻辑已移至 TF2InjectionManager，本类仅负责 TF2 查询。
 """
 from typing import Optional
 import logging
@@ -20,8 +23,11 @@ class TFBridge:
     
     职责:
     - 管理 TF2 Buffer 和 Listener
-    - 提供坐标变换查询
-    - 将变换注入到 universal_controller
+    - 提供坐标变换查询接口
+    
+    注意:
+        TF2 注入逻辑已移至 TF2InjectionManager。
+        本类仅作为 TF2Compat 的桥接层，提供统一的接口。
     
     支持 ROS1 和 ROS2。
     """
@@ -31,7 +37,7 @@ class TFBridge:
         初始化 TF 桥接
         
         Args:
-            node: ROS2 节点实例 (ROS1 不需要)
+            node: ROS2 节点实例 (ROS1 可传 None)
         """
         self._node = node
         self._tf2_compat = TF2Compat(node)
@@ -60,33 +66,6 @@ class TFBridge:
         return self._tf2_compat.can_transform(
             target_frame, source_frame, time, timeout_sec
         )
-    
-    def inject_to_transformer(self, coord_transformer) -> bool:
-        """
-        将 TF2 变换注入到 universal_controller 的坐标变换器
-        
-        Args:
-            coord_transformer: RobustCoordinateTransformer 实例
-        
-        Returns:
-            是否成功注入
-        """
-        if not self.is_initialized:
-            logger.warning("TF2 not initialized, cannot inject to transformer")
-            return False
-        
-        if coord_transformer is None:
-            logger.warning("Coordinate transformer is None")
-            return False
-        
-        # 检查 coord_transformer 是否支持 TF2 注入
-        if hasattr(coord_transformer, 'set_tf2_lookup_callback'):
-            coord_transformer.set_tf2_lookup_callback(self.lookup_transform)
-            logger.info("TF2 lookup callback injected to coordinate transformer")
-            return True
-        else:
-            logger.warning("Coordinate transformer does not support TF2 injection")
-            return False
     
     @property
     def is_initialized(self) -> bool:
