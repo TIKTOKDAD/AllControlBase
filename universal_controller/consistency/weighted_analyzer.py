@@ -10,13 +10,27 @@ from ..core.data_types import Trajectory, ConsistencyResult, Point3D
 class WeightedConsistencyAnalyzer(IConsistencyChecker):
     """使用加权几何平均的一致性分析器"""
     
+    # 数值稳定性常量
+    # 这些是基于 IEEE 754 双精度浮点数特性选择的内部常量
+    # 不应作为配置项暴露给用户
+    MIN_SEGMENT_LENGTH = 1e-6   # 最小线段长度，低于此值认为点重合
+    MIN_DENOMINATOR = 1e-9      # 最小分母值，低于此值可能导致数值不稳定
+    MIN_RELATIVE_CROSS = 1e-6   # 最小相对叉积，低于此值认为共线
+    
     def __init__(self, config: Dict[str, Any]):
         consistency_config = config.get('consistency', config)
         
         self.kappa_thresh = consistency_config.get('kappa_thresh', 0.5)
         self.v_dir_thresh = consistency_config.get('v_dir_thresh', 0.8)
         self.temporal_smooth_thresh = consistency_config.get('temporal_smooth_thresh', 0.5)
-        self.low_speed_thresh = consistency_config.get('low_speed_thresh', 0.1)
+        # 统一从 trajectory 配置读取 low_speed_thresh，确保与轨迹速度计算一致
+        # 如果 consistency 配置中有此值（向后兼容），优先使用
+        # 否则从 trajectory 配置读取
+        trajectory_config = config.get('trajectory', {})
+        self.low_speed_thresh = consistency_config.get(
+            'low_speed_thresh', 
+            trajectory_config.get('low_speed_thresh', 0.1)
+        )
         self.max_curvature = consistency_config.get('max_curvature', 10.0)  # 从配置读取
         temporal_window_size = consistency_config.get('temporal_window_size', 10)
         self.temporal_window: deque = deque(maxlen=temporal_window_size)
@@ -164,30 +178,27 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         v1, v2 = p1 - p0, p2 - p1
         l1, l2 = np.linalg.norm(v1), np.linalg.norm(v2)
         
-        # 检查向量长度
-        MIN_SEGMENT_LENGTH = 1e-6
-        if l1 < MIN_SEGMENT_LENGTH or l2 < MIN_SEGMENT_LENGTH:
+        # 检查向量长度 (使用类常量)
+        if l1 < self.MIN_SEGMENT_LENGTH or l2 < self.MIN_SEGMENT_LENGTH:
             return 0.0, False
         
         cross = v1[0] * v2[1] - v1[1] * v2[0]
         l12 = np.linalg.norm(p2 - p0)
         
-        if l12 < MIN_SEGMENT_LENGTH:
+        if l12 < self.MIN_SEGMENT_LENGTH:
             return 0.0, False
         
-        # 计算分母并检查数值稳定性
+        # 计算分母并检查数值稳定性 (使用类常量)
         denominator = l1 * l2 * l12
-        MIN_DENOMINATOR = 1e-9
-        if denominator < MIN_DENOMINATOR:
+        if denominator < self.MIN_DENOMINATOR:
             # 分母过小，可能导致数值不稳定
             return 0.0, False
         
         # 检查叉积是否接近零（共线情况）
         # 使用相对阈值：叉积相对于分母的比例
-        # 当 |cross| / denominator < MIN_RELATIVE_CROSS 时，认为是共线
-        MIN_RELATIVE_CROSS = 1e-6
+        # 当 |cross| / denominator < MIN_RELATIVE_CROSS 时，认为是共线 (使用类常量)
         abs_cross = abs(cross)
-        if abs_cross < MIN_RELATIVE_CROSS * denominator:
+        if abs_cross < self.MIN_RELATIVE_CROSS * denominator:
             # 几乎共线，曲率接近 0
             return 0.0, True
         
@@ -230,10 +241,9 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         
         cross = v[0] * a[1] - v[1] * a[0]
         
-        # 计算分母并检查数值稳定性
+        # 计算分母并检查数值稳定性 (使用类常量)
         denominator = v_norm ** 3
-        MIN_DENOMINATOR = 1e-9
-        if denominator < MIN_DENOMINATOR:
+        if denominator < self.MIN_DENOMINATOR:
             return 0.0, False
         
         curvature = abs(cross) / denominator

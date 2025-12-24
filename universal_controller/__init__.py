@@ -45,6 +45,8 @@ from .core.data_types import (
     SafetyDecision, MPCHealthStatus,
     # TF2 相关数据类型
     Vector3, Quaternion, Transform, TransformStamped,
+    # ROS geometry_msgs 兼容类型
+    Pose, Twist, PoseWithCovariance, TwistWithCovariance,
 )
 from .core.diagnostics_input import DiagnosticsInput
 from .core.interfaces import (
@@ -67,6 +69,8 @@ __all__ = [
     'SafetyDecision', 'MPCHealthStatus', 'DiagnosticsInput',
     # TF2 相关数据类型
     'Vector3', 'Quaternion', 'Transform', 'TransformStamped',
+    # ROS geometry_msgs 兼容类型
+    'Pose', 'Twist', 'PoseWithCovariance', 'TwistWithCovariance',
     # 接口
     'IStateEstimator', 'ITrajectoryTracker', 'IConsistencyChecker',
     'ISafetyMonitor', 'ISmoothTransition', 'ICoordinateTransformer',

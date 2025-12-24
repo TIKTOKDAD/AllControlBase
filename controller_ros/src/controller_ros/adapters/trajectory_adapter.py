@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 # 默认坐标系，当 ROS 消息的 frame_id 为空时使用
 DEFAULT_TRAJECTORY_FRAME_ID = 'base_link'
 
+# 默认时间间隔，当 dt_sec 无效时使用
+DEFAULT_DT_SEC = 0.1
+
+# dt_sec 的有效范围
+MIN_DT_SEC = 0.001  # 1ms
+MAX_DT_SEC = 10.0   # 10s
+
 
 class TrajectoryAdapter(IMsgConverter):
     """
@@ -40,6 +47,34 @@ class TrajectoryAdapter(IMsgConverter):
     - 如果 ROS 消息的 frame_id 为空，使用默认值 'base_link'
     - 网络输出的轨迹通常在 base_link 坐标系下
     """
+    
+    def __init__(self):
+        """初始化轨迹适配器"""
+        super().__init__()
+    
+    def _validate_dt_sec(self, dt_sec: float) -> float:
+        """
+        验证并修正 dt_sec 值
+        
+        Args:
+            dt_sec: 原始时间间隔值
+        
+        Returns:
+            有效的时间间隔值
+        """
+        if dt_sec <= 0 or dt_sec < MIN_DT_SEC or dt_sec > MAX_DT_SEC:
+            if dt_sec <= 0:
+                logger.warning(
+                    f"Invalid dt_sec={dt_sec} (non-positive), using default {DEFAULT_DT_SEC}. "
+                    f"This may indicate upstream trajectory generation issues."
+                )
+            else:
+                logger.warning(
+                    f"dt_sec={dt_sec} out of valid range [{MIN_DT_SEC}, {MAX_DT_SEC}], "
+                    f"using default {DEFAULT_DT_SEC}."
+                )
+            return DEFAULT_DT_SEC
+        return dt_sec
     
     def _process_velocities(self, velocities_flat: list, num_points: int, 
                            soft_enabled: bool) -> Tuple[Optional[np.ndarray], bool]:
@@ -126,7 +161,7 @@ class TrajectoryAdapter(IMsgConverter):
                 ),
                 points=[],
                 velocities=None,
-                dt_sec=ros_msg.dt_sec if ros_msg.dt_sec > 0 else 0.1,
+                dt_sec=self._validate_dt_sec(ros_msg.dt_sec),
                 confidence=0.0,
                 mode=TrajectoryMode.MODE_STOP,
                 soft_enabled=False
@@ -148,6 +183,9 @@ class TrajectoryAdapter(IMsgConverter):
             logger.warning(f"Unknown trajectory mode {ros_msg.mode}, using MODE_TRACK")
             mode = TrajectoryMode.MODE_TRACK
         
+        # 验证 dt_sec
+        dt_sec = self._validate_dt_sec(ros_msg.dt_sec)
+        
         return UcTrajectory(
             header=Header(
                 stamp=self._ros_time_to_sec(ros_msg.header.stamp),
@@ -155,7 +193,7 @@ class TrajectoryAdapter(IMsgConverter):
             ),
             points=points,
             velocities=velocities,
-            dt_sec=ros_msg.dt_sec,
+            dt_sec=dt_sec,
             confidence=ros_msg.confidence,
             mode=mode,
             soft_enabled=soft_enabled

@@ -433,9 +433,13 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             if self._last_fallback_update_time is None:
                 self._last_fallback_update_time = self.fallback_start_time
             
-            dt = current_time - self._last_fallback_update_time
+            dt_raw = current_time - self._last_fallback_update_time
             # 限制 dt 在合理范围内，避免异常值 (使用配置值)
-            dt = np.clip(dt, 0.0, self.max_drift_dt)
+            dt = np.clip(dt_raw, 0.0, self.max_drift_dt)
+            
+            # 如果 dt 被截断，记录警告（可能是系统暂停）
+            if dt_raw > self.max_drift_dt:
+                logger.debug(f"Drift estimation dt clamped: {dt_raw:.3f}s -> {dt:.3f}s (possible system pause)")
             
             # 使用速度相关的漂移率
             # 高速运动时漂移更大（轮子打滑、IMU 积分误差等）

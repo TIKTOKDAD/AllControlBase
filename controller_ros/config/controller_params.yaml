@@ -48,6 +48,8 @@ tf:
   timeout_ms: 10                  # TF 查询超时 (毫秒)
   buffer_warmup_timeout_sec: 2.0  # TF buffer 预热超时 (秒)
   buffer_warmup_interval_sec: 0.1 # TF buffer 预热检查间隔 (秒)
+  retry_interval_cycles: 50       # TF2 重试间隔 (控制循环次数)
+  max_retries: -1                 # TF2 最大重试次数 (-1 = 无限)
 
 # =============================================================================
 # 超时配置 (映射到 universal_controller 的 watchdog 配置)

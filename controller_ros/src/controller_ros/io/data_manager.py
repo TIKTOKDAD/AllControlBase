@@ -4,13 +4,35 @@
 管理传感器数据的缓存和访问，支持 ROS1 和 ROS2。
 将数据缓存逻辑从节点实现中抽离，避免代码重复。
 """
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 import threading
 import time
+import logging
 
 from universal_controller.core.data_types import Odometry, Imu, Trajectory
 from ..adapters import OdomAdapter, ImuAdapter, TrajectoryAdapter
 from ..utils.ros_compat import ROS_VERSION
+
+logger = logging.getLogger(__name__)
+
+
+class ClockJumpEvent:
+    """时钟跳变事件"""
+    
+    def __init__(self, old_time: float, new_time: float, jump_delta: float):
+        self.old_time = old_time
+        self.new_time = new_time
+        self.jump_delta = jump_delta  # 负值表示回退
+        self.timestamp = time.monotonic()  # 使用单调时钟记录事件时间
+    
+    @property
+    def is_backward(self) -> bool:
+        """是否为时钟回退"""
+        return self.jump_delta < 0
+    
+    def __repr__(self) -> str:
+        direction = "backward" if self.is_backward else "forward"
+        return f"ClockJumpEvent({direction}, delta={self.jump_delta:.3f}s)"
 
 
 class DataManager:
@@ -22,12 +44,25 @@ class DataManager:
     - 提供线程安全的数据访问
     - 管理数据时间戳
     - 计算数据年龄
-    - 检测时钟回退
+    - 检测时钟回退并安全处理
+    
+    时钟回退处理策略:
+    - 检测到时钟回退时，标记所有数据为"过时"（年龄设为 inf）
+    - 记录时钟跳变事件供上层查询
+    - 提供回调机制通知上层
+    - 等待新数据到来后才恢复正常
     
     支持 ROS1 和 ROS2，通过注入时间获取函数实现。
     """
     
-    def __init__(self, get_time_func: Optional[Callable[[], float]] = None):
+    # 时钟抖动容忍度（秒）
+    CLOCK_JITTER_TOLERANCE = 0.001  # 1ms
+    
+    # 时钟大幅跳变阈值（秒）- 超过此值认为是仿真重置
+    CLOCK_JUMP_THRESHOLD = 1.0
+    
+    def __init__(self, get_time_func: Optional[Callable[[], float]] = None,
+                 on_clock_jump: Optional[Callable[[ClockJumpEvent], None]] = None):
         """
         初始化数据管理器
         
@@ -35,6 +70,7 @@ class DataManager:
             get_time_func: 获取当前时间的函数（秒）。
                           如果为 None，使用 time.time()。
                           ROS 环境应传入支持仿真时间的函数。
+            on_clock_jump: 时钟跳变回调函数，用于通知上层。
         """
         # 适配器
         self._odom_adapter = OdomAdapter()
@@ -44,6 +80,9 @@ class DataManager:
         # 时间获取函数
         self._get_time_func = get_time_func or time.time
         
+        # 时钟跳变回调
+        self._on_clock_jump = on_clock_jump
+        
         # 线程安全的数据存储
         self._lock = threading.Lock()
         self._latest_data: Dict[str, Any] = {}
@@ -52,6 +91,11 @@ class DataManager:
         # 时钟回退检测
         self._last_time: float = 0.0
         self._clock_jumped_back: bool = False
+        self._clock_jump_events: List[ClockJumpEvent] = []
+        self._max_clock_jump_events = 10  # 最多保留的事件数
+        
+        # 数据有效性标记 - 时钟回退后数据被标记为无效
+        self._data_invalidated: bool = False
     
     @property
     def odom_adapter(self) -> OdomAdapter:
@@ -68,6 +112,85 @@ class DataManager:
         """获取轨迹适配器"""
         return self._traj_adapter
     
+    def set_clock_jump_callback(self, callback: Optional[Callable[[ClockJumpEvent], None]]) -> None:
+        """设置时钟跳变回调"""
+        with self._lock:
+            self._on_clock_jump = callback
+    
+    def _check_clock_jump(self, now: float) -> Optional[ClockJumpEvent]:
+        """
+        检查时钟跳变
+        
+        Args:
+            now: 当前时间
+        
+        Returns:
+            如果检测到跳变，返回 ClockJumpEvent；否则返回 None
+        
+        Note:
+            此方法应在持有锁的情况下调用
+        """
+        if self._last_time == 0.0:
+            # 首次调用，不检测
+            return None
+        
+        delta = now - self._last_time
+        
+        # 检测时钟回退
+        if delta < -self.CLOCK_JITTER_TOLERANCE:
+            event = ClockJumpEvent(self._last_time, now, delta)
+            self._clock_jumped_back = True
+            self._data_invalidated = True
+            
+            # 记录事件
+            self._clock_jump_events.append(event)
+            if len(self._clock_jump_events) > self._max_clock_jump_events:
+                self._clock_jump_events.pop(0)
+            
+            logger.warning(
+                f"Clock jumped backward by {abs(delta):.3f}s "
+                f"(from {self._last_time:.3f} to {now:.3f}). "
+                f"All cached data marked as stale."
+            )
+            
+            return event
+        
+        # 检测时钟大幅前跳（可能是仿真快进）
+        if delta > self.CLOCK_JUMP_THRESHOLD:
+            event = ClockJumpEvent(self._last_time, now, delta)
+            
+            # 记录事件但不使数据无效（前跳通常是正常的）
+            self._clock_jump_events.append(event)
+            if len(self._clock_jump_events) > self._max_clock_jump_events:
+                self._clock_jump_events.pop(0)
+            
+            logger.info(
+                f"Clock jumped forward by {delta:.3f}s "
+                f"(from {self._last_time:.3f} to {now:.3f})"
+            )
+            
+            return event
+        
+        return None
+    
+    def _on_new_data(self, data_type: str) -> None:
+        """
+        新数据到来时的处理
+        
+        Args:
+            data_type: 数据类型 ('odom', 'imu', 'trajectory')
+        
+        Note:
+            此方法应在持有锁的情况下调用
+        """
+        # 如果数据被标记为无效，新数据到来后恢复有效性
+        if self._data_invalidated:
+            # 只有当所有必需数据都更新后才恢复
+            # 这里简化处理：任何新数据都清除无效标记
+            # 因为新数据的时间戳是在当前时钟下设置的
+            self._data_invalidated = False
+            logger.info(f"Data validity restored after receiving new {data_type} data")
+    
     def update_odom(self, ros_msg: Any) -> Odometry:
         """
         更新里程计数据
@@ -82,6 +205,7 @@ class DataManager:
         with self._lock:
             self._latest_data['odom'] = uc_odom
             self._timestamps['odom'] = self._get_time_func()
+            self._on_new_data('odom')
         return uc_odom
     
     def update_imu(self, ros_msg: Any) -> Imu:
@@ -98,6 +222,7 @@ class DataManager:
         with self._lock:
             self._latest_data['imu'] = uc_imu
             self._timestamps['imu'] = self._get_time_func()
+            self._on_new_data('imu')
         return uc_imu
     
     def update_trajectory(self, ros_msg: Any) -> Trajectory:
@@ -114,6 +239,7 @@ class DataManager:
         with self._lock:
             self._latest_data['trajectory'] = uc_traj
             self._timestamps['trajectory'] = self._get_time_func()
+            self._on_new_data('trajectory')
         return uc_traj
     
     def get_latest_odom(self) -> Optional[Odometry]:
@@ -154,27 +280,41 @@ class DataManager:
             值为距上次更新的秒数。未收到的数据返回 float('inf')。
             
         Note:
-            如果时钟回退（如仿真时间重置），年龄会被 clamp 到 0，
-            避免返回负值导致超时检测失效。同时会设置 _clock_jumped_back 标志。
+            - 如果时钟回退（如仿真时间重置），所有数据年龄返回 inf，
+              表示数据已过时，需要等待新数据。
+            - 时钟回退会设置 _clock_jumped_back 标志并触发回调。
+            - 新数据到来后会自动恢复正常。
         """
         now = self._get_time_func()
+        callback_event = None
+        
         with self._lock:
-            # 检测时钟回退
-            if now < self._last_time - 0.001:  # 允许 1ms 的抖动
-                self._clock_jumped_back = True
-                # 时钟回退时，重置所有时间戳为当前时间，避免数据被误认为新鲜
-                for key in self._timestamps:
-                    self._timestamps[key] = now
+            # 检测时钟跳变
+            event = self._check_clock_jump(now)
+            if event is not None and event.is_backward:
+                callback_event = event
+            
             self._last_time = now
             
             ages = {}
             for key in ['odom', 'imu', 'trajectory']:
-                if key in self._timestamps:
-                    # 防止时钟回退导致负值
+                if self._data_invalidated:
+                    # 数据被标记为无效，返回 inf
+                    ages[key] = float('inf')
+                elif key in self._timestamps:
+                    # 正常计算年龄，防止负值
                     ages[key] = max(0.0, now - self._timestamps[key])
                 else:
                     ages[key] = float('inf')
-            return ages
+        
+        # 在锁外调用回调，避免死锁
+        if callback_event is not None and self._on_clock_jump is not None:
+            try:
+                self._on_clock_jump(callback_event)
+            except Exception as e:
+                logger.error(f"Clock jump callback failed: {e}")
+        
+        return ages
     
     def get_timestamps(self) -> Dict[str, float]:
         """
@@ -214,6 +354,8 @@ class DataManager:
             self._timestamps.clear()
             self._last_time = 0.0
             self._clock_jumped_back = False
+            self._data_invalidated = False
+            self._clock_jump_events.clear()
     
     def did_clock_jump_back(self) -> bool:
         """
@@ -229,3 +371,35 @@ class DataManager:
         """清除时钟回退标志"""
         with self._lock:
             self._clock_jumped_back = False
+    
+    def is_data_valid(self) -> bool:
+        """
+        检查数据是否有效
+        
+        Returns:
+            如果数据有效返回 True，时钟回退后数据无效直到新数据到来
+        """
+        with self._lock:
+            return not self._data_invalidated
+    
+    def get_clock_jump_events(self) -> List[ClockJumpEvent]:
+        """
+        获取时钟跳变事件历史
+        
+        Returns:
+            时钟跳变事件列表（最多保留最近 10 个）
+        """
+        with self._lock:
+            return self._clock_jump_events.copy()
+    
+    def get_last_clock_jump(self) -> Optional[ClockJumpEvent]:
+        """
+        获取最近一次时钟跳变事件
+        
+        Returns:
+            最近的时钟跳变事件，如果没有则返回 None
+        """
+        with self._lock:
+            if self._clock_jump_events:
+                return self._clock_jump_events[-1]
+            return None

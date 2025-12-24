@@ -9,8 +9,16 @@ import os
 import time
 import numpy as np
 
-# 添加 src 目录到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# 添加 src 目录和 test 目录到路径
+_test_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_test_dir, '..', 'src'))
+sys.path.insert(0, _test_dir)
+
+# 导入共享的 Mock 类 (从 conftest.py)
+from conftest import (
+    MockRosTime, MockRosHeader, MockRosPoint, MockRosQuaternion,
+    MockRosVector3, MockRosTrajectory
+)
 
 
 def test_import_universal_controller():
@@ -89,35 +97,16 @@ def test_adapter_data_flow():
     from universal_controller.core.data_types import Trajectory, Header, Point3D
     from universal_controller.core.enums import TrajectoryMode
     
-    # 模拟 ROS 消息
-    class MockRosTime:
-        def __init__(self):
-            self.sec = 1000
-            self.nanosec = 500000000
-    
-    class MockRosHeader:
-        def __init__(self):
-            self.stamp = MockRosTime()
-            self.frame_id = 'base_link'
-    
-    class MockRosPoint:
-        def __init__(self, x, y, z):
-            self.x = x
-            self.y = y
-            self.z = z
-    
-    class MockRosTrajectory:
-        def __init__(self):
-            self.header = MockRosHeader()
-            self.mode = 0
-            self.points = [MockRosPoint(i * 0.1, 0, 0) for i in range(10)]
-            self.velocities_flat = [1.0, 0.0, 0.0, 0.1] * 10
-            self.dt_sec = 0.1
-            self.confidence = 0.9
-            self.soft_enabled = True
+    # 使用共享的 Mock 类
+    ros_msg = MockRosTrajectory(
+        num_points=10,
+        frame_id='base_link',
+        confidence=0.9,
+        soft_enabled=True
+    )
+    ros_msg.set_velocities([1.0, 0.0, 0.0, 0.1] * 10)
     
     adapter = TrajectoryAdapter()
-    ros_msg = MockRosTrajectory()
     
     # ROS → UC
     uc_traj = adapter.to_uc(ros_msg)
@@ -171,36 +160,18 @@ def test_velocity_padding_integration():
     from controller_ros.adapters import TrajectoryAdapter
     import numpy as np
     
-    class MockRosTime:
-        sec = 1000
-        nanosec = 0
-    
-    class MockRosHeader:
-        stamp = MockRosTime()
-        frame_id = 'base_link'
-    
-    class MockRosPoint:
-        def __init__(self, x, y, z):
-            self.x, self.y, self.z = x, y, z
-    
-    class MockRosTrajectory:
-        header = MockRosHeader()
-        mode = 0
-        points = [MockRosPoint(i * 0.1, 0, 0) for i in range(20)]  # 20 个位置点
-        # 只有 5 个速度点
-        velocities_flat = [
-            1.0, 0.1, 0.0, 0.01,
-            1.5, 0.15, 0.0, 0.015,
-            2.0, 0.2, 0.0, 0.02,
-            2.5, 0.25, 0.0, 0.025,
-            3.0, 0.3, 0.0, 0.03,
-        ]
-        dt_sec = 0.1
-        confidence = 0.9
-        soft_enabled = True
+    # 使用共享的 Mock 类，20 个位置点但只有 5 个速度点
+    ros_msg = MockRosTrajectory(num_points=20, frame_id='base_link')
+    ros_msg.set_velocities([
+        1.0, 0.1, 0.0, 0.01,
+        1.5, 0.15, 0.0, 0.015,
+        2.0, 0.2, 0.0, 0.02,
+        2.5, 0.25, 0.0, 0.025,
+        3.0, 0.3, 0.0, 0.03,
+    ])
     
     adapter = TrajectoryAdapter()
-    uc_traj = adapter.to_uc(MockRosTrajectory())
+    uc_traj = adapter.to_uc(ros_msg)
     
     # 验证填充
     assert uc_traj.velocities.shape == (20, 4)
@@ -220,29 +191,11 @@ def test_empty_frame_id_handling():
     from controller_ros.adapters import TrajectoryAdapter
     from controller_ros.adapters.trajectory_adapter import DEFAULT_TRAJECTORY_FRAME_ID
     
-    class MockRosTime:
-        sec = 1000
-        nanosec = 0
-    
-    class MockRosHeader:
-        stamp = MockRosTime()
-        frame_id = ''  # 空字符串
-    
-    class MockRosPoint:
-        def __init__(self, x, y, z):
-            self.x, self.y, self.z = x, y, z
-    
-    class MockRosTrajectory:
-        header = MockRosHeader()
-        mode = 0
-        points = [MockRosPoint(i * 0.1, 0, 0) for i in range(5)]
-        velocities_flat = []
-        dt_sec = 0.1
-        confidence = 0.9
-        soft_enabled = False
+    # 使用共享的 Mock 类，空 frame_id
+    ros_msg = MockRosTrajectory(num_points=5, frame_id='')
     
     adapter = TrajectoryAdapter()
-    uc_traj = adapter.to_uc(MockRosTrajectory())
+    uc_traj = adapter.to_uc(ros_msg)
     
     # 空 frame_id 应该使用默认值
     assert uc_traj.header.frame_id == DEFAULT_TRAJECTORY_FRAME_ID
@@ -253,18 +206,6 @@ def test_trajectory_mode_mapping():
     """测试轨迹模式映射"""
     from controller_ros.adapters import TrajectoryAdapter
     from universal_controller.core.enums import TrajectoryMode
-    
-    class MockRosTime:
-        sec = 1000
-        nanosec = 0
-    
-    class MockRosHeader:
-        stamp = MockRosTime()
-        frame_id = 'base_link'
-    
-    class MockRosPoint:
-        def __init__(self, x, y, z):
-            self.x, self.y, self.z = x, y, z
     
     adapter = TrajectoryAdapter()
     
@@ -277,30 +218,14 @@ def test_trajectory_mode_mapping():
     }
     
     for ros_mode, expected_uc_mode in mode_mapping.items():
-        class MockRosTrajectory:
-            header = MockRosHeader()
-            mode = ros_mode
-            points = [MockRosPoint(0, 0, 0)]
-            velocities_flat = []
-            dt_sec = 0.1
-            confidence = 0.9
-            soft_enabled = False
-        
-        uc_traj = adapter.to_uc(MockRosTrajectory())
+        ros_msg = MockRosTrajectory(num_points=1, mode=ros_mode, frame_id='base_link')
+        uc_traj = adapter.to_uc(ros_msg)
         assert uc_traj.mode == expected_uc_mode, \
             f"ROS mode {ros_mode} should map to {expected_uc_mode}, got {uc_traj.mode}"
     
     # 测试无效模式
-    class MockRosTrajectoryInvalid:
-        header = MockRosHeader()
-        mode = 99  # 无效模式
-        points = [MockRosPoint(0, 0, 0)]
-        velocities_flat = []
-        dt_sec = 0.1
-        confidence = 0.9
-        soft_enabled = False
-    
-    uc_traj = adapter.to_uc(MockRosTrajectoryInvalid())
+    ros_msg_invalid = MockRosTrajectory(num_points=1, mode=99, frame_id='base_link')
+    uc_traj = adapter.to_uc(ros_msg_invalid)
     assert uc_traj.mode == TrajectoryMode.MODE_TRACK, \
         f"Invalid mode should default to MODE_TRACK, got {uc_traj.mode}"
     

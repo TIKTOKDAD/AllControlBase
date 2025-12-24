@@ -1,7 +1,9 @@
 """
 模拟数据模块 (已弃用)
 
-此模块已重构，请使用以下替代:
+⚠️ 此模块已弃用，将在未来版本中移除。
+
+请使用以下替代:
 
 ROS 兼容层 (独立运行模式):
 ============================
@@ -10,9 +12,16 @@ ROS 兼容层 (独立运行模式):
     from universal_controller.compat import (
         StandaloneRospy,      # rospy 替代
         StandaloneTF2Buffer,  # tf2_ros.Buffer 替代
-        # 或使用向后兼容别名
-        MockRospy,
-        MockTF2BufferCore,
+    )
+
+数据类型:
+============================
+所有数据类型已移至 core.data_types:
+
+    from universal_controller.core.data_types import (
+        Pose, Twist, PoseWithCovariance, TwistWithCovariance,
+        Vector3, Quaternion, Transform, TransformStamped,
+        Odometry, Imu, Header, Point3D,
     )
 
 测试数据生成 (仅用于测试):
@@ -28,43 +37,38 @@ ROS 兼容层 (独立运行模式):
 迁移指南:
 =========
 旧代码:
-    from universal_controller.mock import MockRospy, create_test_trajectory
+    from universal_controller.mock import MockRospy, MockPose
 
 新代码 (生产):
-    from universal_controller.compat import StandaloneRospy  # 或 MockRospy
+    from universal_controller.compat import StandaloneRospy
+    from universal_controller.core.data_types import Pose
 
 新代码 (测试):
     from universal_controller.tests.fixtures import create_test_trajectory
-
-警告:
-=====
-此模块将在未来版本中移除。
-为保持向后兼容，此模块仍然导出 ROS 兼容层符号。
-测试数据生成器不再从此模块导出，请直接从 tests.fixtures 导入。
 """
 import warnings
 
 # 发出弃用警告
 warnings.warn(
-    "universal_controller.mock 模块已弃用。"
-    "请使用 universal_controller.compat (ROS 兼容层)。"
+    "universal_controller.mock 模块已弃用，将在未来版本中移除。"
+    "请使用 universal_controller.compat (ROS 兼容层) 和 "
+    "universal_controller.core.data_types (数据类型)。"
     "测试数据生成器请从 universal_controller.tests.fixtures 导入。",
     DeprecationWarning,
     stacklevel=2
 )
 
 # =============================================================================
-# 仅导出 ROS 兼容层 (生产代码的一部分)
+# 从 compat 模块导入 ROS 兼容层
 # =============================================================================
 
-# 从 compat 模块导入 ROS 兼容层
 from ..compat.ros_compat_impl import (
     # 推荐名称
     StandaloneRospy,
     StandaloneTF2Buffer,
     StandaloneTF2Ros,
     StandaloneTFTransformations,
-    # 向后兼容别名
+    # 向后兼容别名 (已弃用)
     MockRospy,
     MockTF2BufferCore,
     MockTF2Ros,
@@ -75,49 +79,44 @@ from ..compat.ros_compat_impl import (
     ConnectivityException,
 )
 
-# 从 core.data_types 导入数据类型
+# =============================================================================
+# 从 core.data_types 导入数据类型 (统一使用生产数据类型)
+# =============================================================================
+
 from ..core.data_types import (
-    Vector3 as MockVector3,
-    Quaternion as MockQuaternion,
-    Transform as MockTransform,
-    Header as MockHeader,
-    TransformStamped as MockTransformStamped,
-    Point3D as MockPoint,
-    Odometry as MockOdometry,
-    Imu as MockImu,
+    # 基础类型
+    Vector3,
+    Quaternion,
+    Transform,
+    Header,
+    TransformStamped,
+    Point3D,
+    Odometry,
+    Imu,
+    # ROS geometry_msgs 兼容类型
+    Pose,
+    Twist,
+    PoseWithCovariance,
+    TwistWithCovariance,
 )
 
-# 为了兼容性，创建 MockPose, MockTwist 等别名
-from dataclasses import dataclass, field
-from ..core.data_types import Point3D, Quaternion, Vector3
+# =============================================================================
+# 向后兼容别名 (已弃用，请使用 core.data_types 中的类型)
+# =============================================================================
 
-
-@dataclass
-class MockPose:
-    """模拟 geometry_msgs/Pose (向后兼容)"""
-    position: Point3D = field(default_factory=lambda: Point3D(0, 0, 0))
-    orientation: Quaternion = field(default_factory=Quaternion)
-
-
-@dataclass
-class MockTwist:
-    """模拟 geometry_msgs/Twist (向后兼容)"""
-    linear: Vector3 = field(default_factory=Vector3)
-    angular: Vector3 = field(default_factory=Vector3)
-
-
-@dataclass
-class MockPoseWithCovariance:
-    """模拟 geometry_msgs/PoseWithCovariance (向后兼容)"""
-    pose: MockPose = field(default_factory=MockPose)
-    covariance: list = field(default_factory=lambda: [0.0] * 36)
-
-
-@dataclass
-class MockTwistWithCovariance:
-    """模拟 geometry_msgs/TwistWithCovariance (向后兼容)"""
-    twist: MockTwist = field(default_factory=MockTwist)
-    covariance: list = field(default_factory=lambda: [0.0] * 36)
+# 数据类型别名
+MockVector3 = Vector3
+MockQuaternion = Quaternion
+MockTransform = Transform
+MockHeader = Header
+MockTransformStamped = TransformStamped
+MockPoint = Point3D
+MockOdometry = Odometry
+MockImu = Imu
+MockPose = Pose
+MockTwist = Twist
+MockPoseWithCovariance = PoseWithCovariance
+MockTwistWithCovariance = TwistWithCovariance
 
 
 # =============================================================================
@@ -140,7 +139,7 @@ __all__ = [
     'StandaloneTF2Buffer',
     'StandaloneTF2Ros',
     'StandaloneTFTransformations',
-    # ROS 兼容实现 (向后兼容别名)
+    # ROS 兼容实现 (向后兼容别名，已弃用)
     'MockRospy',
     'MockTF2BufferCore',
     'MockTF2Ros',
@@ -149,7 +148,20 @@ __all__ = [
     'LookupException',
     'ExtrapolationException',
     'ConnectivityException',
-    # 数据类型别名
+    # 数据类型 (推荐直接从 core.data_types 导入)
+    'Vector3',
+    'Quaternion',
+    'Transform',
+    'Header',
+    'TransformStamped',
+    'Point3D',
+    'Odometry',
+    'Imu',
+    'Pose',
+    'Twist',
+    'PoseWithCovariance',
+    'TwistWithCovariance',
+    # 数据类型别名 (已弃用)
     'MockVector3',
     'MockQuaternion',
     'MockTransform',

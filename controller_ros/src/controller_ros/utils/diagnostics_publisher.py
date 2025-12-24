@@ -2,6 +2,11 @@
 统一诊断发布工具
 
 提供 ROS1 和 ROS2 共享的诊断发布逻辑，避免代码重复。
+
+模块内容:
+- safe_float, safe_float_list: 安全数值转换函数
+- DiagnosticsThrottler: 诊断发布节流器（控制发布频率）
+- fill_diagnostics_msg: 填充 DiagnosticsV2 消息
 """
 from typing import Dict, Any, Optional, Callable
 import math
@@ -65,20 +70,24 @@ def safe_float_list(vals: Any, length: int = 3, default: float = 0.0) -> list:
         return [default] * length
 
 
-class DiagnosticsPublishHelper:
+class DiagnosticsThrottler:
     """
-    诊断发布辅助类
+    诊断发布节流器
     
-    封装诊断发布的降频逻辑和状态变化检测，
+    控制诊断信息的发布频率，支持：
+    - 按固定间隔发布（每 N 次控制循环发布一次）
+    - 状态变化时立即发布
+    - 强制发布
+    
     供 ROS1 和 ROS2 节点共享使用。
     """
     
     def __init__(self, publish_rate: int = 5):
         """
-        初始化诊断发布辅助器
+        初始化诊断节流器
         
         Args:
-            publish_rate: 诊断发布降频率 (每 N 次控制循环发布一次)
+            publish_rate: 发布间隔（每 N 次控制循环发布一次诊断）
         """
         self._publish_rate = max(1, publish_rate)
         # 初始化为 publish_rate - 1，确保首次调用时立即发布
@@ -120,7 +129,7 @@ class DiagnosticsPublishHelper:
         """获取当前状态（用于状态话题发布）"""
         return self._last_state
     
-    def reset(self):
+    def reset(self) -> None:
         """重置状态"""
         self._counter = self._publish_rate - 1
         self._last_state = None

@@ -20,6 +20,10 @@ class OdomAdapter(IMsgConverter):
     注意: Odometry 是输入数据，不需要 to_ros() 方法。
     """
     
+    def __init__(self):
+        """初始化里程计适配器"""
+        super().__init__()
+    
     def to_uc(self, ros_msg: Any) -> UcOdometry:
         """ROS Odometry → UC Odometry"""
         return UcOdometry(

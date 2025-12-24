@@ -3,6 +3,7 @@ from typing import Dict, Any, Optional
 import numpy as np
 import time
 import logging
+import gc
 
 from ..core.interfaces import ITrajectoryTracker
 from ..core.data_types import Trajectory, ControlOutput, ConsistencyResult
@@ -510,8 +511,9 @@ class MPCController(ITrajectoryTracker):
             if self._solver is not None:
                 try:
                     # ACADOS 求解器没有显式的 close/destroy 方法
-                    # 但将其设为 None 可以让 Python GC 回收资源
+                    # 将其设为 None 并强制 GC 回收资源
                     self._solver = None
+                    gc.collect()  # 强制垃圾回收，确保资源及时释放
                 except Exception as e:
                     logger.warning(f"Error releasing old solver: {e}")
             self._is_initialized = False
@@ -531,6 +533,7 @@ class MPCController(ITrajectoryTracker):
         """释放资源并重置状态"""
         if self._solver is not None:
             self._solver = None
+            gc.collect()  # 强制垃圾回收，确保 ACADOS 资源及时释放
         self._is_initialized = False
         # 重置内部状态
         self._last_cmd = None

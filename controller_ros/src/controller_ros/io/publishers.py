@@ -13,7 +13,7 @@ from std_msgs.msg import Int32
 from universal_controller.core.data_types import ControlOutput, Trajectory
 from ..adapters import OutputAdapter
 from ..utils.ros_compat import get_time_sec
-from ..utils.diagnostics_publisher import fill_diagnostics_msg, DiagnosticsPublishHelper
+from ..utils.diagnostics_publisher import fill_diagnostics_msg, DiagnosticsThrottler
 
 # 默认话题名常量
 DEFAULT_STATE_TOPIC = '/controller/state'
@@ -55,8 +55,8 @@ class PublisherManager:
         # 创建发布器
         self._create_publishers()
         
-        # 使用统一的诊断发布辅助器
-        self._diag_helper = DiagnosticsPublishHelper(publish_rate=diag_publish_rate)
+        # 使用统一的诊断发布节流器
+        self._diag_throttler = DiagnosticsThrottler(publish_rate=diag_publish_rate)
     
     def _create_publishers(self):
         """创建所有发布器"""
@@ -127,8 +127,8 @@ class PublisherManager:
         state_msg.data = current_state
         self._state_pub.publish(state_msg)
         
-        # 使用辅助器判断是否发布诊断
-        if not self._diag_helper.should_publish(diag, force=force):
+        # 使用节流器判断是否发布诊断
+        if not self._diag_throttler.should_publish(diag, force=force):
             return
         
         if self._diag_pub is None:
@@ -144,8 +144,21 @@ class PublisherManager:
             )
             
             self._diag_pub.publish(msg)
-        except Exception as e:
-            self._node.get_logger().warn(f"Failed to publish diagnostics: {e}")
+        except ImportError:
+            # 消息类型不可用，静默忽略（已在初始化时记录警告）
+            pass
+        except AttributeError as e:
+            # 消息字段访问错误，可能是消息定义不匹配
+            self._node.get_logger().warn(
+                f"Diagnostics message attribute error (possible version mismatch): {e}",
+                throttle_duration_sec=10.0
+            )
+        except TypeError as e:
+            # 类型转换错误
+            self._node.get_logger().warn(
+                f"Diagnostics type conversion error: {e}",
+                throttle_duration_sec=10.0
+            )
     
     def publish_debug_path(self, trajectory: Trajectory):
         """发布调试路径"""

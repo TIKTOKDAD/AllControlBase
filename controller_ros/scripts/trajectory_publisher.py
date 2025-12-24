@@ -10,6 +10,7 @@
 
 使用方法:
     rosrun controller_ros trajectory_publisher.py
+    rosrun controller_ros trajectory_publisher.py --stop  # 发布停止轨迹
 
 话题:
     订阅: /waypoint (std_msgs/Float32MultiArray)
@@ -24,10 +25,11 @@
 import sys
 import os
 
-# 添加 catkin devel 路径 - 用于导入 controller_ros.msg
-_devel_path = '/home/oamr/turtlebot_ws/devel/lib/python3/dist-packages'
-if os.path.exists(_devel_path):
-    sys.path.insert(0, _devel_path)
+# 设置 Python 路径 (使用统一的路径设置模块)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _script_dir)
+from setup_paths import setup_controller_ros_paths
+setup_controller_ros_paths()
 
 import rospy
 import numpy as np
@@ -40,14 +42,19 @@ except ImportError:
     rospy.logerr("无法导入 controller_ros.msg，请确保 controller_ros 已编译")
     raise
 
-
-# =============================================================================
-# 轨迹模式常量
-# =============================================================================
-MODE_TRACK = 0      # 跟踪模式 (正常跟踪轨迹)
-MODE_STOP = 1       # 停止模式 (减速停车)
-MODE_HOVER = 2      # 悬停模式 (仅四旋翼)
-MODE_EMERGENCY = 3  # 紧急模式 (立即停止)
+# 导入轨迹模式枚举，保持与 universal_controller 一致
+try:
+    from universal_controller.core.enums import TrajectoryMode
+    MODE_TRACK = TrajectoryMode.MODE_TRACK.value      # 跟踪模式 (正常跟踪轨迹)
+    MODE_STOP = TrajectoryMode.MODE_STOP.value        # 停止模式 (减速停车)
+    MODE_HOVER = TrajectoryMode.MODE_HOVER.value      # 悬停模式 (仅四旋翼)
+    MODE_EMERGENCY = TrajectoryMode.MODE_EMERGENCY.value  # 紧急模式 (立即停止)
+except ImportError:
+    # 如果 universal_controller 不可用，使用本地定义
+    MODE_TRACK = 0
+    MODE_STOP = 1
+    MODE_HOVER = 2
+    MODE_EMERGENCY = 3
 
 
 # =============================================================================
@@ -238,5 +245,25 @@ def main():
         raise
 
 
+def main_stop():
+    """发布停止轨迹的入口函数"""
+    try:
+        publisher = StopTrajectoryPublisher()
+        publisher.publish_stop()
+    except rospy.ROSInterruptException:
+        pass
+    except Exception as e:
+        rospy.logerr(f"StopTrajectoryPublisher 异常: {e}")
+        raise
+
+
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description='轨迹发布器')
+    parser.add_argument('--stop', action='store_true', help='发布停止轨迹')
+    args = parser.parse_args()
+    
+    if args.stop:
+        main_stop()
+    else:
+        main()

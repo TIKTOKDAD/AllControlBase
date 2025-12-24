@@ -1,8 +1,52 @@
 # 代码重构说明
 
-## 重构日期: 2024-12-23 (更新)
+## 重构日期: 2024-12-24 (更新)
 
-## 最新更新: 模拟数据控制机制
+## 最新更新: controller_ros 代码优化
+
+### 1. TF2 注入逻辑提取为独立类
+
+**问题**: TF2 注入相关的状态和逻辑分散在 `ControllerNodeBase` 的多个地方，增加了代码复杂度。
+
+**解决方案**: 创建 `TF2InjectionManager` 类，统一管理 TF2 注入逻辑。
+
+**新增文件**:
+- `controller_ros/src/controller_ros/utils/tf2_injection_manager.py`
+- `controller_ros/test/test_tf2_injection_manager.py`
+
+**修改文件**:
+- `controller_ros/src/controller_ros/node/base_node.py` - 使用 TF2InjectionManager
+- `controller_ros/src/controller_ros/utils/__init__.py` - 导出 TF2InjectionManager
+
+### 2. 统一诊断发布器命名
+
+**问题**: 诊断发布器有两个名称 `DiagnosticsThrottler` 和 `DiagnosticsPublishHelper`，造成混淆。
+
+**解决方案**: 统一使用 `DiagnosticsThrottler`（更准确描述功能），移除别名。
+
+**修改文件**:
+- `controller_ros/src/controller_ros/utils/diagnostics_publisher.py` - 移除别名
+- `controller_ros/src/controller_ros/utils/__init__.py` - 只导出 DiagnosticsThrottler
+- `controller_ros/src/controller_ros/io/publishers.py` - 使用 DiagnosticsThrottler
+- `controller_ros/scripts/controller_node.py` - 使用 DiagnosticsThrottler
+- `controller_ros/test/test_diagnostics_publisher.py` - 更新测试
+
+### 3. 修复节流日志的线程安全问题
+
+**问题**: `ros_compat.py` 中的 `_log_throttle` 函数使用全局 `OrderedDict` 存储状态，但没有线程保护，在多线程环境下可能出现竞态条件。
+
+**解决方案**: 添加 `threading.Lock` 保护全局状态的访问。
+
+**修改文件**:
+- `controller_ros/src/controller_ros/utils/ros_compat.py` - 添加线程锁
+
+**注意**: 此函数主要用于非 ROS 环境的回退方案。ROS1 节点应使用 `rospy.logwarn_throttle`，ROS2 节点应使用 `logger.warn(..., throttle_duration_sec=...)`。
+
+---
+
+## 重构日期: 2024-12-23
+
+## 模拟数据控制机制
 
 ### 问题: Dashboard 和其他模块可能自动使用模拟数据
 - **需求**: 除非明确配置允许，否则所有模块都不应使用模拟数据

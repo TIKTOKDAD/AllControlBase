@@ -215,14 +215,25 @@ def log_warn_throttle(period: float, msg: str):
         print(f"[WARN] {msg}")
 
 
-# 节流日志的状态存储
-_throttle_last_time: dict = {}
+# 节流日志的状态存储 - 使用线程安全的实现
+import threading
+from collections import OrderedDict
+
+_throttle_lock = threading.Lock()
+_throttle_last_time: OrderedDict = OrderedDict()
 _THROTTLE_CACHE_MAX_SIZE = 100  # 最大缓存条目数
 
 
 def _log_throttle(level: str, period: float, msg: str):
     """
-    简单的节流日志实现
+    简单的节流日志实现（线程安全）
+    
+    使用 OrderedDict 实现 LRU 缓存，自动清理最旧的条目。
+    
+    注意:
+    - 此函数主要用于非 ROS 环境的回退方案
+    - ROS1 节点应使用 rospy.logwarn_throttle
+    - ROS2 节点应使用 logger.warn(..., throttle_duration_sec=...)
     
     Args:
         level: 日志级别 ('info', 'warn', 'error')
@@ -236,16 +247,23 @@ def _log_throttle(level: str, period: float, msg: str):
     key = hashlib.md5(f"{level}:{msg}".encode()).hexdigest()[:16]
     now = time.monotonic()
     
-    last_time = _throttle_last_time.get(key, 0)
-    if now - last_time >= period:
-        _throttle_last_time[key] = now
-        
-        # 简单的缓存清理：当缓存过大时，删除最旧的一半条目
-        if len(_throttle_last_time) > _THROTTLE_CACHE_MAX_SIZE:
-            sorted_items = sorted(_throttle_last_time.items(), key=lambda x: x[1])
-            for old_key, _ in sorted_items[:len(sorted_items) // 2]:
-                del _throttle_last_time[old_key]
-        
+    should_log = False
+    
+    with _throttle_lock:
+        last_time = _throttle_last_time.get(key, 0)
+        if now - last_time >= period:
+            # 更新时间戳并移动到末尾（最近使用）
+            _throttle_last_time[key] = now
+            _throttle_last_time.move_to_end(key)
+            
+            # LRU 缓存清理：当缓存过大时，删除最旧的条目
+            while len(_throttle_last_time) > _THROTTLE_CACHE_MAX_SIZE:
+                _throttle_last_time.popitem(last=False)  # 删除最旧的（第一个）
+            
+            should_log = True
+    
+    # 在锁外执行日志操作，避免持锁时间过长
+    if should_log:
         if level == 'info':
             logger.info(msg)
         elif level == 'warn':

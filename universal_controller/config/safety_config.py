@@ -52,8 +52,8 @@ SAFETY_CONFIG = {
         'mpc_fail_ratio_thresh': 0.5,      # 失败率阈值
         'mpc_recovery_history_min': 3,     # MPC 恢复检测最小历史记录数
         'mpc_recovery_recent_count': 5,    # MPC 恢复检测最近检查次数
-        'mpc_recovery_tolerance': 1,       # MPC 恢复检测容错次数
-        'mpc_recovery_success_ratio': 0.8, # MPC 恢复检测成功率阈值
+        'mpc_recovery_tolerance': 0,       # MPC 恢复检测容错次数 (最近 N 次中允许的失败次数)
+        'mpc_recovery_success_ratio': 0.8, # MPC 恢复检测成功率阈值 (整体成功率要求)
     },
 }
 

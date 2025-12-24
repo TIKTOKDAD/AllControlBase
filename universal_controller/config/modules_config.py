@@ -28,7 +28,9 @@ CONSISTENCY_CONFIG = {
     'kappa_thresh': 0.5,              # 曲率一致性阈值
     'v_dir_thresh': 0.8,              # 速度方向一致性阈值
     'temporal_smooth_thresh': 0.5,    # 时序平滑度阈值
-    'low_speed_thresh': 0.1,          # 低速阈值 (m/s)
+    # 注意: low_speed_thresh 统一使用 trajectory.low_speed_thresh
+    # 一致性检查器会从 trajectory 配置中读取此值
+    # 这样可以确保轨迹速度计算和一致性检查使用相同的阈值
     'alpha_min': 0.1,                 # α 最小值
     'max_curvature': 10.0,            # 曲率计算的最大值限制 (1/m)
     'temporal_window_size': 10,       # 时序平滑度计算的滑动窗口大小

@@ -180,13 +180,16 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str]
             errors.append(('trajectory.default_num_points', 
                           f'默认轨迹点数 ({default_points}) 应在 [{min_points}, {max_points}] 范围内'))
     
-    # low_speed_thresh 一致性检查 (trajectory 和 consistency 应保持一致)
+    # low_speed_thresh 一致性检查
+    # 注意: consistency 模块现在统一从 trajectory.low_speed_thresh 读取
+    # 如果用户在 consistency 配置中显式设置了不同的值，发出警告
     traj_low_speed = get_config_value(config, 'trajectory.low_speed_thresh')
     consistency_low_speed = get_config_value(config, 'consistency.low_speed_thresh')
     if _is_numeric(traj_low_speed) and _is_numeric(consistency_low_speed):
         if abs(traj_low_speed - consistency_low_speed) > 1e-6:
-            errors.append(('trajectory.low_speed_thresh', 
-                          f'轨迹低速阈值 ({traj_low_speed}) 应与一致性检查低速阈值 ({consistency_low_speed}) 保持一致'))
+            errors.append(('consistency.low_speed_thresh', 
+                          f'一致性检查低速阈值 ({consistency_low_speed}) 与轨迹低速阈值 ({traj_low_speed}) 不一致。'
+                          f'建议移除 consistency.low_speed_thresh 配置，统一使用 trajectory.low_speed_thresh'))
     
     return errors
 

@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from controller_ros.utils.diagnostics_publisher import (
     safe_float,
     safe_float_list,
-    DiagnosticsPublishHelper,
+    DiagnosticsThrottler,
     fill_diagnostics_msg,
 )
 
@@ -120,88 +120,88 @@ class TestSafeFloatList:
         assert result == [0.0, 0.0, 0.0]
 
 
-class TestDiagnosticsPublishHelper:
-    """测试 DiagnosticsPublishHelper 类"""
+class TestDiagnosticsThrottler:
+    """测试 DiagnosticsThrottler 类"""
     
     def test_first_publish(self):
         """测试首次发布"""
-        helper = DiagnosticsPublishHelper(publish_rate=5)
+        throttler = DiagnosticsThrottler(publish_rate=5)
         diag = {'state': 1}
         
         # 首次应该发布
-        assert helper.should_publish(diag) == True
+        assert throttler.should_publish(diag) == True
     
     def test_rate_limiting(self):
         """测试降频"""
-        helper = DiagnosticsPublishHelper(publish_rate=5)
+        throttler = DiagnosticsThrottler(publish_rate=5)
         diag = {'state': 1}
         
         # 首次发布
-        assert helper.should_publish(diag) == True
+        assert throttler.should_publish(diag) == True
         
         # 接下来 4 次不发布
         for i in range(4):
-            assert helper.should_publish(diag) == False, f"Should not publish at iteration {i+1}"
+            assert throttler.should_publish(diag) == False, f"Should not publish at iteration {i+1}"
         
         # 第 5 次发布
-        assert helper.should_publish(diag) == True
+        assert throttler.should_publish(diag) == True
     
     def test_state_change_forces_publish(self):
         """测试状态变化强制发布"""
-        helper = DiagnosticsPublishHelper(publish_rate=5)
+        throttler = DiagnosticsThrottler(publish_rate=5)
         
         # 首次发布
-        assert helper.should_publish({'state': 1}) == True
+        assert throttler.should_publish({'state': 1}) == True
         
         # 状态变化，应该发布
-        assert helper.should_publish({'state': 2}) == True
+        assert throttler.should_publish({'state': 2}) == True
         
         # 状态不变，不发布
-        assert helper.should_publish({'state': 2}) == False
+        assert throttler.should_publish({'state': 2}) == False
     
     def test_force_publish(self):
         """测试强制发布"""
-        helper = DiagnosticsPublishHelper(publish_rate=5)
+        throttler = DiagnosticsThrottler(publish_rate=5)
         diag = {'state': 1}
         
         # 首次发布
-        assert helper.should_publish(diag) == True
+        assert throttler.should_publish(diag) == True
         
         # 强制发布
-        assert helper.should_publish(diag, force=True) == True
-        assert helper.should_publish(diag, force=True) == True
+        assert throttler.should_publish(diag, force=True) == True
+        assert throttler.should_publish(diag, force=True) == True
     
     def test_reset(self):
         """测试重置"""
-        helper = DiagnosticsPublishHelper(publish_rate=5)
+        throttler = DiagnosticsThrottler(publish_rate=5)
         diag = {'state': 1}
         
         # 首次发布
-        helper.should_publish(diag)
+        throttler.should_publish(diag)
         
         # 几次不发布
-        helper.should_publish(diag)
-        helper.should_publish(diag)
+        throttler.should_publish(diag)
+        throttler.should_publish(diag)
         
         # 重置
-        helper.reset()
+        throttler.reset()
         
         # 重置后首次应该发布
-        assert helper.should_publish(diag) == True
+        assert throttler.should_publish(diag) == True
     
     def test_get_current_state(self):
         """测试获取当前状态"""
-        helper = DiagnosticsPublishHelper(publish_rate=5)
+        throttler = DiagnosticsThrottler(publish_rate=5)
         
         # 初始状态为 None
-        assert helper.get_current_state() is None
+        assert throttler.get_current_state() is None
         
         # 发布后状态更新
-        helper.should_publish({'state': 3})
-        assert helper.get_current_state() == 3
+        throttler.should_publish({'state': 3})
+        assert throttler.get_current_state() == 3
         
-        helper.should_publish({'state': 5})
-        assert helper.get_current_state() == 5
+        throttler.should_publish({'state': 5})
+        assert throttler.get_current_state() == 5
 
 
 class MockDiagnosticsMsg:

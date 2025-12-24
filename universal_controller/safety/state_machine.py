@@ -124,11 +124,21 @@ class StateMachine:
         """
         检查 MPC 是否可以恢复
         
-        使用两种策略的组合:
-        1. 绝对容错: 最近 N 次中允许最多 tolerance 次失败
-        2. 比例要求: 成功率必须达到 mpc_recovery_success_ratio
+        使用两种互补策略的组合:
+        1. 绝对容错 (tolerance): 最近 N 次中允许最多 tolerance 次失败
+           - 目的: 确保最近的表现稳定，没有连续失败
+           - 默认 tolerance=0 表示最近 N 次必须全部成功
+        2. 比例要求 (success_ratio): 整体成功率必须达到阈值
+           - 目的: 确保整体表现良好，不是偶然成功
+           - 默认 0.8 表示需要 80% 的成功率
         
-        两个条件都满足才允许恢复，确保恢复决策的稳健性
+        两个条件都满足才允许恢复，确保恢复决策的稳健性。
+        
+        设计说明:
+        - tolerance 和 success_ratio 应该配置为互补关系
+        - 例如: tolerance=0, success_ratio=0.8 表示:
+          "最近 5 次必须全部成功，且整体成功率 >= 80%"
+        - 这比单一条件更严格，避免 MPC 在不稳定状态下恢复
         """
         history_len = len(self._mpc_success_history)
         if history_len < self.mpc_recovery_history_min:

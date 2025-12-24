@@ -3,7 +3,11 @@ from .enums import ControllerState, TrajectoryMode, TransformStatus, HeadingMode
 from .data_types import (
     Header, Point3D, Twist3D, Trajectory, EstimatorOutput, ControlOutput,
     ConsistencyResult, SafetyDecision, MPCHealthStatus, TimeoutStatus,
-    AttitudeCommand, DiagnosticsV2, Odometry, Imu, TrajectoryDefaults
+    AttitudeCommand, DiagnosticsV2, Odometry, Imu, TrajectoryDefaults,
+    # TF2 相关数据类型
+    Vector3, Quaternion, Transform, TransformStamped,
+    # ROS geometry_msgs 兼容类型
+    Pose, Twist, PoseWithCovariance, TwistWithCovariance,
 )
 from .diagnostics_input import DiagnosticsInput
 from .interfaces import (

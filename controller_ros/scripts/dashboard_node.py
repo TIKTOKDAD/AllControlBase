@@ -18,18 +18,11 @@ Dashboard ROS 节点 - 可视化监控界面
 import sys
 import os
 
-# 添加 catkin devel 路径 - 用于导入 controller_ros.msg
-_devel_path = '/home/oamr/turtlebot_ws/devel/lib/python3/dist-packages'
-if os.path.exists(_devel_path):
-    sys.path.insert(0, _devel_path)
-
-# 确保能找到 universal_controller 模块
-# 方法1: 如果 universal_controller 在 PYTHONPATH 中
-# 方法2: 如果在同一工作空间，添加相对路径
+# 设置 Python 路径 (使用统一的路径设置模块)
 _script_dir = os.path.dirname(os.path.abspath(__file__))
-_workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(_script_dir)))
-if os.path.exists(os.path.join(_workspace_root, 'universal_controller')):
-    sys.path.insert(0, _workspace_root)
+sys.path.insert(0, _script_dir)
+from setup_paths import setup_controller_ros_paths
+setup_controller_ros_paths()
 
 import rospy
 from PyQt5.QtWidgets import QApplication

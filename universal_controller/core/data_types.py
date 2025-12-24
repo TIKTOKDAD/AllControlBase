@@ -514,3 +514,35 @@ class TransformStamped:
     header: Header = field(default_factory=Header)
     child_frame_id: str = ""
     transform: Transform = field(default_factory=Transform)
+
+
+# =============================================================================
+# ROS geometry_msgs 兼容数据类型
+# =============================================================================
+
+@dataclass
+class Pose:
+    """位姿 (兼容 geometry_msgs/Pose)"""
+    position: Point3D = field(default_factory=lambda: Point3D(0, 0, 0))
+    orientation: Quaternion = field(default_factory=Quaternion)
+
+
+@dataclass
+class Twist:
+    """速度 (兼容 geometry_msgs/Twist)"""
+    linear: Vector3 = field(default_factory=Vector3)
+    angular: Vector3 = field(default_factory=Vector3)
+
+
+@dataclass
+class PoseWithCovariance:
+    """带协方差的位姿 (兼容 geometry_msgs/PoseWithCovariance)"""
+    pose: Pose = field(default_factory=Pose)
+    covariance: list = field(default_factory=lambda: [0.0] * 36)
+
+
+@dataclass
+class TwistWithCovariance:
+    """带协方差的速度 (兼容 geometry_msgs/TwistWithCovariance)"""
+    twist: Twist = field(default_factory=Twist)
+    covariance: list = field(default_factory=lambda: [0.0] * 36)

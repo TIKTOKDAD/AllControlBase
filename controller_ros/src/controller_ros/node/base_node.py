@@ -23,7 +23,7 @@ from universal_controller.core.enums import ControllerState, PlatformType
 
 from ..bridge import ControllerBridge
 from ..io.data_manager import DataManager
-from ..utils import TimeSync
+from ..utils import TimeSync, TF2InjectionManager
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ class ControllerNodeBase(ABC):
         self._data_manager: Optional[DataManager] = None
         self._time_sync: Optional[TimeSync] = None
         self._tf_bridge: Any = None
+        self._tf2_injection_manager: Optional[TF2InjectionManager] = None
         
         # 状态
         self._waiting_for_data = True
@@ -74,11 +75,6 @@ class ControllerNodeBase(ABC):
         # 紧急停止状态
         self._emergency_stop_requested = False
         self._emergency_stop_time: Optional[float] = None
-        
-        # TF2 注入状态
-        self._tf2_injected = False
-        self._tf2_injection_attempted = False
-        self._tf2_retry_counter = 0
         
         # 姿态控制状态 (四旋翼平台)
         self._is_quadrotor = False
@@ -99,8 +95,11 @@ class ControllerNodeBase(ABC):
         # 检查是否为四旋翼平台
         self._is_quadrotor = platform_config.get('type') == PlatformType.QUADROTOR
         
-        # 2. 创建数据管理器
-        self._data_manager = DataManager(get_time_func=self._get_time)
+        # 2. 创建数据管理器（带时钟跳变回调）
+        self._data_manager = DataManager(
+            get_time_func=self._get_time,
+            on_clock_jump=self._on_clock_jump
+        )
         
         # 3. 创建控制器桥接
         self._controller_bridge = ControllerBridge(self._params)
@@ -116,6 +115,21 @@ class ControllerNodeBase(ABC):
         # 5. 设置诊断回调
         self._controller_bridge.set_diagnostics_callback(self._on_diagnostics)
     
+    def _on_clock_jump(self, event) -> None:
+        """
+        时钟跳变回调
+        
+        Args:
+            event: ClockJumpEvent 对象
+        """
+        if event.is_backward:
+            self._log_warn(
+                f"Clock jumped backward by {abs(event.jump_delta):.3f}s. "
+                f"Waiting for fresh sensor data before resuming control."
+            )
+            # 可以在这里触发控制器重置或其他安全措施
+            self._waiting_for_data = True
+    
     def _inject_tf2_to_controller(self, blocking: bool = True):
         """
         将 TF2 注入到坐标变换器
@@ -124,86 +138,30 @@ class ControllerNodeBase(ABC):
             blocking: 是否阻塞等待 TF2 buffer 预热
         """
         if self._tf_bridge is None:
+            self._log_info("TF bridge is None, skipping TF2 injection")
             return
         
-        if not getattr(self._tf_bridge, 'is_initialized', False):
-            self._log_info("TF2 not available, using fallback coordinate transform")
+        if self._controller_bridge is None or self._controller_bridge.manager is None:
+            self._log_warn("Controller bridge not ready, cannot inject TF2")
             return
         
-        manager = self._controller_bridge.manager
-        if manager is None:
-            return
-        
-        coord_transformer = getattr(manager, 'coord_transformer', None)
-        if coord_transformer is None:
-            self._log_info("ControllerManager has no coord_transformer, TF2 injection skipped")
-            return
-        
-        # 获取 TF2 配置
+        # 创建 TF2 注入管理器
         tf_config = self._params.get('tf', {})
-        source_frame = tf_config.get('source_frame', 'base_link')
-        target_frame = tf_config.get('target_frame', 'odom')
-        max_wait_sec = tf_config.get('buffer_warmup_timeout_sec', 2.0)
-        wait_interval = tf_config.get('buffer_warmup_interval_sec', 0.1)
+        self._tf2_injection_manager = TF2InjectionManager(
+            tf_bridge=self._tf_bridge,
+            controller_manager=self._controller_bridge.manager,
+            config=tf_config,
+            log_info=self._log_info,
+            log_warn=self._log_warn,
+        )
         
-        can_transform_func = getattr(self._tf_bridge, 'can_transform', None)
-        tf2_ready = False
-        
-        if can_transform_func is not None:
-            if blocking:
-                start_time = time.time()
-                while time.time() - start_time < max_wait_sec:
-                    try:
-                        if can_transform_func(target_frame, source_frame, timeout_sec=0.01):
-                            self._log_info(
-                                f"TF2 buffer ready: {source_frame} -> {target_frame} "
-                                f"(waited {time.time() - start_time:.2f}s)"
-                            )
-                            tf2_ready = True
-                            break
-                    except Exception:
-                        pass
-                    time.sleep(wait_interval)
-                
-                if not tf2_ready:
-                    self._log_warn(
-                        f"TF2 buffer not ready after {max_wait_sec}s, "
-                        f"will use fallback until TF becomes available"
-                    )
-            else:
-                try:
-                    tf2_ready = can_transform_func(target_frame, source_frame, timeout_sec=0.01)
-                except Exception:
-                    tf2_ready = False
-        
-        self._tf2_injection_attempted = True
-        
-        if hasattr(coord_transformer, 'set_tf2_lookup_callback'):
-            lookup_func = getattr(self._tf_bridge, 'lookup_transform', None)
-            if lookup_func is not None:
-                coord_transformer.set_tf2_lookup_callback(lookup_func)
-                self._tf2_injected = True
-                if tf2_ready:
-                    self._log_info("TF2 successfully injected to coordinate transformer")
-                else:
-                    self._log_info(
-                        "TF2 callback injected, but buffer not ready yet. "
-                        "Will use fallback until TF data arrives."
-                    )
-            else:
-                self._log_warn("TF bridge has no lookup_transform method")
-        else:
-            self._log_warn("Coordinate transformer does not support TF2 injection")
+        # 执行注入
+        self._tf2_injection_manager.inject(blocking=blocking)
     
     def _try_tf2_reinjection(self):
         """尝试重新注入 TF2（运行时调用）"""
-        if self._tf2_injected:
-            return
-        if self._tf_bridge is None:
-            return
-        if not getattr(self._tf_bridge, 'is_initialized', False):
-            return
-        self._inject_tf2_to_controller(blocking=False)
+        if self._tf2_injection_manager is not None:
+            self._tf2_injection_manager.try_reinjection_if_needed()
     
     # ==================== 紧急停止处理 ====================
     
@@ -237,6 +195,63 @@ class ControllerNodeBase(ABC):
         return self._emergency_stop_requested
     
     # ==================== 姿态控制接口 ====================
+    
+    def _try_publish_attitude_command(self, cmd: ControlOutput) -> None:
+        """
+        尝试获取状态并发布姿态命令 (仅四旋翼平台)
+        
+        安全地从状态估计器获取状态数组，处理各种边界情况。
+        
+        Args:
+            cmd: 速度控制命令
+        """
+        try:
+            manager = self._controller_bridge.manager
+            if manager is None:
+                return
+            
+            state_estimator = getattr(manager, 'state_estimator', None)
+            if state_estimator is None:
+                return
+            
+            # 安全获取状态
+            get_state_func = getattr(state_estimator, 'get_state', None)
+            if get_state_func is None:
+                return
+            
+            state_result = get_state_func()
+            if state_result is None:
+                return
+            
+            # 获取状态数组，支持多种返回格式
+            state_array = None
+            if hasattr(state_result, 'state'):
+                state_array = state_result.state
+            elif hasattr(state_result, 'x'):
+                state_array = state_result.x
+            elif isinstance(state_result, (list, tuple)):
+                import numpy as np
+                state_array = np.array(state_result)
+            
+            if state_array is None:
+                return
+            
+            # 验证状态数组有效性
+            import numpy as np
+            if not isinstance(state_array, np.ndarray):
+                try:
+                    state_array = np.array(state_array)
+                except (TypeError, ValueError):
+                    return
+            
+            if state_array.size == 0 or np.any(np.isnan(state_array)):
+                return
+            
+            self._compute_and_publish_attitude(cmd, state_array)
+            
+        except Exception as e:
+            # 姿态命令发布失败不应影响主控制循环
+            logger.debug(f"Failed to publish attitude command: {e}")
     
     def _compute_and_publish_attitude(self, cmd: ControlOutput, state_array) -> Optional[AttitudeCommand]:
         """
@@ -343,12 +358,8 @@ class ControllerNodeBase(ABC):
             self._publish_stop_cmd()
             return None
         
-        # 0.2 尝试 TF2 重新注入
-        if not self._tf2_injected and self._tf2_injection_attempted:
-            self._tf2_retry_counter += 1
-            if self._tf2_retry_counter >= 50:
-                self._tf2_retry_counter = 0
-                self._try_tf2_reinjection()
+        # 0.2 尝试 TF2 重新注入（由 TF2InjectionManager 管理）
+        self._try_tf2_reinjection()
         
         # 1. 获取最新数据
         odom = self._data_manager.get_latest_odom()
@@ -382,12 +393,7 @@ class ControllerNodeBase(ABC):
             
             # 5. 四旋翼平台：计算并发布姿态命令
             if self._is_quadrotor and self._controller_bridge.manager is not None:
-                state_output = self._controller_bridge.manager.state_estimator
-                if state_output is not None:
-                    state_result = state_output.get_state()
-                    if state_result is not None and hasattr(state_result, 'state'):
-                        state_array = state_result.state
-                        self._compute_and_publish_attitude(cmd, state_array)
+                self._try_publish_attitude_command(cmd)
             
             return cmd
         except Exception as e:
@@ -432,10 +438,17 @@ class ControllerNodeBase(ABC):
             'transform': {
                 'tf2_available': getattr(self._tf_bridge, 'is_initialized', False) 
                                  if self._tf_bridge else False,
-                'tf2_injected': self._tf2_injected,
+                'tf2_injected': self._is_tf2_injected,
             },
             'emergency_stop': self._emergency_stop_requested,
         }
+    
+    @property
+    def _is_tf2_injected(self) -> bool:
+        """检查 TF2 是否已注入"""
+        if self._tf2_injection_manager is not None:
+            return self._tf2_injection_manager.is_injected
+        return False
     
     def _on_diagnostics(self, diag: Dict[str, Any]):
         """诊断回调"""
@@ -445,7 +458,7 @@ class ControllerNodeBase(ABC):
             getattr(self._tf_bridge, 'is_initialized', False) 
             if self._tf_bridge else False
         )
-        diag['transform']['tf2_injected'] = self._tf2_injected
+        diag['transform']['tf2_injected'] = self._is_tf2_injected
         
         # 添加紧急停止状态
         diag['emergency_stop'] = self._emergency_stop_requested
@@ -460,9 +473,10 @@ class ControllerNodeBase(ABC):
             self._controller_bridge.reset()
         if self._data_manager is not None:
             self._data_manager.clear()
+        if self._tf2_injection_manager is not None:
+            self._tf2_injection_manager.reset()
         self._waiting_for_data = True
         self._consecutive_errors = 0
-        self._tf2_retry_counter = 0
         self._clear_emergency_stop()
         self._last_attitude_cmd = None
         self._log_info('Controller reset')

@@ -109,6 +109,7 @@ def test_diagnostics_v2_to_ros_msg():
         tracking_heading_error=0.05,
         tracking_prediction_error=0.0,
         transform_tf2_available=True,
+        transform_tf2_injected=False,
         transform_fallback_duration_ms=0.0,
         transform_accumulated_drift=0.0,
         timeout_odom=False,

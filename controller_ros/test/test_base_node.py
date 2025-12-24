@@ -6,8 +6,10 @@ import sys
 import os
 import time
 
-# 添加 src 目录到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# 添加 src 目录和 test 目录到路径
+_test_dir = os.path.dirname(__file__)
+sys.path.insert(0, os.path.join(_test_dir, '..', 'src'))
+sys.path.insert(0, _test_dir)
 
 from typing import Dict, Any, Optional
 from universal_controller.core.data_types import ControlOutput
@@ -325,25 +327,8 @@ if __name__ == '__main__':
 
 # ==================== TF2 注入优化测试 ====================
 
-class MockTFBridge:
-    """模拟 TF Bridge"""
-    
-    def __init__(self, initialized: bool = True, can_transform_result: bool = True):
-        self.is_initialized = initialized
-        self._can_transform_result = can_transform_result
-        self._lookup_callback_set = False
-        self._can_transform_call_count = 0
-    
-    def can_transform(self, target_frame: str, source_frame: str, timeout_sec: float = 0.01) -> bool:
-        self._can_transform_call_count += 1
-        return self._can_transform_result
-    
-    def lookup_transform(self, target_frame: str, source_frame: str, 
-                        time=None, timeout_sec: float = 0.01):
-        return {
-            'translation': (0.0, 0.0, 0.0),
-            'rotation': (0.0, 0.0, 0.0, 1.0)
-        }
+# 导入共享的 Mock 类 (从 conftest.py)
+from conftest import MockTFBridge
 
 
 def test_tf2_injection_blocking_success():

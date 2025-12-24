@@ -26,14 +26,7 @@ class AttitudeAdapter(IMsgConverter):
         Args:
             get_time_func: 获取当前时间的函数，用于支持仿真时间
         """
-        self._get_time_func = get_time_func
-    
-    def _get_current_time(self) -> float:
-        """获取当前时间（秒）"""
-        if self._get_time_func is not None:
-            return self._get_time_func()
-        import time
-        return time.time()
+        super().__init__(get_time_func)
     
     def to_uc(self, ros_msg: Any) -> UcAttitudeCommand:
         """ROS AttitudeCmd → UC AttitudeCommand"""

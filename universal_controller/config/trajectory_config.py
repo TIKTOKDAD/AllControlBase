@@ -21,8 +21,9 @@ TRAJECTORY_CONFIG = {
     'default_num_points': 20,         # 默认轨迹点数
     
     # 速度计算参数
-    # 注意: 此值应与 consistency.low_speed_thresh 保持一致
-    'low_speed_thresh': 0.1,          # 低速阈值 (m/s)，用于角速度计算
+    # 此值是低速阈值的唯一定义点
+    # consistency 模块会自动从这里读取，确保一致性
+    'low_speed_thresh': 0.1,          # 低速阈值 (m/s)，用于角速度计算和一致性检查
     
     # 轨迹验证参数
     'max_point_distance': 10.0,       # 相邻点最大距离 (m)

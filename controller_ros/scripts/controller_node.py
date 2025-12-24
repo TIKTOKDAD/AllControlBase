@@ -6,15 +6,11 @@
 import sys
 import os
 
-# 添加 src 目录到路径 (用于导入 controller_ros.node 等模块)
-_src_path = os.path.join(os.path.dirname(__file__), '..', 'src')
-sys.path.insert(0, _src_path)
-
-# 添加 catkin devel 路径 - 必须在 src 路径之后插入到最前面
-# 这样 controller_ros.msg 会从 devel 导入，而 controller_ros.node 等从 src 导入
-_devel_path = '/home/oamr/turtlebot_ws/devel/lib/python3/dist-packages'
-if os.path.exists(_devel_path):
-    sys.path.insert(0, _devel_path)
+# 设置 Python 路径 (使用统一的路径设置模块)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _script_dir)
+from setup_paths import setup_controller_ros_paths
+setup_controller_ros_paths()
 
 import rospy
 from typing import Dict, Any, Optional
@@ -45,7 +41,7 @@ from universal_controller.core.enums import ControllerState
 from controller_ros.node.base_node import ControllerNodeBase
 from controller_ros.io import DataManager
 from controller_ros.adapters import OutputAdapter, AttitudeAdapter
-from controller_ros.utils.diagnostics_publisher import fill_diagnostics_msg, DiagnosticsPublishHelper
+from controller_ros.utils.diagnostics_publisher import fill_diagnostics_msg, DiagnosticsThrottler
 from controller_ros.utils.ros_compat import TF2Compat, get_time_sec
 from controller_ros.utils.param_loader import ParamLoader
 
@@ -126,7 +122,7 @@ class ControllerNodeROS1(ControllerNodeBase):
         
         # 8. 初始化诊断发布辅助器
         diag_publish_rate = self._params.get('diagnostics', {}).get('publish_rate', 5)
-        self._diag_helper = DiagnosticsPublishHelper(publish_rate=diag_publish_rate)
+        self._diag_throttler = DiagnosticsThrottler(publish_rate=diag_publish_rate)
         
         # 9. 创建控制定时器
         control_rate = self._params.get('system', {}).get('ctrl_freq', 50)
@@ -464,17 +460,25 @@ class ControllerNodeROS1(ControllerNodeBase):
         state_msg.data = current_state
         self._state_pub.publish(state_msg)
         
-        # 使用辅助器判断是否发布诊断
-        if not self._diag_helper.should_publish(diag, force=force):
+        # 使用节流器判断是否发布诊断
+        if not self._diag_throttler.should_publish(diag, force=force):
             return
         
-        # 仅在诊断发布器可用时发布
+        # 仅在诊断发布器可用且消息类型可用时发布
         if self._diag_pub is None:
             return
         
-        msg = DiagnosticsV2()
-        fill_diagnostics_msg(msg, diag, get_time_func=lambda: rospy.Time.now())
-        self._diag_pub.publish(msg)
+        # 检查 DiagnosticsV2 消息类型是否可用
+        if DiagnosticsV2 is None:
+            return
+        
+        try:
+            msg = DiagnosticsV2()
+            fill_diagnostics_msg(msg, diag, get_time_func=lambda: rospy.Time.now())
+            self._diag_pub.publish(msg)
+        except Exception as e:
+            # 只在首次失败时记录错误，避免日志泛滥
+            rospy.logwarn_throttle(10.0, f"Failed to publish diagnostics: {e}")
     
     def _publish_attitude_cmd(self, attitude_cmd: AttitudeCommand):
         """发布姿态命令 (四旋翼平台)"""

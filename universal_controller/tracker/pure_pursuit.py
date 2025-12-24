@@ -1,6 +1,7 @@
 """Pure Pursuit 备用控制器"""
 from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
+import logging
 
 from ..core.interfaces import ITrajectoryTracker
 from ..core.data_types import Trajectory, ControlOutput, ConsistencyResult, Point3D
@@ -8,6 +9,8 @@ from ..core.enums import PlatformType, HeadingMode
 from ..core.ros_compat import normalize_angle, angle_difference
 from ..core.velocity_smoother import VelocitySmoother
 from ..config.default_config import PLATFORM_CONFIG
+
+logger = logging.getLogger(__name__)
 
 
 class PurePursuitController(ITrajectoryTracker):
@@ -466,8 +469,10 @@ class PurePursuitController(ITrajectoryTracker):
                     target_v = min(v_soft, self.v_max)
                 else:
                     target_v = self.v_max * self.default_speed_ratio
-            except (IndexError, TypeError, ValueError):
+            except (IndexError, TypeError, ValueError) as e:
                 # 数组形状不正确，使用默认值
+                # 记录调试日志以便排查数据格式问题
+                logger.debug(f"Velocity data format issue at index {target_idx}: {e}, using default speed")
                 target_v = self.v_max * self.default_speed_ratio
         else:
             target_v = self.v_max * self.default_speed_ratio

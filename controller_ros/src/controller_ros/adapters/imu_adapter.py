@@ -20,6 +20,10 @@ class ImuAdapter(IMsgConverter):
     注意: IMU 是输入数据，不需要 to_ros() 方法。
     """
     
+    def __init__(self):
+        """初始化 IMU 适配器"""
+        super().__init__()
+    
     def to_uc(self, ros_msg: Any) -> UcImu:
         """ROS Imu → UC Imu"""
         return UcImu(

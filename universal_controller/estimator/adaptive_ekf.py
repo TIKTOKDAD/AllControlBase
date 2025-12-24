@@ -11,9 +11,19 @@ from ..core.ros_compat import euler_from_quaternion, get_monotonic_time, normali
 
 # 四元数有效性检查常量
 # 单位四元数的范数平方应该为 1.0
-# 使用宽松的边界来容忍数值误差和传感器噪声
-QUATERNION_NORM_SQ_MIN = 0.5  # 范数平方下界 (范数 > 0.707)
-QUATERNION_NORM_SQ_MAX = 2.0  # 范数平方上界 (范数 < 1.414)
+# 
+# 设计说明：
+# - 四元数范数偏离 1.0 通常是由于数值累积误差或传感器噪声
+# - 正确的处理方式是：检测到非单位四元数时进行归一化
+# - 只有当四元数接近零向量（无法归一化）时才拒绝
+# 
+# 阈值选择：
+# - MIN: 0.01 (范数 > 0.1) - 低于此值认为四元数无效，无法可靠归一化
+# - MAX: 100.0 (范数 < 10) - 高于此值可能是数据错误，但仍可尝试归一化
+# 
+# 注意：euler_from_quaternion 函数内部会进行归一化，这里只是预检查
+QUATERNION_NORM_SQ_MIN = 0.01  # 范数平方下界 (范数 > 0.1)，低于此值无法可靠归一化
+QUATERNION_NORM_SQ_MAX = 100.0  # 范数平方上界 (范数 < 10)，高于此值可能是数据错误
 
 
 class AdaptiveEKFEstimator(IStateEstimator):

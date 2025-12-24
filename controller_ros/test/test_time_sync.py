@@ -36,6 +36,37 @@ class TestTimeSyncInit:
         assert max_ages['odom'] == 0.5
         assert max_ages['trajectory'] == 1.0
         assert max_ages['imu'] == 0.2
+    
+    def test_disabled_timeout_zero(self):
+        """测试禁用超时 (值为 0)"""
+        from controller_ros.utils import TimeSync
+        
+        sync = TimeSync(
+            max_odom_age_ms=100,
+            max_traj_age_ms=200,
+            max_imu_age_ms=0  # 禁用 IMU 超时
+        )
+        
+        assert sync.is_disabled('imu') == True
+        assert sync.is_disabled('odom') == False
+        assert sync.is_disabled('trajectory') == False
+        
+        max_ages = sync.get_max_ages()
+        assert max_ages['imu'] is None
+    
+    def test_disabled_timeout_negative(self):
+        """测试禁用超时 (负值)"""
+        from controller_ros.utils import TimeSync
+        
+        sync = TimeSync(
+            max_odom_age_ms=100,
+            max_traj_age_ms=-1,  # 禁用轨迹超时
+            max_imu_age_ms=-100  # 禁用 IMU 超时
+        )
+        
+        assert sync.is_disabled('trajectory') == True
+        assert sync.is_disabled('imu') == True
+        assert sync.is_disabled('odom') == False
 
 
 class TestCheckFreshness:
@@ -131,6 +162,30 @@ class TestCheckFreshness:
         assert timeouts['odom_timeout'] == True
         assert timeouts['traj_timeout'] == False
         assert timeouts['imu_timeout'] == False
+    
+    def test_disabled_never_timeout(self):
+        """测试禁用的数据源永远不超时"""
+        from controller_ros.utils import TimeSync
+        
+        sync = TimeSync(max_odom_age_ms=100, max_traj_age_ms=200, max_imu_age_ms=0)  # IMU 禁用
+        ages = {'odom': 0.05, 'trajectory': 0.1, 'imu': 999.0}  # IMU 年龄很大
+        
+        timeouts = sync.check_freshness(ages)
+        
+        assert timeouts['odom_timeout'] == False
+        assert timeouts['traj_timeout'] == False
+        assert timeouts['imu_timeout'] == False  # 禁用的永远不超时
+    
+    def test_disabled_missing_data(self):
+        """测试禁用的数据源缺失时不超时"""
+        from controller_ros.utils import TimeSync
+        
+        sync = TimeSync(max_odom_age_ms=100, max_traj_age_ms=200, max_imu_age_ms=-1)  # IMU 禁用
+        ages = {'odom': 0.05, 'trajectory': 0.1}  # 没有 IMU 数据
+        
+        timeouts = sync.check_freshness(ages)
+        
+        assert timeouts['imu_timeout'] == False  # 禁用的永远不超时
 
 
 class TestIsAllFresh:
@@ -181,6 +236,16 @@ class TestIsAllFresh:
         
         # 空列表，所有数据都不是必需的
         assert sync.is_all_fresh(ages, required=[]) == True
+    
+    def test_disabled_in_required(self):
+        """测试禁用的数据源在必需列表中"""
+        from controller_ros.utils import TimeSync
+        
+        sync = TimeSync(max_odom_age_ms=100, max_traj_age_ms=200, max_imu_age_ms=0)  # IMU 禁用
+        ages = {'odom': 0.05, 'trajectory': 0.1}  # 没有 IMU 数据
+        
+        # 即使 IMU 在必需列表中，但因为被禁用，所以不影响结果
+        assert sync.is_all_fresh(ages, required=['odom', 'imu']) == True
 
 
 class TestEdgeCases:
@@ -266,6 +331,51 @@ class TestGetMaxAges:
         
         # 修改返回值不应影响内部状态
         assert ages2['odom'] == 0.1
+    
+    def test_disabled_returns_none(self):
+        """测试禁用的数据源返回 None"""
+        from controller_ros.utils import TimeSync
+        
+        sync = TimeSync(max_odom_age_ms=100, max_traj_age_ms=0, max_imu_age_ms=-1)
+        
+        max_ages = sync.get_max_ages()
+        
+        assert max_ages['odom'] == 0.1
+        assert max_ages['trajectory'] is None
+        assert max_ages['imu'] is None
+
+
+class TestIsDisabled:
+    """is_disabled 测试"""
+    
+    def test_enabled_sources(self):
+        """测试启用的数据源"""
+        from controller_ros.utils import TimeSync
+        
+        sync = TimeSync(max_odom_age_ms=100, max_traj_age_ms=200, max_imu_age_ms=50)
+        
+        assert sync.is_disabled('odom') == False
+        assert sync.is_disabled('trajectory') == False
+        assert sync.is_disabled('imu') == False
+    
+    def test_disabled_sources(self):
+        """测试禁用的数据源"""
+        from controller_ros.utils import TimeSync
+        
+        sync = TimeSync(max_odom_age_ms=0, max_traj_age_ms=-1, max_imu_age_ms=-100)
+        
+        assert sync.is_disabled('odom') == True
+        assert sync.is_disabled('trajectory') == True
+        assert sync.is_disabled('imu') == True
+    
+    def test_unknown_source(self):
+        """测试未知数据源"""
+        from controller_ros.utils import TimeSync
+        
+        sync = TimeSync()
+        
+        # 未知数据源默认返回 False
+        assert sync.is_disabled('unknown') == False
 
 
 if __name__ == '__main__':

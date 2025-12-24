@@ -24,10 +24,11 @@ cmd_vel 适配器 - 将 UnifiedCmd 转换为 TurtleBot 的 cmd_vel
 import sys
 import os
 
-# 添加 catkin devel 路径 - 用于导入 controller_ros.msg
-_devel_path = '/home/oamr/turtlebot_ws/devel/lib/python3/dist-packages'
-if os.path.exists(_devel_path):
-    sys.path.insert(0, _devel_path)
+# 设置 Python 路径 (使用统一的路径设置模块)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _script_dir)
+from setup_paths import setup_controller_ros_paths
+setup_controller_ros_paths()
 
 import rospy
 from geometry_msgs.msg import Twist
