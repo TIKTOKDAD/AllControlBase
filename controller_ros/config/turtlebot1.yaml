@@ -49,15 +49,15 @@ tf:
   buffer_warmup_interval_sec: 0.2 # TF buffer 预热检查间隔
 
 # =============================================================================
-# 超时配置 (适应 TurtleBot1 较低传感器频率)
+# 超时配置 (适应 TurtleBot1 较低传感器频率 + 1Hz 轨迹输出)
 # 注意: 0 或负数表示禁用该数据源的超时检测
 # =============================================================================
 watchdog:
   odom_timeout_ms: 500            # 里程计超时 (ms) - 放宽
-  traj_timeout_ms: 1000           # 轨迹超时 (ms) - 放宽
-  traj_grace_ms: 500              # 轨迹超时宽限期 (ms) - 放宽，适应低频传感器
+  traj_timeout_ms: 2500           # 轨迹超时 (ms) - 2.5倍轨迹周期，适应1Hz网络输出
+  traj_grace_ms: 1500             # 轨迹超时宽限期 (ms) - 放宽，适应1Hz轨迹
   imu_timeout_ms: -1              # IMU 超时 (ms) - 禁用 (TurtleBot1 无 IMU)
-  startup_grace_ms: 3000          # 启动宽限期 (ms) - 延长
+  startup_grace_ms: 5000          # 启动宽限期 (ms) - 延长到5秒，等待首条轨迹
 
 # =============================================================================
 # 诊断配置
@@ -67,11 +67,12 @@ diagnostics:
 
 # =============================================================================
 # MPC 配置 (针对 TurtleBot1 优化，使用 ACADOS 高性能求解器)
+# 注意: 预测时域已调整以匹配网络输出 8 个轨迹点
 # =============================================================================
 mpc:
-  horizon: 15                     # MPC 预测时域 (1.5秒)
-  horizon_degraded: 8             # 降级模式预测时域 (0.8秒)
-  dt: 0.1                         # MPC 时间步长 (秒)
+  horizon: 7                      # MPC 预测时域 - 必须 < 轨迹点数(8)，留1点余量
+  horizon_degraded: 4             # 降级模式预测时域
+  dt: 0.5                         # MPC 时间步长 (秒) - 匹配轨迹点间隔，7步 = 3.5秒预测
   
   # 代价函数权重 (针对 TurtleBot1 调优)
   weights:
@@ -89,12 +90,12 @@ mpc:
     integrator_type: "ERK"        # 积分器类型 (显式 Runge-Kutta)
     nlp_solver_type: "SQP_RTI"    # NLP 求解器类型 (实时迭代，最快)
   
-  # MPC 健康监控参数
+  # MPC 健康监控参数 (放宽阈值，适应 TurtleBot1 较低控制频率)
   health_monitor:
-    time_warning_thresh_ms: 10    # 求解时间警告阈值 (ms)
-    time_critical_thresh_ms: 20   # 求解时间临界阈值 (ms)
-    time_recovery_thresh_ms: 8    # 求解时间恢复阈值 (ms)
-    consecutive_warning_limit: 5  # 连续警告次数限制 (放宽)
+    time_warning_thresh_ms: 20    # 求解时间警告阈值 (ms) - 放宽
+    time_critical_thresh_ms: 40   # 求解时间临界阈值 (ms) - 放宽
+    time_recovery_thresh_ms: 15   # 求解时间恢复阈值 (ms) - 放宽
+    consecutive_warning_limit: 10 # 连续警告次数限制 - 更宽容
   
   # Fallback 求解器参数 (ACADOS 失败时使用)
   fallback:
