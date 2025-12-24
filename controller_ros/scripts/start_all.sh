@@ -5,7 +5,7 @@ SESSION="turtlebot"
 
 tmux kill-session -t $SESSION 2>/dev/null
 
-tmux new-session -d -s $SESSION
+tmux new-session -d -s $SESSION -c ~
 
 # 创建 4 个窗格
 tmux split-window -t $SESSION
