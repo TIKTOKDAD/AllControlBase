@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<!--
+  轨迹可视化 Launch 文件
+  
+  功能: 在相机图像上实时显示网络输出的轨迹点
+  
+  使用方法:
+    roslaunch controller_ros trajectory_visualizer.launch
+    roslaunch controller_ros trajectory_visualizer.launch show_window:=false
+-->
+<launch>
+  <!-- ========== 参数 ========== -->
+  <arg name="image_topic" default="/usb_cam/image_raw" doc="相机图像话题"/>
+  <arg name="trajectory_topic" default="/nn/local_trajectory" doc="轨迹话题"/>
+  <arg name="output_topic" default="/trajectory_overlay/image" doc="输出图像话题"/>
+  <arg name="show_window" default="true" doc="是否显示 OpenCV 窗口"/>
+  <arg name="camera_frame" default="usb_cam" doc="相机坐标系"/>
+  <arg name="base_frame" default="base_footprint" doc="机器人基准坐标系"/>
+  
+  <!-- 相机内参 (来自 Kinect 标定文件) -->
+  <arg name="fx" default="525.0" doc="焦距 fx"/>
+  <arg name="fy" default="525.0" doc="焦距 fy"/>
+  <arg name="cx" default="319.5" doc="主点 cx"/>
+  <arg name="cy" default="239.5" doc="主点 cy"/>
+  
+  <!-- 相机安装位置 (相对于 base_link) -->
+  <arg name="cam_x" default="0.08" doc="相机前方位置 (m)"/>
+  <arg name="cam_y" default="0.0" doc="相机左右位置 (m)"/>
+  <arg name="cam_z" default="0.50" doc="相机高度 (m)"/>
+  <arg name="cam_pitch" default="0.0" doc="相机俯仰角 (rad)"/>
+  
+  <!-- ========== 静态 TF: base_link -> usb_cam ========== -->
+  <!-- 
+    参数顺序: x y z yaw pitch roll parent_frame child_frame
+    注意: 这里发布的是相机坐标系，不是光学坐标系
+  -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="usb_cam_tf_publisher"
+        args="$(arg cam_x) $(arg cam_y) $(arg cam_z) 0 $(arg cam_pitch) 0 base_link usb_cam" />
+  
+  <!-- ========== 轨迹可视化节点 ========== -->
+  <node pkg="controller_ros" type="trajectory_visualizer.py" name="trajectory_visualizer" 
+        output="screen">
+    <param name="image_topic" value="$(arg image_topic)"/>
+    <param name="trajectory_topic" value="$(arg trajectory_topic)"/>
+    <param name="output_topic" value="$(arg output_topic)"/>
+    <param name="camera_frame" value="$(arg camera_frame)"/>
+    <param name="base_frame" value="$(arg base_frame)"/>
+    <param name="show_window" value="$(arg show_window)"/>
+    <param name="fx" value="$(arg fx)"/>
+    <param name="fy" value="$(arg fy)"/>
+    <param name="cx" value="$(arg cx)"/>
+    <param name="cy" value="$(arg cy)"/>
+  </node>
+</launch>
