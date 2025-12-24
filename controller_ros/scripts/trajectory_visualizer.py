@@ -37,11 +37,17 @@ class TrajectoryVisualizer:
         self.camera_frame = rospy.get_param('~camera_frame', 'usb_cam')
         self.base_frame = rospy.get_param('~base_frame', 'base_footprint')
         
-        # 相机内参 (估算值，640x480 USB 摄像头)
-        self.fx = rospy.get_param('~fx', 500.0)
-        self.fy = rospy.get_param('~fy', 500.0)
-        self.cx = rospy.get_param('~cx', 320.0)
-        self.cy = rospy.get_param('~cy', 240.0)
+        # 相机内参
+        self.fx = rospy.get_param('~fx', 525.0)
+        self.fy = rospy.get_param('~fy', 525.0)
+        self.cx = rospy.get_param('~cx', 319.5)
+        self.cy = rospy.get_param('~cy', 239.5)
+        
+        # 相机外参 (相对于 base_footprint)
+        self.cam_x = rospy.get_param('~cam_x', 0.08)    # 前方距离 (m)
+        self.cam_y = rospy.get_param('~cam_y', 0.0)     # 左右偏移 (m)
+        self.cam_z = rospy.get_param('~cam_z', 0.50)    # 高度 (m)
+        self.cam_pitch = rospy.get_param('~cam_pitch', 0.0)  # 俯仰角 (rad)
         
         # 显示参数
         self.show_window = rospy.get_param('~show_window', True)
@@ -127,33 +133,65 @@ class TrajectoryVisualizer:
         return image
     
     def project_points_manual(self, points, image_shape):
-        """手动投影 - 简化版，起始点固定在底部中间"""
+        """
+        精准 3D→2D 投影 - 将地面轨迹点投影到图像平面
+        
+        原理:
+        1. 轨迹点在 base_footprint 坐标系 (x前, y左, z上, 原点在地面两轮中心)
+        2. 转换到相机坐标系 (需要知道相机的位置和姿态)
+        3. 使用针孔相机模型投影到图像平面
+        """
         h, w = image_shape[:2]
         points_2d = []
         
-        # 图像坐标系参数
-        # 起始点 (0,0) 固定在底部中间
-        origin_u = w // 2  # 水平中心
-        origin_v = h - 30  # 底部留一点边距
+        # 使用配置的相机外参
+        cam_x = self.cam_x
+        cam_y = self.cam_y
+        cam_z = self.cam_z
+        cam_pitch = self.cam_pitch
         
-        # 缩放因子 (米 -> 像素)
-        # 调整这个值来改变轨迹在图像中的大小
-        scale_x = 300  # 前方距离缩放 (越大轨迹越往上)
-        scale_y = 300  # 左右距离缩放 (越大轨迹越宽)
+        # 预计算旋转矩阵 (绕 y 轴旋转 pitch)
+        cos_p = np.cos(cam_pitch)
+        sin_p = np.sin(cam_pitch)
         
         for pt in points:
-            # 轨迹坐标系: x前方, y左方
-            # 图像坐标系: u右方, v下方
-            # 转换: x前 -> v上 (减小), y左 -> u左 (减小)
+            # ============ Step 1: base_footprint → 相机坐标系 ============
+            # 轨迹点相对于相机的位置 (在 base_footprint 坐标系下)
+            dx = pt.x - cam_x  # 前方距离
+            dy = pt.y - cam_y  # 左右距离
+            dz = pt.z - cam_z  # 高度差 (轨迹点在地面, z=0, 所以 dz = -cam_z)
             
-            u = int(origin_u - pt.y * scale_y)  # y左为正 -> u减小
-            v = int(origin_v - pt.x * scale_x)  # x前为正 -> v减小 (往上)
+            # ============ Step 2: 转换到相机光学坐标系 ============
+            # 相机光学坐标系: x右, y下, z前
+            # base_footprint: x前, y左, z上
             
-            # 限制在图像范围内
-            u = max(0, min(w - 1, u))
-            v = max(0, min(h - 1, v))
+            # 先应用俯仰旋转 (绕相机的 y 轴, 即 base 的 -y 轴)
+            # 旋转后: x' = x*cos(p) + z*sin(p), z' = -x*sin(p) + z*cos(p)
+            dx_rot = dx * cos_p - dz * sin_p
+            dz_rot = dx * sin_p + dz * cos_p
             
-            points_2d.append((u, v))
+            # 坐标系转换: base → camera optical
+            x_cam = -dy        # base的y左 → cam的x右 (取负)
+            y_cam = -dz_rot    # base的z上 → cam的y下 (取负)
+            z_cam = dx_rot     # base的x前 → cam的z前
+            
+            # ============ Step 3: 针孔相机投影 ============
+            # 只投影相机前方的点
+            if z_cam > 0.01:  # 至少 1cm 前方
+                # 投影公式: u = fx * x/z + cx, v = fy * y/z + cy
+                u = self.fx * x_cam / z_cam + self.cx
+                v = self.fy * y_cam / z_cam + self.cy
+                
+                # 转为整数像素坐标
+                u_int = int(round(u))
+                v_int = int(round(v))
+                
+                # 检查是否在图像范围内 (允许稍微超出)
+                if -50 <= u_int < w + 50 and -50 <= v_int < h + 50:
+                    # 限制到图像边界
+                    u_int = max(0, min(w - 1, u_int))
+                    v_int = max(0, min(h - 1, v_int))
+                    points_2d.append((u_int, v_int))
         
         return points_2d
     

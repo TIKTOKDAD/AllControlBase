@@ -46,9 +46,15 @@
     <param name="camera_frame" value="$(arg camera_frame)"/>
     <param name="base_frame" value="$(arg base_frame)"/>
     <param name="show_window" value="$(arg show_window)"/>
+    <!-- 相机内参 -->
     <param name="fx" value="$(arg fx)"/>
     <param name="fy" value="$(arg fy)"/>
     <param name="cx" value="$(arg cx)"/>
     <param name="cy" value="$(arg cy)"/>
+    <!-- 相机外参 -->
+    <param name="cam_x" value="$(arg cam_x)"/>
+    <param name="cam_y" value="$(arg cam_y)"/>
+    <param name="cam_z" value="$(arg cam_z)"/>
+    <param name="cam_pitch" value="$(arg cam_pitch)"/>
   </node>
 </launch>
