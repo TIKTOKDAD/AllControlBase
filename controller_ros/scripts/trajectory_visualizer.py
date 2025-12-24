@@ -134,61 +134,82 @@ class TrajectoryVisualizer:
     
     def project_points_manual(self, points, image_shape):
         """
-        精准 3D→2D 投影 - 将地面轨迹点投影到图像平面
+        标准 3D→2D 投影 - 使用齐次变换矩阵
         
-        原理:
-        1. 轨迹点在 base_footprint 坐标系 (x前, y左, z上, 原点在地面两轮中心)
-        2. 转换到相机坐标系 (需要知道相机的位置和姿态)
-        3. 使用针孔相机模型投影到图像平面
+        坐标系定义:
+        - base_footprint: x前, y左, z上, 原点在地面两轮中心
+        - camera optical: x右, y下, z前 (OpenCV/ROS 标准)
+        
+        变换流程:
+        1. P_base: 轨迹点在 base_footprint 坐标系的坐标
+        2. P_cam = T_cam_base @ P_base: 变换到相机坐标系
+        3. p = K @ P_cam: 针孔投影到图像平面
         """
         h, w = image_shape[:2]
         points_2d = []
         
-        # 使用配置的相机外参
-        cam_x = self.cam_x
-        cam_y = self.cam_y
-        cam_z = self.cam_z
-        cam_pitch = self.cam_pitch
+        # ============ 构建相机内参矩阵 K ============
+        K = np.array([
+            [self.fx, 0, self.cx],
+            [0, self.fy, self.cy],
+            [0, 0, 1]
+        ])
         
-        # 预计算旋转矩阵 (绕 y 轴旋转 pitch)
-        cos_p = np.cos(cam_pitch)
-        sin_p = np.sin(cam_pitch)
+        # ============ 构建外参变换矩阵 T_cam_base ============
+        # 相机在 base_footprint 中的位置
+        t_cam_in_base = np.array([self.cam_x, self.cam_y, self.cam_z])
+        
+        # 相机姿态: 先绕 base 的 y 轴旋转 pitch (向下为正)
+        # 然后坐标系转换: base(x前,y左,z上) → cam_optical(x右,y下,z前)
+        
+        # 坐标系转换矩阵 (不含俯仰)
+        # base_x(前) → cam_z(前)
+        # base_y(左) → cam_-x(右的负方向，即左)  
+        # base_z(上) → cam_-y(下的负方向，即上)
+        R_base_to_cam_optical = np.array([
+            [0, -1, 0],   # cam_x = -base_y
+            [0, 0, -1],   # cam_y = -base_z
+            [1, 0, 0]     # cam_z = base_x
+        ])
+        
+        # 俯仰旋转矩阵 (绕相机的 x 轴，即 base 的 -y 轴)
+        # 正 pitch = 相机向下看
+        cos_p = np.cos(self.cam_pitch)
+        sin_p = np.sin(self.cam_pitch)
+        R_pitch = np.array([
+            [1, 0, 0],
+            [0, cos_p, -sin_p],
+            [0, sin_p, cos_p]
+        ])
+        
+        # 组合旋转: 先坐标系转换，再俯仰
+        R_cam_base = R_pitch @ R_base_to_cam_optical
+        
+        # 平移: 相机看到的点 = 点在base中的位置 - 相机在base中的位置
+        # 然后旋转到相机坐标系
         
         for pt in points:
-            # ============ Step 1: base_footprint → 相机坐标系 ============
-            # 轨迹点相对于相机的位置 (在 base_footprint 坐标系下)
-            dx = pt.x - cam_x  # 前方距离
-            dy = pt.y - cam_y  # 左右距离
-            dz = pt.z - cam_z  # 高度差 (轨迹点在地面, z=0, 所以 dz = -cam_z)
+            # 轨迹点在 base_footprint 坐标系 (地面点, z 通常为 0)
+            P_base = np.array([pt.x, pt.y, pt.z])
             
-            # ============ Step 2: 转换到相机光学坐标系 ============
-            # 相机光学坐标系: x右, y下, z前
-            # base_footprint: x前, y左, z上
+            # 变换到相机坐标系
+            P_rel = P_base - t_cam_in_base  # 相对于相机的位置
+            P_cam = R_cam_base @ P_rel      # 旋转到相机坐标系
             
-            # 先应用俯仰旋转 (绕相机的 y 轴, 即 base 的 -y 轴)
-            # 旋转后: x' = x*cos(p) + z*sin(p), z' = -x*sin(p) + z*cos(p)
-            dx_rot = dx * cos_p - dz * sin_p
-            dz_rot = dx * sin_p + dz * cos_p
+            # 相机坐标系中: x右, y下, z前
+            x_cam, y_cam, z_cam = P_cam
             
-            # 坐标系转换: base → camera optical
-            x_cam = -dy        # base的y左 → cam的x右 (取负)
-            y_cam = -dz_rot    # base的z上 → cam的y下 (取负)
-            z_cam = dx_rot     # base的x前 → cam的z前
-            
-            # ============ Step 3: 针孔相机投影 ============
-            # 只投影相机前方的点
-            if z_cam > 0.01:  # 至少 1cm 前方
-                # 投影公式: u = fx * x/z + cx, v = fy * y/z + cy
+            # 只投影相机前方的点 (z > 0)
+            if z_cam > 0.01:
+                # 针孔相机投影
                 u = self.fx * x_cam / z_cam + self.cx
                 v = self.fy * y_cam / z_cam + self.cy
                 
-                # 转为整数像素坐标
                 u_int = int(round(u))
                 v_int = int(round(v))
                 
-                # 检查是否在图像范围内 (允许稍微超出)
-                if -50 <= u_int < w + 50 and -50 <= v_int < h + 50:
-                    # 限制到图像边界
+                # 允许稍微超出图像范围
+                if -100 <= u_int < w + 100 and -100 <= v_int < h + 100:
                     u_int = max(0, min(w - 1, u_int))
                     v_int = max(0, min(h - 1, v_int))
                     points_2d.append((u_int, v_int))
