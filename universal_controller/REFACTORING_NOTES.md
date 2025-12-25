@@ -542,3 +542,65 @@ from universal_controller.tests.fixtures import (
    - `core/ros_compat.py` 自动检测 ROS 环境
    - ROS 可用时使用真实模块
    - ROS 不可用时使用 `compat/` 中的独立实现
+
+
+---
+
+## 重构日期: 2024-12-25 (第四轮修复)
+
+## 最新更新: Bug 修复验证与接口统一
+
+### 本次修复完成的工作
+
+#### 1. ControllerBridge notify_xxx_received() 修复 ✅ 已完成
+**问题**: `controller_bridge.py` 中的 `notify_odom_received()`, `notify_trajectory_received()`, `notify_imu_received()` 方法直接调用 `timeout_monitor.update_xxx()`，绕过了 `ControllerManager`，导致 `_last_xxx_notify_time` 变量永远不会更新。
+
+**影响**: 超时监控的 notify 检查机制无法正常工作，无法检测外部调用者是否正确调用了数据接收通知方法。
+
+**解决方案**: 修改为调用 `self._manager.notify_xxx_received()`，确保通知正确传递到 Manager 层。
+
+**修改文件**: `controller_ros/src/controller_ros/bridge/controller_bridge.py`
+
+#### 2. ITrajectoryTracker.set_horizon() 返回值修复 ✅ 已完成
+**问题**: `MPCController.set_horizon()` 在被节流时返回 `None`，调用者无法知道更新是否成功。
+
+**解决方案**: 
+- 修改返回类型为 `bool`
+- 成功更新返回 `True`
+- 被节流返回 `False`
+- 无需更新（horizon 相同）返回 `True`
+
+**修改文件**:
+- `universal_controller/tracker/mpc_controller.py` - 修改 `set_horizon()` 返回 `bool`
+- `universal_controller/core/interfaces.py` - 更新接口签名
+- `universal_controller/tracker/pure_pursuit.py` - 更新实现以保持接口一致性
+
+#### 3. 文档同步更新 ✅ 已完成
+**问题**: 需求文档和使用文档中的接口定义与代码不一致。
+
+**解决方案**: 更新文档中的接口定义和示例代码。
+
+**修改文件**:
+- `需求/06_数据类型定义.md` - 更新 `set_horizon()` 签名为 `-> bool`
+- `文档/02_使用文档.md` - 更新示例代码，添加 `reset()` 方法
+
+### 设计决策确认（无需修改）
+
+以下问题经分析确认为合理的设计决策：
+
+1. **状态机 MPC 历史清空**: 状态转换时清空历史是正确的，新状态应该从干净的监控周期开始
+2. **EKF Jacobian 速度耦合**: `effective_v = sqrt(v_body^2 + MIN_V^2)` 是数值稳定性的标准做法
+3. **坐标变换保守漂移校正**: 没有 TF2 位置时不进行校正是安全的设计
+4. **一致性检查器权重计算**: confidence fallback 机制是合理的
+5. **Pure Pursuit 正后方处理**: "默认左转"策略是合理的，避免了不确定性
+6. **轨迹适配器速度填充**: 基于模式的填充策略是正确的
+7. **安全监控器滤波器预热**: 2x 安全裕度是保守但合理的
+8. **TF2 注入阻塞**: 带超时的阻塞是正确的设计
+9. **时钟跳变处理**: 前向跳变容忍是合理的
+
+### 测试验证结果
+- 所有 145 个测试通过
+- `test_trackers.py`: 13 passed
+- `test_integration.py`: 9 passed
+- `test_components.py`: 13 passed
+- `test_bug_fixes.py`: 5 passed

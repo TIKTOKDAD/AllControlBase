@@ -98,6 +98,12 @@ class AdaptiveEKFEstimator(IStateEstimator):
         )
         self.R_odom_current = self.R_odom_base.copy()
         
+        # 航向角测量噪声
+        self._odom_orientation_noise = meas_noise.get('odom_orientation', 0.01)
+        
+        # 角速度测量噪声
+        self._odom_angular_velocity_noise = meas_noise.get('odom_angular_velocity', 0.05)
+        
         self.R_imu = np.diag([
             meas_noise.get('imu_accel', 0.5)] * 3 +
             [meas_noise.get('imu_gyro', 0.01)]
@@ -245,12 +251,16 @@ class AdaptiveEKFEstimator(IStateEstimator):
         vz_body = odom.twist_linear[2]
         v_body = np.sqrt(vx_body**2 + vy_body**2)
         
+        # 从 odom 获取角速度 (z 轴)
+        omega_z = odom.twist_angular[2]
+        
+        # 从 odom 四元数提取航向角
+        _, _, odom_yaw = euler_from_quaternion(odom.pose_orientation)
+        
         # 获取航向角用于坐标变换
-        # theta 定义: 机器人在世界坐标系中的航向角
-        # - 从世界坐标系 X 轴正方向逆时针测量
-        # - theta = 0 时，机器人朝向世界 X 轴正方向
-        # - theta = π/2 时，机器人朝向世界 Y 轴正方向
-        theta = self._get_theta_for_transform()
+        # 使用 odom 的航向角，而不是 EKF 估计的航向角
+        # 这确保速度变换使用正确的航向
+        theta = odom_yaw
         cos_theta = np.cos(theta)
         sin_theta = np.sin(theta)
         
@@ -279,6 +289,7 @@ class AdaptiveEKFEstimator(IStateEstimator):
         self.last_odom_time = current_time
         self._update_odom_covariance(v_body)
         
+        # 观测向量：位置、速度、航向角、角速度
         z = np.array([
             odom.pose_position.x,
             odom.pose_position.y,
@@ -286,13 +297,24 @@ class AdaptiveEKFEstimator(IStateEstimator):
             vx_world,
             vy_world,
             vz_world,
+            odom_yaw,
+            omega_z,
         ])
         
-        H = np.zeros((6, 11))
-        H[0:3, 0:3] = np.eye(3)
-        H[3:6, 3:6] = np.eye(3)
+        # 观测矩阵：映射状态到观测
+        H = np.zeros((8, 11))
+        H[0:3, 0:3] = np.eye(3)  # 位置
+        H[3:6, 3:6] = np.eye(3)  # 速度
+        H[6, 6] = 1.0            # 航向角
+        H[7, 7] = 1.0            # 角速度
         
-        self._kalman_update(z, H, self.R_odom_current)
+        # 测量噪声矩阵：添加航向角和角速度的噪声
+        R = np.zeros((8, 8))
+        R[0:6, 0:6] = self.R_odom_current
+        R[6, 6] = self._odom_orientation_noise  # 航向角测量噪声
+        R[7, 7] = self._odom_angular_velocity_noise  # 角速度测量噪声
+        
+        self._kalman_update(z, H, R, angle_indices=[6])
     
     def update_imu(self, imu: Imu) -> None:
         """
@@ -472,8 +494,24 @@ class AdaptiveEKFEstimator(IStateEstimator):
         
         self._kalman_update_with_expected(z, z_expected, H, self.R_imu)
     
-    def _kalman_update(self, z: np.ndarray, H: np.ndarray, R: np.ndarray) -> None:
+    def _kalman_update(self, z: np.ndarray, H: np.ndarray, R: np.ndarray, 
+                       angle_indices: list = None) -> None:
+        """
+        卡尔曼更新
+        
+        Args:
+            z: 观测向量
+            H: 观测矩阵
+            R: 测量噪声矩阵
+            angle_indices: 观测向量中角度元素的索引列表，用于角度归一化
+        """
         y = z - H @ self.x
+        
+        # 对角度元素进行归一化
+        if angle_indices:
+            for idx in angle_indices:
+                y[idx] = normalize_angle(y[idx])
+        
         self._apply_kalman_gain(y, H, R)
     
     def _kalman_update_with_expected(self, z: np.ndarray, z_expected: np.ndarray,

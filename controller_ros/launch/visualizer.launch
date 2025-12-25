@@ -1,0 +1,23 @@
+<!-- 
+可视化器启动文件 (ROS1)
+
+启动 TurtleBot1 运行可视化界面。
+
+使用方法:
+    roslaunch controller_ros visualizer.launch
+    
+    # 使用自定义配置
+    roslaunch controller_ros visualizer.launch config_file:=/path/to/config.yaml
+-->
+<launch>
+    <!-- 参数 -->
+    <arg name="config_file" default="$(find controller_ros)/config/visualizer_params.yaml"/>
+    
+    <!-- 加载配置 -->
+    <rosparam file="$(arg config_file)" command="load" ns="visualizer"/>
+    
+    <!-- 可视化节点 -->
+    <node pkg="controller_ros" type="visualizer_node.py" name="turtlebot_visualizer" output="screen">
+        <rosparam file="$(arg config_file)" command="load"/>
+    </node>
+</launch>
