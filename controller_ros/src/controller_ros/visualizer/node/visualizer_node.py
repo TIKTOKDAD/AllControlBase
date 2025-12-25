@@ -14,6 +14,26 @@ from sensor_msgs.msg import Joy, Image
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Empty, Bool
 
+# 尝试导入 controller_ros 消息（在 sys.path 被修改之前可能已经导入）
+# 这些消息需要从 devel/lib/python3/dist-packages 导入
+try:
+    from controller_ros.msg import LocalTrajectoryV4
+    _LocalTrajectoryV4 = LocalTrajectoryV4
+except ImportError:
+    _LocalTrajectoryV4 = None
+
+try:
+    from controller_ros.msg import UnifiedCmd
+    _UnifiedCmd = UnifiedCmd
+except ImportError:
+    _UnifiedCmd = None
+
+try:
+    from controller_ros.msg import DiagnosticsV2
+    _DiagnosticsV2 = DiagnosticsV2
+except ImportError:
+    _DiagnosticsV2 = None
+
 from ..models import (
     VelocityData, JoystickState, ControllerStatus, 
     ControlMode, TrajectoryMode
@@ -136,35 +156,32 @@ class VisualizerNode:
         )
         
         # 轨迹
-        try:
-            from controller_ros.msg import LocalTrajectoryV4
+        if _LocalTrajectoryV4 is not None:
             self._ros.create_subscriber(
-                LocalTrajectoryV4, self._traj_topic,
+                _LocalTrajectoryV4, self._traj_topic,
                 self._traj_callback, 10
             )
             self._traj_available = True
-        except ImportError:
+        else:
             self._ros.log_warn("LocalTrajectoryV4 not available")
             self._traj_available = False
         
         # 控制命令
-        try:
-            from controller_ros.msg import UnifiedCmd
+        if _UnifiedCmd is not None:
             self._ros.create_subscriber(
-                UnifiedCmd, self._cmd_topic,
+                _UnifiedCmd, self._cmd_topic,
                 self._cmd_callback, 10
             )
-        except ImportError:
+        else:
             self._ros.log_warn("UnifiedCmd not available")
         
         # 诊断
-        try:
-            from controller_ros.msg import DiagnosticsV2
+        if _DiagnosticsV2 is not None:
             self._ros.create_subscriber(
-                DiagnosticsV2, self._diag_topic,
+                _DiagnosticsV2, self._diag_topic,
                 self._diag_callback, 10
             )
-        except ImportError:
+        else:
             self._ros.log_warn("DiagnosticsV2 not available")
         
         # 手柄

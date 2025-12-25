@@ -16,7 +16,14 @@ TurtleBot1 运行可视化节点启动脚本
 import sys
 import os
 
-# 添加包路径
+# 先测试 ROS 消息是否可用（在修改 sys.path 之前）
+try:
+    from controller_ros.msg import LocalTrajectoryV4, UnifiedCmd, DiagnosticsV2
+    _msgs_available = True
+except ImportError:
+    _msgs_available = False
+
+# 添加包路径（用于导入 visualizer 模块）
 script_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(os.path.dirname(script_dir), 'src')
 if src_dir not in sys.path:
