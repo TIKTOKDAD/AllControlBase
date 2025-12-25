@@ -150,7 +150,12 @@ class ROS1PublisherManager:
         if not self._diag_throttler.should_publish(diag, force=force):
             return
         
-        if self._diag_pub is None or self._DiagnosticsV2 is None:
+        if self._diag_pub is None:
+            rospy.logwarn_throttle(10.0, "Diagnostics publisher is None, cannot publish")
+            return
+        
+        if self._DiagnosticsV2 is None:
+            rospy.logwarn_throttle(10.0, "DiagnosticsV2 message type is None, cannot publish")
             return
         
         try:
