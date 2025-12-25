@@ -48,6 +48,7 @@ class VisualizerMainWindow(QMainWindow):
     
     # 信号
     emergency_stop_requested = pyqtSignal()
+    resume_requested = pyqtSignal()  # 恢复控制信号
     
     def __init__(self, data_aggregator: DataAggregator, config: Dict[str, Any] = None):
         super().__init__()
@@ -142,6 +143,7 @@ class VisualizerMainWindow(QMainWindow):
         # 状态栏
         self._status_bar = VisualizerStatusBar()
         self._status_bar.emergency_stop_clicked.connect(self._on_emergency_stop)
+        self._status_bar.resume_clicked.connect(self._on_resume)
         main_layout.addWidget(self._status_bar)
     
     def _create_title_bar(self) -> QWidget:
@@ -206,6 +208,9 @@ class VisualizerMainWindow(QMainWindow):
         # 更新状态栏
         self._status_bar.update_status(data.controller_status)
         
+        # 更新紧急停止按钮状态
+        self._status_bar.set_emergency_stop_state(data.controller_status.emergency_stop)
+        
         # 更新连接状态
         conn_status = self._data_aggregator.get_connection_status()
         self._status_bar.update_connection(
@@ -224,6 +229,10 @@ class VisualizerMainWindow(QMainWindow):
     def _on_emergency_stop(self):
         """紧急停止按钮点击"""
         self.emergency_stop_requested.emit()
+    
+    def _on_resume(self):
+        """恢复按钮点击"""
+        self.resume_requested.emit()
     
     def set_emergency_stop_state(self, stopped: bool):
         """设置紧急停止状态"""

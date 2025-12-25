@@ -140,10 +140,8 @@ class JoystickPanel(QWidget):
         
         # 使能键提示
         self._enable_hint = QLabel(
-            "[LB 使能键]\n"
-            "○ 未按下 → 网络轨迹控制\n"
-            "● 按住   → 手柄控制\n"
-            "[RB 紧急停止]"
+            "[LB 使能键] 按住切换手柄控制\n"
+            "[RB 紧急停止] [Start 恢复控制]"
         )
         self._enable_hint.setStyleSheet("""
             color: #aaaaaa;

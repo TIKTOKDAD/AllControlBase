@@ -48,6 +48,7 @@ class JoyAdapter:
             config: 手柄配置，包含:
                 - enable_button: 使能键索引 (默认 4, LB)
                 - estop_button: 紧急停止键索引 (默认 5, RB)
+                - resume_button: 恢复键索引 (默认 7, Start)
                 - linear_axis: 线速度轴索引 (默认 1, 左摇杆 Y)
                 - angular_axis: 角速度轴索引 (默认 3, 右摇杆 X)
                 - deadzone: 摇杆死区 (默认 0.1)
@@ -55,6 +56,7 @@ class JoyAdapter:
         config = config or {}
         self._enable_button = config.get('enable_button', 4)
         self._estop_button = config.get('estop_button', 5)  # RB 键
+        self._resume_button = config.get('resume_button', 7)  # Start 键
         self._linear_axis = config.get('linear_axis', 1)
         self._angular_axis = config.get('angular_axis', 3)
         self._deadzone = config.get('deadzone', 0.1)
@@ -104,6 +106,7 @@ class JoyAdapter:
             right_y=get_axis(self._right_y_axis),
             enable_pressed=get_button(self._enable_button),
             estop_pressed=get_button(self._estop_button),
+            resume_pressed=get_button(self._resume_button),
             buttons=buttons,
         )
     
@@ -116,6 +119,11 @@ class JoyAdapter:
     def estop_button_index(self) -> int:
         """获取紧急停止键索引"""
         return self._estop_button
+    
+    @property
+    def resume_button_index(self) -> int:
+        """获取恢复键索引"""
+        return self._resume_button
     
     @property
     def linear_axis_index(self) -> int:

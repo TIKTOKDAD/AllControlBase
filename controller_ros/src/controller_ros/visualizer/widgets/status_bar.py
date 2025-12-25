@@ -53,6 +53,7 @@ class VisualizerStatusBar(QWidget):
     
     # 信号
     emergency_stop_clicked = pyqtSignal()
+    resume_clicked = pyqtSignal()  # 恢复信号
     
     # 状态名称映射
     STATE_NAMES = {
@@ -99,6 +100,29 @@ class VisualizerStatusBar(QWidget):
         
         layout.addStretch()
         
+        # 恢复按钮 (初始隐藏)
+        self._resume_button = QPushButton("恢复控制")
+        self._resume_button.setStyleSheet("""
+            QPushButton {
+                background-color: #007700;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 8px 20px;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #009900;
+            }
+            QPushButton:pressed {
+                background-color: #005500;
+            }
+        """)
+        self._resume_button.clicked.connect(self._on_resume_clicked)
+        self._resume_button.hide()  # 初始隐藏
+        layout.addWidget(self._resume_button)
+        
         # 紧急停止按钮
         self._stop_button = QPushButton("紧急停止")
         self._stop_button.setStyleSheet("""
@@ -141,6 +165,10 @@ class VisualizerStatusBar(QWidget):
         """紧急停止按钮点击"""
         self.emergency_stop_clicked.emit()
     
+    def _on_resume_clicked(self):
+        """恢复按钮点击"""
+        self.resume_clicked.emit()
+    
     def update_status(self, status: ControllerStatus):
         """更新控制器状态"""
         # 控制器状态
@@ -177,6 +205,8 @@ class VisualizerStatusBar(QWidget):
                     border-radius: 4px;
                 }
             """)
+            self._stop_button.setEnabled(False)
+            self._resume_button.show()  # 显示恢复按钮
         else:
             self._stop_button.setText("紧急停止")
             self._stop_button.setStyleSheet("""
@@ -196,3 +226,5 @@ class VisualizerStatusBar(QWidget):
                     background-color: #990000;
                 }
             """)
+            self._stop_button.setEnabled(True)
+            self._resume_button.hide()  # 隐藏恢复按钮

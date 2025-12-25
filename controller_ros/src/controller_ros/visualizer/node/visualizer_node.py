@@ -117,6 +117,7 @@ class VisualizerNode:
         self._joystick_handler.set_mode_change_callback(self._on_mode_change)
         self._joystick_handler.set_cmd_callback(self._on_joystick_cmd)
         self._joystick_handler.set_estop_callback(self._publish_emergency_stop)
+        self._joystick_handler.set_resume_callback(self._publish_resume)
         
         # GUI (延迟初始化)
         self._window: Optional[VisualizerMainWindow] = None
@@ -183,6 +184,7 @@ class VisualizerNode:
             'joystick': {
                 'enable_button': 4,
                 'estop_button': 5,
+                'resume_button': 7,
                 'linear_axis': 1,
                 'angular_axis': 3,
                 'max_linear': 0.5,
@@ -372,6 +374,34 @@ class VisualizerNode:
         self._ros.publish(self._estop_pub, Empty())
         self._ros.log_warn("Emergency stop published!")
     
+    def _publish_resume(self):
+        """
+        发布恢复控制请求
+        
+        通过调用 /controller/set_state 服务，将状态设置为 NORMAL (1)
+        """
+        try:
+            from controller_ros.srv import SetState
+            
+            # 创建服务客户端
+            service_name = '/controller/set_state'
+            
+            if ROS_VERSION == 1:
+                import rospy
+                rospy.wait_for_service(service_name, timeout=1.0)
+                set_state = rospy.ServiceProxy(service_name, SetState)
+                response = set_state(1)  # NORMAL = 1
+                if response.success:
+                    self._ros.log_info("Resume control: success")
+                else:
+                    self._ros.log_warn(f"Resume control failed: {response.message}")
+            else:
+                # ROS2 服务调用
+                self._ros.log_warn("Resume via service not implemented for ROS2 yet")
+                
+        except Exception as e:
+            self._ros.log_error(f"Failed to call set_state service: {e}")
+    
     # ==================== GUI 管理 ====================
     
     def start_gui(self):
@@ -388,6 +418,7 @@ class VisualizerNode:
             self._config
         )
         self._window.emergency_stop_requested.connect(self._publish_emergency_stop)
+        self._window.resume_requested.connect(self._publish_resume)
         
         # 加载单应性标定 (如果配置了)
         if self._homography_file:

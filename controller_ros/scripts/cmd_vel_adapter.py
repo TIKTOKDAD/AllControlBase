@@ -120,6 +120,10 @@ class CmdVelAdapter:
         # 注册关闭回调
         rospy.on_shutdown(self.shutdown)
         
+        # 定时器：在手柄模式下持续发布命令（解决 cmd_vel 超时问题）
+        self.publish_rate = rospy.get_param('~publish_rate', 20.0)  # 20Hz
+        self.timer = rospy.Timer(rospy.Duration(1.0 / self.publish_rate), self._timer_callback)
+        
         rospy.loginfo(f"CmdVelAdapter 已启动:")
         rospy.loginfo(f"  控制器输入话题: {input_topic}")
         rospy.loginfo(f"  手柄输入话题: {joy_topic}")
@@ -127,6 +131,7 @@ class CmdVelAdapter:
         rospy.loginfo(f"  输出话题: {output_topic}")
         rospy.loginfo(f"  最大线速度: {self.max_linear} m/s")
         rospy.loginfo(f"  最大角速度: {self.max_angular} rad/s")
+        rospy.loginfo(f"  手柄模式发布频率: {self.publish_rate} Hz")
         if self.max_linear_accel > 0:
             rospy.loginfo(f"  最大线加速度: {self.max_linear_accel} m/s² (启用)")
         if self.max_angular_accel > 0:
@@ -139,6 +144,10 @@ class CmdVelAdapter:
         self._shutting_down = True
         
         rospy.loginfo("CmdVelAdapter 正在关闭，发布零速度...")
+        
+        # 停止定时器
+        if hasattr(self, 'timer'):
+            self.timer.shutdown()
         
         # 发布零速度
         try:
@@ -172,9 +181,35 @@ class CmdVelAdapter:
         self.latest_joy_cmd = msg
         self.joy_cmd_time = rospy.Time.now()
         
-        # 如果在手柄模式，立即发布
-        if self.joystick_mode:
-            self._publish_twist(msg.linear.x, msg.angular.z)
+        # 注意：不在这里立即发布，由定时器统一发布
+        # 这样可以保证稳定的发布频率
+    
+    def _timer_callback(self, event):
+        """
+        定时器回调：在手柄模式下持续发布命令
+        
+        解决问题：TurtleBot 底盘有 cmd_vel 超时保护，
+        如果一段时间没收到命令就会停止。
+        通过定时发布可以保证命令流的连续性。
+        """
+        if self._shutting_down:
+            return
+        
+        if not self.joystick_mode:
+            return
+        
+        # 检查手柄命令是否超时
+        if self.joy_cmd_time is None:
+            return
+        
+        time_since_joy = (rospy.Time.now() - self.joy_cmd_time).to_sec()
+        if time_since_joy > self.joy_timeout:
+            # 手柄命令超时，发布零速度
+            self._publish_twist(0.0, 0.0)
+            return
+        
+        # 发布最新的手柄命令
+        self._publish_twist(self.latest_joy_cmd.linear.x, self.latest_joy_cmd.angular.z)
 
     def callback(self, msg: UnifiedCmd):
         """
