@@ -122,7 +122,7 @@ class DataAggregator:
             position: (x, y, z) 位置
             orientation: (x, y, z, w) 四元数
             velocity: 速度数据
-            timestamp: 时间戳
+            timestamp: 时间戳 (ROS 时间，仅用于数据记录)
         """
         with self._lock:
             # 更新机器人位姿
@@ -140,7 +140,8 @@ class DataAggregator:
             # 添加到历史
             self._velocity_history.add_actual(velocity)
             
-            self._last_odom_time = timestamp
+            # 使用系统时间记录最后更新时间（用于超时检测）
+            self._last_odom_time = time.time()
             self._data.ros_connected = True
         
         self._notify_update()
@@ -157,7 +158,7 @@ class DataAggregator:
             confidence: 置信度
             dt_sec: 时间间隔
             frame_id: 坐标系
-            timestamp: 时间戳
+            timestamp: 时间戳 (ROS 时间，仅用于数据记录)
         """
         with self._lock:
             self._data.trajectory = TrajectoryData(
@@ -168,7 +169,8 @@ class DataAggregator:
                 frame_id=frame_id,
                 timestamp=timestamp,
             )
-            self._last_traj_time = timestamp
+            # 使用系统时间记录最后更新时间（用于超时检测）
+            self._last_traj_time = time.time()
         
         self._notify_update()
     
@@ -177,7 +179,8 @@ class DataAggregator:
         with self._lock:
             self._data.target_velocity = velocity
             self._velocity_history.add_target(velocity)
-            self._last_cmd_time = velocity.timestamp
+            # 使用系统时间记录最后更新时间（用于超时检测）
+            self._last_cmd_time = time.time()
         
         self._notify_update()
     
@@ -240,6 +243,8 @@ class DataAggregator:
         timeout = 2.0  # 2 秒超时
         
         with self._lock:
+            # 使用系统时间进行超时判断
+            # 注意：_last_xxx_time 现在统一使用系统时间
             return {
                 'odom': (now - self._last_odom_time) < timeout if self._last_odom_time > 0 else False,
                 'trajectory': (now - self._last_traj_time) < timeout if self._last_traj_time > 0 else False,

@@ -116,6 +116,7 @@ class VisualizerNode:
         # 设置手柄回调
         self._joystick_handler.set_mode_change_callback(self._on_mode_change)
         self._joystick_handler.set_cmd_callback(self._on_joystick_cmd)
+        self._joystick_handler.set_estop_callback(self._publish_emergency_stop)
         
         # GUI (延迟初始化)
         self._window: Optional[VisualizerMainWindow] = None
@@ -181,6 +182,7 @@ class VisualizerNode:
             },
             'joystick': {
                 'enable_button': 4,
+                'estop_button': 5,
                 'linear_axis': 1,
                 'angular_axis': 3,
                 'max_linear': 0.5,

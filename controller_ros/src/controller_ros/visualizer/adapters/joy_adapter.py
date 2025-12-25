@@ -47,12 +47,14 @@ class JoyAdapter:
         Args:
             config: 手柄配置，包含:
                 - enable_button: 使能键索引 (默认 4, LB)
+                - estop_button: 紧急停止键索引 (默认 5, RB)
                 - linear_axis: 线速度轴索引 (默认 1, 左摇杆 Y)
                 - angular_axis: 角速度轴索引 (默认 3, 右摇杆 X)
                 - deadzone: 摇杆死区 (默认 0.1)
         """
         config = config or {}
         self._enable_button = config.get('enable_button', 4)
+        self._estop_button = config.get('estop_button', 5)  # RB 键
         self._linear_axis = config.get('linear_axis', 1)
         self._angular_axis = config.get('angular_axis', 3)
         self._deadzone = config.get('deadzone', 0.1)
@@ -101,6 +103,7 @@ class JoyAdapter:
             right_x=get_axis(self._right_x_axis),
             right_y=get_axis(self._right_y_axis),
             enable_pressed=get_button(self._enable_button),
+            estop_pressed=get_button(self._estop_button),
             buttons=buttons,
         )
     
@@ -108,6 +111,11 @@ class JoyAdapter:
     def enable_button_index(self) -> int:
         """获取使能键索引"""
         return self._enable_button
+    
+    @property
+    def estop_button_index(self) -> int:
+        """获取紧急停止键索引"""
+        return self._estop_button
     
     @property
     def linear_axis_index(self) -> int:

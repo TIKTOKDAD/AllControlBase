@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 class JoystickConfig:
     """手柄配置"""
     enable_button: int = 4          # LB 键
+    estop_button: int = 5           # RB 键 (紧急停止)
     linear_axis: int = 1            # 左摇杆 Y 轴
     angular_axis: int = 3           # 右摇杆 X 轴
     max_linear: float = 0.5         # 最大线速度 (m/s)
@@ -28,6 +29,7 @@ class JoystickConfig:
         """从字典创建配置"""
         return cls(
             enable_button=config.get('enable_button', 4),
+            estop_button=config.get('estop_button', 5),
             linear_axis=config.get('linear_axis', 1),
             angular_axis=config.get('angular_axis', 3),
             max_linear=config.get('max_linear', 0.5),
@@ -45,6 +47,7 @@ class JoystickHandler:
     - 管理控制模式切换 (网络/手柄)
     - 生成速度命令
     - 提供模式切换回调
+    - 处理紧急停止
     """
     
     def __init__(self, config: JoystickConfig = None):
@@ -61,10 +64,12 @@ class JoystickHandler:
         self._last_joystick_state: Optional[JoystickState] = None
         self._joystick_connected = False
         self._last_update_time = 0.0
+        self._last_estop_state = False  # 上一次紧急停止按键状态
         
         # 回调
         self._on_mode_change: Optional[Callable[[ControlMode], None]] = None
         self._on_cmd_generated: Optional[Callable[[VelocityData], None]] = None
+        self._on_estop: Optional[Callable[[], None]] = None
     
     def set_mode_change_callback(self, callback: Callable[[ControlMode], None]):
         """设置模式切换回调"""
@@ -73,6 +78,10 @@ class JoystickHandler:
     def set_cmd_callback(self, callback: Callable[[VelocityData], None]):
         """设置命令生成回调"""
         self._on_cmd_generated = callback
+    
+    def set_estop_callback(self, callback: Callable[[], None]):
+        """设置紧急停止回调"""
+        self._on_estop = callback
     
     def update(self, joystick_state: JoystickState) -> Optional[VelocityData]:
         """
@@ -87,6 +96,13 @@ class JoystickHandler:
         self._last_joystick_state = joystick_state
         self._joystick_connected = joystick_state.connected
         self._last_update_time = time.time()
+        
+        # 检查紧急停止 (RB 键，上升沿触发)
+        if joystick_state.estop_pressed and not self._last_estop_state:
+            logger.warn("Emergency stop triggered by joystick (RB)")
+            if self._on_estop:
+                self._on_estop()
+        self._last_estop_state = joystick_state.estop_pressed
         
         # 检查模式切换
         new_mode = (ControlMode.JOYSTICK 
@@ -165,4 +181,5 @@ class JoystickHandler:
         self._last_joystick_state = None
         self._joystick_connected = False
         self._last_update_time = 0.0
+        self._last_estop_state = False
         logger.info("JoystickHandler reset")

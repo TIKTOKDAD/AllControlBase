@@ -84,7 +84,8 @@ class JoystickState:
     left_y: float = 0.0        # 左摇杆 Y 轴 [-1, 1]
     right_x: float = 0.0       # 右摇杆 X 轴 [-1, 1]
     right_y: float = 0.0       # 右摇杆 Y 轴 [-1, 1]
-    enable_pressed: bool = False  # 使能键是否按下
+    enable_pressed: bool = False  # 使能键是否按下 (LB)
+    estop_pressed: bool = False   # 紧急停止键是否按下 (RB)
     buttons: List[int] = field(default_factory=list)
     
     @property
