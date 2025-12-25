@@ -18,7 +18,8 @@ topics:
   joy: "/joy"                             # 手柄输入
   
   # 输出话题
-  cmd_vel_output: "/cmd_vel"              # 手柄控制输出
+  # 注意: 手柄命令发布到 /joy_cmd_vel，由 cmd_vel_mux 或 cmd_vel_adapter 选择
+  cmd_vel_output: "/joy_cmd_vel"          # 手柄控制输出 (不直接发到 /cmd_vel)
   control_mode: "/visualizer/control_mode"  # 控制模式 (true=手柄, false=网络)
   emergency_stop: "/controller/emergency_stop"  # 紧急停止
 
