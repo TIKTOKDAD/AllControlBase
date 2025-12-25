@@ -52,6 +52,8 @@ EKF_CONFIG = {
     'anomaly_detection': {
         'drift_thresh': 0.1,               # IMU 漂移检测阈值 (rad/s)
         'jump_thresh': 0.5,                # 位置跳变检测阈值 (m)
+        'covariance_explosion_thresh': 1000.0,  # 协方差爆炸检测阈值
+        'innovation_anomaly_thresh': 10.0,      # 创新度异常检测阈值
     },
     
     # 协方差参数
@@ -74,4 +76,9 @@ EKF_VALIDATION_RULES = {
     'ekf.process_noise.orientation': (1e-9, 1.0, '航向过程噪声'),
     'ekf.process_noise.angular_velocity': (1e-9, 10.0, '角速度过程噪声'),
     'ekf.process_noise.imu_bias': (1e-12, 0.1, 'IMU 偏置过程噪声'),
+    # 异常检测阈值
+    'ekf.anomaly_detection.drift_thresh': (0.001, 1.0, 'IMU 漂移检测阈值 (rad/s)'),
+    'ekf.anomaly_detection.jump_thresh': (0.01, 10.0, '位置跳变检测阈值 (m)'),
+    'ekf.anomaly_detection.covariance_explosion_thresh': (10.0, 100000.0, '协方差爆炸检测阈值'),
+    'ekf.anomaly_detection.innovation_anomaly_thresh': (1.0, 100.0, '创新度异常检测阈值'),
 }

@@ -41,6 +41,9 @@ class TF2InjectionManager:
         manager.try_reinjection_if_needed()
     """
     
+    # 默认重试间隔（秒）
+    DEFAULT_RETRY_INTERVAL_SEC = 1.0
+    
     def __init__(
         self,
         tf_bridge: Any,
@@ -48,6 +51,7 @@ class TF2InjectionManager:
         config: Optional[Dict[str, Any]] = None,
         log_info: Optional[Callable[[str], None]] = None,
         log_warn: Optional[Callable[[str], None]] = None,
+        get_time_func: Optional[Callable[[], float]] = None,
     ):
         """
         初始化 TF2 注入管理器
@@ -60,10 +64,12 @@ class TF2InjectionManager:
                 - target_frame: 目标坐标系 (默认 'odom')
                 - buffer_warmup_timeout_sec: 阻塞等待超时 (默认 2.0)
                 - buffer_warmup_interval_sec: 等待间隔 (默认 0.1)
-                - retry_interval_cycles: 重试间隔周期数 (默认 50)
+                - retry_interval_sec: 重试间隔（秒）(默认 1.0) [推荐使用]
+                - retry_interval_cycles: [已废弃] 重试间隔周期数，仅为向后兼容保留
                 - max_retries: 最大重试次数，-1 表示无限 (默认 -1)
             log_info: 信息日志函数
             log_warn: 警告日志函数
+            get_time_func: 获取当前时间的函数（秒），默认使用 time.monotonic()
         """
         self._tf_bridge = tf_bridge
         self._controller_manager = controller_manager
@@ -73,19 +79,37 @@ class TF2InjectionManager:
         self._log_info = log_info or (lambda msg: logger.info(msg))
         self._log_warn = log_warn or (lambda msg: logger.warning(msg))
         
+        # 时间函数（使用单调时钟，不受系统时间调整影响）
+        self._get_time = get_time_func or time.monotonic
+        
         # 配置参数
         self._source_frame = self._config.get('source_frame', 'base_link')
         self._target_frame = self._config.get('target_frame', 'odom')
         self._buffer_warmup_timeout_sec = self._config.get('buffer_warmup_timeout_sec', 2.0)
         self._buffer_warmup_interval_sec = self._config.get('buffer_warmup_interval_sec', 0.1)
-        self._retry_interval_cycles = self._config.get('retry_interval_cycles', 50)
         self._max_retries = self._config.get('max_retries', -1)  # -1 = 无限
+        
+        # 重试间隔配置（优先使用 retry_interval_sec，向后兼容 retry_interval_cycles）
+        if 'retry_interval_sec' in self._config:
+            self._retry_interval_sec = self._config['retry_interval_sec']
+        elif 'retry_interval_cycles' in self._config:
+            # 向后兼容：将周期数转换为秒
+            # 尝试从配置中获取控制频率，否则使用默认值 50Hz
+            ctrl_freq = self._config.get('ctrl_freq', 50)
+            cycles = self._config['retry_interval_cycles']
+            self._retry_interval_sec = cycles / ctrl_freq
+            self._log_warn(
+                f"'retry_interval_cycles' is deprecated, use 'retry_interval_sec' instead. "
+                f"Converting {cycles} cycles to {self._retry_interval_sec:.2f}s (using ctrl_freq={ctrl_freq}Hz)."
+            )
+        else:
+            self._retry_interval_sec = self.DEFAULT_RETRY_INTERVAL_SEC
         
         # 状态
         self._injected = False
         self._injection_attempted = False
-        self._retry_counter = 0
         self._retry_count = 0  # 已重试次数
+        self._last_retry_time: Optional[float] = None  # 上次重试时间
     
     @property
     def is_injected(self) -> bool:
@@ -207,6 +231,8 @@ class TF2InjectionManager:
         """
         在控制循环中调用，尝试重新注入 TF2（如果需要）
         
+        使用时间间隔而非循环计数，确保重试行为与控制频率无关。
+        
         Returns:
             是否执行了重新注入尝试
         """
@@ -225,19 +251,19 @@ class TF2InjectionManager:
         if not getattr(self._tf_bridge, 'is_initialized', False):
             return False
         
-        # 计数器递增
-        self._retry_counter += 1
-        
-        # 检查是否到达重试间隔
-        if self._retry_counter < self._retry_interval_cycles:
-            return False
-        
-        # 重置计数器
-        self._retry_counter = 0
-        
         # 检查是否超过最大重试次数
         if self._max_retries >= 0 and self._retry_count >= self._max_retries:
             return False
+        
+        # 检查是否到达重试间隔（使用时间而非计数器）
+        now = self._get_time()
+        if self._last_retry_time is not None:
+            elapsed = now - self._last_retry_time
+            if elapsed < self._retry_interval_sec:
+                return False
+        
+        # 更新重试时间
+        self._last_retry_time = now
         
         # 执行重试
         self._retry_count += 1
@@ -250,7 +276,7 @@ class TF2InjectionManager:
         
         在控制器重置时调用。
         """
-        self._retry_counter = 0
+        self._last_retry_time = None
         # 注意：不重置 _injected 和 _injection_attempted，
         # 因为 TF2 回调一旦注入就保持有效
     
@@ -265,7 +291,7 @@ class TF2InjectionManager:
             'injected': self._injected,
             'injection_attempted': self._injection_attempted,
             'retry_count': self._retry_count,
-            'retry_counter': self._retry_counter,
+            'retry_interval_sec': self._retry_interval_sec,
             'source_frame': self._source_frame,
             'target_frame': self._target_frame,
         }

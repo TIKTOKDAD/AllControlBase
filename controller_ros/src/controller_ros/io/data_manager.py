@@ -52,6 +52,10 @@ class DataManager:
     - 提供回调机制通知上层
     - 等待新数据到来后才恢复正常
     
+    时钟前跳处理策略 (可配置):
+    - 默认: 只记录日志，不使数据无效 (适合仿真快进场景)
+    - 可选: 大幅前跳时也使数据无效 (适合需要严格时间同步的场景)
+    
     支持 ROS1 和 ROS2，通过注入时间获取函数实现。
     """
     
@@ -62,7 +66,8 @@ class DataManager:
     CLOCK_JUMP_THRESHOLD = 1.0
     
     def __init__(self, get_time_func: Optional[Callable[[], float]] = None,
-                 on_clock_jump: Optional[Callable[[ClockJumpEvent], None]] = None):
+                 on_clock_jump: Optional[Callable[[ClockJumpEvent], None]] = None,
+                 invalidate_on_forward_jump: bool = False):
         """
         初始化数据管理器
         
@@ -71,6 +76,9 @@ class DataManager:
                           如果为 None，使用 time.time()。
                           ROS 环境应传入支持仿真时间的函数。
             on_clock_jump: 时钟跳变回调函数，用于通知上层。
+            invalidate_on_forward_jump: 是否在大幅前跳时使数据无效。
+                          默认 False (适合仿真快进场景)。
+                          设为 True 可用于需要严格时间同步的场景。
         """
         # 适配器
         self._odom_adapter = OdomAdapter()
@@ -83,8 +91,12 @@ class DataManager:
         # 时钟跳变回调
         self._on_clock_jump = on_clock_jump
         
+        # 时钟前跳处理策略
+        self._invalidate_on_forward_jump = invalidate_on_forward_jump
+        
         # 线程安全的数据存储
-        self._lock = threading.Lock()
+        # 使用 RLock（可重入锁）允许回调函数安全地调用 DataManager 的其他方法
+        self._lock = threading.RLock()
         self._latest_data: Dict[str, Any] = {}
         self._timestamps: Dict[str, float] = {}
         
@@ -159,15 +171,24 @@ class DataManager:
         if delta > self.CLOCK_JUMP_THRESHOLD:
             event = ClockJumpEvent(self._last_time, now, delta)
             
-            # 记录事件但不使数据无效（前跳通常是正常的）
+            # 记录事件
             self._clock_jump_events.append(event)
             if len(self._clock_jump_events) > self._max_clock_jump_events:
                 self._clock_jump_events.pop(0)
             
-            logger.info(
-                f"Clock jumped forward by {delta:.3f}s "
-                f"(from {self._last_time:.3f} to {now:.3f})"
-            )
+            # 根据配置决定是否使数据无效
+            if self._invalidate_on_forward_jump:
+                self._data_invalidated = True
+                logger.warning(
+                    f"Clock jumped forward by {delta:.3f}s "
+                    f"(from {self._last_time:.3f} to {now:.3f}). "
+                    f"All cached data marked as stale (invalidate_on_forward_jump=True)."
+                )
+            else:
+                logger.info(
+                    f"Clock jumped forward by {delta:.3f}s "
+                    f"(from {self._last_time:.3f} to {now:.3f})"
+                )
             
             return event
         

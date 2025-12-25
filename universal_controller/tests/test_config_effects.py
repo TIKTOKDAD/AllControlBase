@@ -275,8 +275,8 @@ def test_mpc_weights_config():
         'position': 20.0,
         'velocity': 2.0,
         'heading': 10.0,
-        'control_v': 0.2,
-        'control_omega': 0.2,
+        'control_accel': 0.2,   # 加速度控制权重
+        'control_alpha': 0.2,   # 角加速度控制权重
     }
     
     platform_config = PLATFORM_CONFIG['differential']
@@ -285,6 +285,8 @@ def test_mpc_weights_config():
     assert mpc.Q_pos == 20.0
     assert mpc.Q_vel == 2.0
     assert mpc.Q_heading == 10.0
+    assert mpc.R_accel == 0.2   # 验证新命名
+    assert mpc.R_alpha == 0.2   # 验证新命名
     
     mpc.shutdown()
     print("✓ test_mpc_weights_config passed")

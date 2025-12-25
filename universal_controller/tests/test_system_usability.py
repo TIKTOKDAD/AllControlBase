@@ -70,6 +70,11 @@ def test_end_to_end_control_loop():
         # 创建 IMU
         imu = create_test_imu()
         
+        # 通知数据接收（更新超时监控器）
+        manager.notify_odom_received()
+        manager.notify_trajectory_received()
+        manager.notify_imu_received()
+        
         # 执行控制更新
         cmd = manager.update(odom, trajectory, imu)
         

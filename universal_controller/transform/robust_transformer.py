@@ -71,6 +71,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self.drift_estimation_enabled = transform_config.get('drift_estimation_enabled', True)
         self.recovery_correction_enabled = transform_config.get('recovery_correction_enabled', True)
         self.drift_rate = transform_config.get('drift_rate', 0.01)
+        self.drift_velocity_factor = transform_config.get('drift_velocity_factor', 0.1)  # 速度漂移因子
         self.max_drift_dt = transform_config.get('max_drift_dt', 0.5)
         self.source_frame = transform_config.get('source_frame', 'base_link')
         self.drift_correction_thresh = transform_config.get('drift_correction_thresh', 0.01)
@@ -449,9 +450,9 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             if self.state_estimator is not None:
                 state = self.state_estimator.get_state()
                 velocity = np.linalg.norm(state.state[3:6])
-                # 漂移率 = 基础漂移率 * (1 + 速度因子)
-                # 速度因子使用 0.1，即每 1 m/s 增加 10% 的漂移率
-                effective_drift_rate = self.drift_rate * (1.0 + velocity * 0.1)
+                # 漂移率 = 基础漂移率 * (1 + 速度 * 速度因子)
+                # 速度因子默认 0.1，即每 1 m/s 增加 10% 的漂移率
+                effective_drift_rate = self.drift_rate * (1.0 + velocity * self.drift_velocity_factor)
             
             self.accumulated_drift += effective_drift_rate * dt
             self._last_fallback_update_time = current_time

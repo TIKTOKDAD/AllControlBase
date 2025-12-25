@@ -59,7 +59,7 @@ TF_DEFAULTS = {
     'timeout_ms': 10,
     'buffer_warmup_timeout_sec': 2.0,
     'buffer_warmup_interval_sec': 0.1,
-    'retry_interval_cycles': 50,
+    'retry_interval_sec': 1.0,  # 重试间隔（秒），与控制频率无关
     'max_retries': -1,
 }
 
@@ -286,7 +286,13 @@ class ParamLoader:
                 ros_value = strategy.get_param(param_path, value)
                 
                 # 类型转换：确保类型一致
-                config[key] = ParamLoader._convert_type(ros_value, value)
+                converted_value = ParamLoader._convert_type(ros_value, value)
+                
+                # 记录参数覆盖情况（仅当值被覆盖时）
+                if converted_value != value:
+                    logger.debug(f"Parameter override: {param_path} = {converted_value} (default: {value})")
+                
+                config[key] = converted_value
     
     @staticmethod
     def _convert_type(ros_value: Any, default_value: Any) -> Any:
@@ -331,11 +337,27 @@ class ParamLoader:
         if default_type == str:
             return str(ros_value) if ros_value is not None else default_value
         
-        # 列表
+        # 列表 - 递归转换元素类型
         if default_type == list:
             if isinstance(ros_value, list):
+                # 如果默认列表非空，使用第一个元素的类型作为参考
+                if len(default_value) > 0 and len(ros_value) > 0:
+                    element_default = default_value[0]
+                    return [ParamLoader._convert_type(v, element_default) for v in ros_value]
                 return ros_value
             return default_value
+        
+        # numpy 数组 - 从 list 转换
+        try:
+            import numpy as np
+            if isinstance(default_value, np.ndarray):
+                if isinstance(ros_value, (list, tuple)):
+                    return np.array(ros_value, dtype=default_value.dtype)
+                elif isinstance(ros_value, np.ndarray):
+                    return ros_value.astype(default_value.dtype)
+                return default_value
+        except ImportError:
+            pass
         
         return ros_value
     
@@ -348,18 +370,39 @@ class ParamLoader:
         ROS 习惯使用 'tf' 作为坐标变换配置的名称，
         而 universal_controller 使用 'transform'。
         
-        映射规则:
+        配置分层设计：
+        ================
+        
+        tf 配置 (ROS 层特有，用于 TF2InjectionManager):
+        - buffer_warmup_timeout_sec: TF buffer 预热超时
+        - buffer_warmup_interval_sec: TF buffer 预热检查间隔
+        - retry_interval_sec: TF 注入重试间隔
+        - max_retries: 最大重试次数
+        
+        transform 配置 (算法层，用于 RobustCoordinateTransformer):
+        - source_frame: 源坐标系
+        - target_frame: 目标坐标系
+        - timeout_ms: TF 查询超时
+        - expected_source_frames: 预期的源坐标系列表
+        - fallback_duration_limit_ms: 降级持续限制
+        - drift_estimation_enabled: 漂移估计开关
+        - 等等...
+        
+        映射规则 (tf -> transform):
         - tf.source_frame -> transform.source_frame
         - tf.target_frame -> transform.target_frame
         - tf.timeout_ms -> transform.timeout_ms
         - tf.expected_source_frames -> transform.expected_source_frames
+        
+        注意：buffer_warmup_* 和 retry_* 参数不映射到 transform，
+        因为它们是 ROS TF2 特有的，与算法层的坐标变换逻辑无关。
         """
         if 'transform' not in config:
             config['transform'] = {}
         
         transform = config['transform']
         
-        # 直接映射
+        # 直接映射：这些参数在 ROS 层和算法层都需要
         if 'source_frame' in tf_config:
             transform['source_frame'] = tf_config['source_frame']
         if 'target_frame' in tf_config:

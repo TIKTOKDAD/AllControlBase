@@ -145,9 +145,16 @@ class Trajectory:
         if self.low_speed_thresh is None:
             self.low_speed_thresh = TrajectoryDefaults.low_speed_thresh
         
-        # 验证
-        self.confidence = np.clip(self.confidence, 0.0, 1.0)
-        if self.dt_sec <= 0:
+        # 验证 confidence: 必须是有效的有限数值
+        # np.clip 对 NaN 不会报错但会保留 NaN，需要先检查
+        if not np.isfinite(self.confidence):
+            logger.warning(f"Trajectory confidence={self.confidence} invalid (NaN/Inf), using default {TrajectoryDefaults.default_confidence}")
+            self.confidence = TrajectoryDefaults.default_confidence
+        else:
+            self.confidence = np.clip(self.confidence, 0.0, 1.0)
+        
+        # 验证 dt_sec: 必须是正的有限数值
+        if not np.isfinite(self.dt_sec) or self.dt_sec <= 0:
             logger.warning(f"Trajectory dt_sec={self.dt_sec} invalid, using default {TrajectoryDefaults.dt_sec}")
             self.dt_sec = TrajectoryDefaults.dt_sec
     

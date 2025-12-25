@@ -16,6 +16,24 @@ class TimeoutMonitor:
     
     注意：所有时间戳使用单调时钟 (time.monotonic())，避免系统时间跳变影响。
     消息的 stamp 字段仅用于日志记录，不参与超时计算。
+    
+    超时配置说明:
+    - xxx_timeout_ms > 0: 启用超时检测，超过此时间未收到数据则报告超时
+    - xxx_timeout_ms <= 0: 禁用超时检测
+    
+    启动宽限期说明:
+    - startup_grace_ms: 收到第一条数据后的宽限期，在此期间不报告超时
+    - absolute_startup_timeout_ms: 从创建监控器开始的绝对超时
+      如果超过此时间仍未收到任何数据，将报告超时
+      设为 <= 0 表示禁用此检查（默认行为，向后兼容）
+    
+    典型配置示例:
+        watchdog:
+          odom_timeout_ms: 500      # 500ms 未收到 odom 则超时
+          traj_timeout_ms: 2500     # 2.5s 未收到轨迹则超时
+          imu_timeout_ms: -1        # 禁用 IMU 超时检测
+          startup_grace_ms: 5000    # 启动后 5s 宽限期
+          absolute_startup_timeout_ms: 10000  # 10s 内必须收到数据
     """
     
     def __init__(self, config: Dict[str, Any]):
@@ -26,11 +44,40 @@ class TimeoutMonitor:
         self.imu_timeout_ms = watchdog_config.get('imu_timeout_ms', -1)
         self.startup_grace_ms = watchdog_config.get('startup_grace_ms', 5000)
         
+        # 绝对启动超时：从创建监控器开始，如果超过此时间仍未收到任何数据，报告超时
+        # 默认为 startup_grace_ms * 2，设为 <= 0 表示禁用
+        self.absolute_startup_timeout_ms = watchdog_config.get(
+            'absolute_startup_timeout_ms', 
+            self.startup_grace_ms * 2 if self.startup_grace_ms > 0 else -1
+        )
+        
+        # 记录监控器创建时间，用于绝对启动超时检测
+        self._creation_time: float = get_monotonic_time()
         self._startup_time: Optional[float] = None
         self._last_odom_time: Optional[float] = None
         self._last_traj_time: Optional[float] = None
         self._last_imu_time: Optional[float] = None
         self._traj_timeout_start: Optional[float] = None
+    
+    @property
+    def absolute_startup_timeout_enabled(self) -> bool:
+        """是否启用绝对启动超时检测"""
+        return self.absolute_startup_timeout_ms > 0
+    
+    @property
+    def odom_timeout_enabled(self) -> bool:
+        """是否启用 odom 超时检测"""
+        return self.odom_timeout_ms > 0
+    
+    @property
+    def traj_timeout_enabled(self) -> bool:
+        """是否启用轨迹超时检测"""
+        return self.traj_timeout_ms > 0
+    
+    @property
+    def imu_timeout_enabled(self) -> bool:
+        """是否启用 IMU 超时检测"""
+        return self.imu_timeout_ms > 0
     
     def update_odom(self) -> None:
         """
@@ -76,8 +123,7 @@ class TimeoutMonitor:
         """检查所有超时状态
         
         Args:
-            current_time: 当前时间（秒），如果为 None 则使用单调时钟
-                         注意：为保持一致性，建议不传入此参数
+            current_time: 已废弃参数，保留用于向后兼容，实际使用单调时钟
         
         Note:
             超时阈值 <= 0 表示禁用该数据源的超时检测
@@ -87,6 +133,24 @@ class TimeoutMonitor:
         
         in_startup_grace = False
         if self._startup_time is None:
+            # 从未收到任何数据
+            # 检查是否超过绝对启动超时
+            if self.absolute_startup_timeout_enabled:
+                time_since_creation_ms = (monotonic_now - self._creation_time) * 1000
+                if time_since_creation_ms > self.absolute_startup_timeout_ms:
+                    # 超过绝对启动超时，报告 odom 和 traj 超时
+                    # 这表明系统可能存在配置错误或硬件故障
+                    return TimeoutStatus(
+                        odom_timeout=True, 
+                        traj_timeout=True, 
+                        traj_grace_exceeded=True,
+                        imu_timeout=self.imu_timeout_enabled,
+                        last_odom_age_ms=NEVER_RECEIVED_AGE_MS,
+                        last_traj_age_ms=NEVER_RECEIVED_AGE_MS,
+                        last_imu_age_ms=NEVER_RECEIVED_AGE_MS,
+                        in_startup_grace=False
+                    )
+            # 仍在等待第一条数据
             in_startup_grace = True
         else:
             startup_elapsed_ms = (monotonic_now - self._startup_time) * 1000
@@ -103,12 +167,12 @@ class TimeoutMonitor:
         traj_age_ms = self._compute_age_ms(self._last_traj_time, monotonic_now)
         imu_age_ms = self._compute_age_ms(self._last_imu_time, monotonic_now)
         
-        # 超时阈值 <= 0 表示禁用超时检测
-        odom_timeout = self.odom_timeout_ms > 0 and odom_age_ms > self.odom_timeout_ms
-        imu_timeout = self.imu_timeout_ms > 0 and imu_age_ms > self.imu_timeout_ms
+        # 使用属性检查是否启用超时检测
+        odom_timeout = self.odom_timeout_enabled and odom_age_ms > self.odom_timeout_ms
+        imu_timeout = self.imu_timeout_enabled and imu_age_ms > self.imu_timeout_ms
         
-        # 轨迹超时检测（支持禁用）
-        traj_timeout = self.traj_timeout_ms > 0 and traj_age_ms > self.traj_timeout_ms
+        # 轨迹超时检测
+        traj_timeout = self.traj_timeout_enabled and traj_age_ms > self.traj_timeout_ms
         traj_grace_exceeded = False
         
         if traj_timeout:
@@ -141,3 +205,5 @@ class TimeoutMonitor:
         self._last_imu_time = None
         self._traj_timeout_start = None
         self._startup_time = None
+        # 重置创建时间，重新开始绝对启动超时计时
+        self._creation_time = get_monotonic_time()

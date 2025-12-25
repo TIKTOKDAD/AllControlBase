@@ -126,10 +126,15 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str]
     # 前瞻距离一致性
     min_lookahead = get_config_value(config, 'backup.min_lookahead')
     max_lookahead = get_config_value(config, 'backup.max_lookahead')
+    lookahead_dist = get_config_value(config, 'backup.lookahead_dist')
     if _is_numeric(min_lookahead) and _is_numeric(max_lookahead):
         if min_lookahead > max_lookahead:
             errors.append(('backup.min_lookahead', 
                           f'最小前瞻距离 ({min_lookahead}) 不应大于最大前瞻距离 ({max_lookahead})'))
+    if _is_numeric(lookahead_dist) and _is_numeric(min_lookahead) and _is_numeric(max_lookahead):
+        if lookahead_dist < min_lookahead or lookahead_dist > max_lookahead:
+            errors.append(('backup.lookahead_dist', 
+                          f'默认前瞻距离 ({lookahead_dist}) 应在 [{min_lookahead}, {max_lookahead}] 范围内'))
     
     # 速度约束一致性
     v_min = get_config_value(config, 'constraints.v_min')

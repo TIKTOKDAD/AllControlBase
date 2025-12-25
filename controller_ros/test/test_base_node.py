@@ -544,8 +544,8 @@ def test_on_diagnostics_includes_tf2_injected():
     assert diag['transform']['tf2_injected'] == True
 
 
-def test_reset_clears_tf2_retry_counter():
-    """测试重置清除 TF2 重试计数器"""
+def test_reset_clears_tf2_retry_state():
+    """测试重置清除 TF2 重试状态（时间基准）"""
     mock = MockControllerNode()
     mock.initialize()
     
@@ -556,13 +556,15 @@ def test_reset_clears_tf2_retry_counter():
     # 注入 TF2
     mock.node._inject_tf2_to_controller(blocking=False)
     
-    # 手动设置重试计数器（模拟多次重试后的状态）
+    # 手动设置重试状态（模拟多次重试后的状态）
     if mock.node._tf2_injection_manager is not None:
-        mock.node._tf2_injection_manager._retry_counter = 25
+        mock.node._tf2_injection_manager._last_retry_time = 12345.0
+        mock.node._tf2_injection_manager._retry_count = 25
     
     # 重置
     mock.node._handle_reset()
     
-    # 计数器应该被重置
+    # 重试时间应该被重置（允许立即重试）
     if mock.node._tf2_injection_manager is not None:
-        assert mock.node._tf2_injection_manager._retry_counter == 0
+        assert mock.node._tf2_injection_manager._last_retry_time is None
+        # 注意：_retry_count 不重置，因为它是累计统计值，用于诊断

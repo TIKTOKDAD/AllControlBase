@@ -191,7 +191,9 @@ class BasicSafetyMonitor(ISafetyMonitor):
         if self._last_cmd is not None and self._last_time is not None:
             dt = current_time - self._last_time
             # 使用非严格不等式，确保边界值也被正确处理
-            if dt >= self.min_dt_for_accel and dt <= self.max_dt_for_accel:
+            # min_dt_for_accel: 避免除零和数值不稳定
+            # max_dt_for_accel: 避免长时间间隔导致的不准确加速度估计
+            if self.min_dt_for_accel <= dt <= self.max_dt_for_accel:
                 # 计算原始加速度
                 raw_ax = (cmd.vx - self._last_cmd.vx) / dt
                 raw_ay = (cmd.vy - self._last_cmd.vy) / dt

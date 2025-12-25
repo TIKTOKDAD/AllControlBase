@@ -60,12 +60,26 @@ class ITrajectoryTracker(ABC):
         pass
     
     @abstractmethod
-    def set_horizon(self, horizon: int) -> None:
+    def set_horizon(self, horizon: int) -> bool:
+        """
+        设置预测时域长度
+        
+        Args:
+            horizon: 新的预测时域长度
+        
+        Returns:
+            bool: True 表示成功更新，False 表示被节流或无需更新
+        """
+        pass
+    
+    @abstractmethod
+    def reset(self) -> None:
+        """重置控制器内部状态（不释放资源）"""
         pass
     
     @abstractmethod
     def shutdown(self) -> None:
-        """资源清理"""
+        """资源清理并关闭控制器"""
         pass
 
 

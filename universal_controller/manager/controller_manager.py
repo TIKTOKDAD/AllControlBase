@@ -123,6 +123,14 @@ class ControllerManager:
         self._last_attitude_cmd: Optional[AttitudeCommand] = None  # F14: 姿态命令
         self._last_update_time: Optional[float] = None  # 用于计算实际时间间隔
         
+        # notify_xxx_received() 调用跟踪
+        # 用于检测外部调用者是否正确调用了数据接收通知方法
+        self._last_odom_notify_time: Optional[float] = None
+        self._last_traj_notify_time: Optional[float] = None
+        self._notify_warning_logged: bool = False  # 避免重复警告
+        self._notify_check_interval: float = config.get('watchdog', {}).get(
+            'notify_check_interval', 5.0)  # 检查间隔（秒）
+        
         # 诊断发布器（职责分离）
         diagnostics_config = config.get('diagnostics', {})
         self._diagnostics_publisher = DiagnosticsPublisher(
@@ -159,6 +167,39 @@ class ControllerManager:
     def get_last_published_diagnostics(self) -> Optional[Dict[str, Any]]:
         """获取最后发布的诊断数据"""
         return self._diagnostics_publisher.get_last_published()
+    
+    # ==================== 数据接收通知接口 ====================
+    # 这些方法应该在数据实际接收时调用（如 ROS 回调中），
+    # 而不是在 update() 方法中调用。
+    
+    def notify_odom_received(self) -> None:
+        """
+        通知里程计数据已接收
+        
+        应该在 odom 数据实际接收时调用（如 ROS 回调中）。
+        这会更新超时监控器的时间戳。
+        """
+        self.timeout_monitor.update_odom()
+        self._last_odom_notify_time = get_monotonic_time()
+    
+    def notify_trajectory_received(self) -> None:
+        """
+        通知轨迹数据已接收
+        
+        应该在轨迹数据实际接收时调用（如 ROS 回调中）。
+        这会更新超时监控器的时间戳。
+        """
+        self.timeout_monitor.update_trajectory()
+        self._last_traj_notify_time = get_monotonic_time()
+    
+    def notify_imu_received(self) -> None:
+        """
+        通知 IMU 数据已接收
+        
+        应该在 IMU 数据实际接收时调用（如 ROS 回调中）。
+        这会更新超时监控器的时间戳。
+        """
+        self.timeout_monitor.update_imu()
     
     def initialize_components(self,
                              state_estimator: Optional[IStateEstimator] = None,
@@ -375,9 +416,31 @@ class ControllerManager:
             重要：update_odom/trajectory/imu 应该在数据实际接收时调用，
             而不是在控制循环中调用。这里只调用 check() 检查超时状态。
         """
-        # 注意：不再在这里调用 update_xxx()，这些应该在数据接收时调用
-        # 保留这些调用是为了向后兼容，但实际上应该由外部调用者负责
-        # 在 ROS 节点中，应该在回调函数中调用 notify_xxx_received()
+        # 检查 notify_xxx_received() 是否被正确调用
+        # 如果 update() 被调用但长时间没有收到 notify 调用，发出警告
+        current_time = get_monotonic_time()
+        if not self._notify_warning_logged:
+            # 只在启动后一段时间检查，避免启动期间的误报
+            if self._last_update_time is not None:
+                time_since_start = current_time - (self._last_update_time - self.dt)
+                if time_since_start > self._notify_check_interval:
+                    # 检查 odom notify
+                    if self._last_odom_notify_time is None:
+                        logger.warning(
+                            "notify_odom_received() has not been called. "
+                            "Timeout detection may not work correctly. "
+                            "Please call notify_odom_received() in your odom callback."
+                        )
+                        self._notify_warning_logged = True
+                    # 检查 trajectory notify
+                    elif self._last_traj_notify_time is None:
+                        logger.warning(
+                            "notify_trajectory_received() has not been called. "
+                            "Timeout detection may not work correctly. "
+                            "Please call notify_trajectory_received() in your trajectory callback."
+                        )
+                        self._notify_warning_logged = True
+        
         return self.timeout_monitor.check()
     
     def _update_state_estimation(self, odom: Odometry, imu: Optional[Imu],
@@ -656,6 +719,9 @@ class ControllerManager:
         if self.safety_monitor: self.safety_monitor.reset()
         if self.mpc_health_monitor: self.mpc_health_monitor.reset()
         if self.attitude_controller: self.attitude_controller.reset()  # F14: 重置姿态控制器
+        # 重置轨迹跟踪器内部状态（不释放资源）
+        if self.mpc_tracker: self.mpc_tracker.reset()
+        if self.backup_tracker: self.backup_tracker.reset()
         self.timeout_monitor.reset()
         self._last_state = ControllerState.INIT
         self._safety_failed = False
@@ -666,6 +732,9 @@ class ControllerManager:
         self._last_mpc_health = None
         self._last_attitude_cmd = None
         self._last_update_time = None  # 重置时间跟踪
+        self._last_odom_notify_time = None  # 重置 notify 跟踪
+        self._last_traj_notify_time = None
+        self._notify_warning_logged = False
         self._current_horizon = self.horizon_normal
         if self.mpc_tracker:
             self.mpc_tracker.set_horizon(self.horizon_normal)

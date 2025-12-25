@@ -2,9 +2,12 @@
 from typing import Dict, Any, Tuple, List
 from collections import deque
 import numpy as np
+import logging
 
 from ..core.interfaces import IConsistencyChecker
 from ..core.data_types import Trajectory, ConsistencyResult, Point3D
+
+logger = logging.getLogger(__name__)
 
 
 class WeightedConsistencyAnalyzer(IConsistencyChecker):
@@ -43,13 +46,30 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
     
     def compute(self, trajectory: Trajectory) -> ConsistencyResult:
         if not trajectory.soft_enabled or trajectory.velocities is None:
+            # soft_enabled=False 时，使用 hard velocities（从轨迹点计算的速度）
+            # alpha=1.0 表示完全信任 hard velocities
             return ConsistencyResult(
-                alpha=0.0, kappa_consistency=1.0, v_dir_consistency=1.0,
+                alpha=1.0, kappa_consistency=1.0, v_dir_consistency=1.0,
                 temporal_smooth=1.0, should_disable_soft=True, data_valid=True
             )
         
         hard_velocities = trajectory.get_hard_velocities()
         soft_velocities = trajectory.velocities
+        
+        # 检查输入数据是否包含 NaN/Inf
+        if np.any(~np.isfinite(soft_velocities)):
+            logger.warning("NaN/Inf detected in soft velocities, disabling soft mode")
+            return ConsistencyResult(
+                alpha=0.5, kappa_consistency=0.0, v_dir_consistency=0.0,
+                temporal_smooth=0.0, should_disable_soft=True, data_valid=False
+            )
+        
+        if np.any(~np.isfinite(hard_velocities)):
+            logger.warning("NaN/Inf detected in hard velocities, using conservative alpha")
+            return ConsistencyResult(
+                alpha=0.5, kappa_consistency=0.0, v_dir_consistency=0.0,
+                temporal_smooth=0.0, should_disable_soft=True, data_valid=False
+            )
         
         # 计算各维度一致性
         # 返回值: (value, is_sufficient) - is_sufficient 表示数据是否充足

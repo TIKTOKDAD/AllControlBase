@@ -124,17 +124,17 @@ class ControllerBridge:
     def notify_odom_received(self) -> None:
         """通知收到里程计数据（用于超时监控）"""
         if self._manager is not None:
-            self._manager.timeout_monitor.update_odom()
+            self._manager.notify_odom_received()
     
     def notify_trajectory_received(self) -> None:
         """通知收到轨迹数据（用于超时监控）"""
         if self._manager is not None:
-            self._manager.timeout_monitor.update_trajectory()
+            self._manager.notify_trajectory_received()
     
     def notify_imu_received(self) -> None:
         """通知收到 IMU 数据（用于超时监控）"""
         if self._manager is not None:
-            self._manager.timeout_monitor.update_imu()
+            self._manager.notify_imu_received()
     
     @property
     def is_initialized(self) -> bool:

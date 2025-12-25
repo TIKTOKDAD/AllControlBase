@@ -199,7 +199,7 @@ def fill_diagnostics_msg(msg: Any, diag: Dict[str, Any],
     msg.estimator_innovation_norm = safe_float(estimator.get('innovation_norm', 0.0))
     msg.estimator_slip_probability = safe_float(estimator.get('slip_probability', 0.0))
     msg.estimator_imu_drift_detected = bool(estimator.get('imu_drift_detected', False))
-    msg.estimator_imu_available = bool(estimator.get('imu_available', True))
+    msg.estimator_imu_available = bool(estimator.get('imu_available', False))
     
     # IMU bias - 使用安全转换
     msg.estimator_imu_bias = safe_float_list(

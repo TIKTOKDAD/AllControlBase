@@ -1,5 +1,90 @@
 # 代码重构说明
 
+## 重构日期: 2024-12-25 (最新更新)
+
+## 最新更新: 全面 Bug 分析与修复 (第三轮) ✅ 已完成
+
+### 本次修复完成的工作
+
+#### 1. MPC 资源管理完善 ✅ 已完成
+**问题**: `_initialize_solver()` 在重新初始化时未释放旧资源，可能导致内存泄漏。
+
+**解决方案**: 
+- 在 `_initialize_solver()` 开始时调用 `_release_solver_resources()`
+- 使 `_release_solver_resources()` 幂等，条件性调用 `gc.collect()`
+
+**修改文件**: `universal_controller/tracker/mpc_controller.py`
+
+**测试验证**: 代码审查通过，资源管理逻辑正确
+
+#### 2. 四元数有效性检查范围修正 ✅ 已完成
+**问题**: 原范围 (0.01-100.0) 过于宽松，允许 norm 在 0.1-10.0 之间的四元数通过。
+
+**解决方案**: 
+- `QUATERNION_NORM_SQ_MIN`: 0.01 → 0.25 (norm > 0.5)
+- `QUATERNION_NORM_SQ_MAX`: 100.0 → 4.0 (norm < 2.0)
+- 添加详细注释说明设计理由
+
+**修改文件**: `universal_controller/estimator/adaptive_ekf.py`
+
+#### 3. TF 配置映射文档完善 ✅ 已完成
+**问题**: TF 配置分层设计意图不清晰。
+
+**解决方案**: 添加详细 docstring 说明配置分离设计：
+- ROS 层配置 (buffer_warmup_timeout_sec, retry_interval_cycles)
+- 算法层配置 (fallback_duration_limit_ms, drift_estimation_enabled)
+
+**修改文件**: `controller_ros/src/controller_ros/utils/param_loader.py`
+
+#### 4. 参数加载日志增强 ✅ 已完成
+**问题**: 参数被覆盖时缺少日志记录。
+
+**解决方案**: 添加 DEBUG 级别日志记录参数覆盖情况。
+
+**修改文件**: `controller_ros/src/controller_ros/utils/param_loader.py`
+
+#### 5. MPC 权重命名统一 ✅ 已完成
+**问题**: `control_v`/`control_omega` 命名具有误导性，实际控制的是加速度。
+
+**解决方案**: 
+- 重命名为 `control_accel`/`control_alpha`
+- 在 `mpc_controller.py` 添加向后兼容的弃用警告
+- 更新所有配置文件和文档
+- 从默认配置中移除旧命名别名
+
+**修改文件**:
+- `universal_controller/tracker/mpc_controller.py`
+- `universal_controller/config/mpc_config.py`
+- `universal_controller/tests/test_config_effects.py`
+- `文档/01_技术文档.md`
+- `文档/02_使用文档.md`
+- `文档/04_快速参考.md`
+- `需求/09_控制器实现.md` (已有 v3.18 版本说明)
+- `需求/11_配置参数.md` (已有 v3.18 版本说明)
+
+**测试验证**: `pytest test_config_effects.py::test_mpc_weights_config` 通过
+
+#### 6. 超时配置语义文档化 ✅ 已完成
+**问题**: 超时配置的时间线关系不清晰。
+
+**解决方案**: 在 `turtlebot1.yaml` 添加详细的时间线说明注释。
+
+**修改文件**: `controller_ros/config/turtlebot1.yaml`
+
+#### 7. 状态机 Alpha 配置文档化 ✅ 已完成
+**问题**: `alpha_recovery_thresh` 和 `alpha_disable_thresh` 的作用不清晰。
+
+**解决方案**: 添加详细注释说明 alpha (α) 的含义和禁用场景。
+
+**修改文件**: `controller_ros/config/turtlebot1.yaml`
+
+### 测试验证结果
+- `test_mpc_weights_config`: ✅ PASSED
+- `test_timeout_monitor`: ✅ PASSED
+- `test_timeout_monitor_disabled_timeout`: ✅ PASSED
+
+---
+
 ## 重构日期: 2024-12-24 (更新)
 
 ## 最新更新: 多角度 Bug 分析与修复 (第二轮)

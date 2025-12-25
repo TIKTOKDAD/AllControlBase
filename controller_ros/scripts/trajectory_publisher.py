@@ -70,6 +70,11 @@ class TrajectoryPublisher:
         self.confidence = rospy.get_param('~confidence', 1.0)  # 默认置信度
         self.soft_enabled = rospy.get_param('~soft_enabled', False)  # 是否启用 Soft 约束
         
+        # 坐标系配置 - 从 TF 配置读取，保持与控制器一致
+        # 默认使用 base_footprint (TurtleBot 标准)，也支持 base_link
+        self.frame_id = rospy.get_param('~frame_id', 
+                                        rospy.get_param('tf/source_frame', 'base_footprint'))
+        
         input_topic = rospy.get_param('~input_topic', '/waypoint')
         output_topic = rospy.get_param('~output_topic', '/nn/local_trajectory')
         
@@ -89,6 +94,7 @@ class TrajectoryPublisher:
         rospy.loginfo(f"  订阅话题: {input_topic} (Float32MultiArray)")
         rospy.loginfo(f"  发布话题: {output_topic} (LocalTrajectoryV4)")
         rospy.loginfo(f"  轨迹时间间隔: {self.dt} s")
+        rospy.loginfo(f"  坐标系: {self.frame_id}")
         rospy.loginfo(f"  Soft 约束: {'启用' if self.soft_enabled else '禁用'}")
         rospy.loginfo("=" * 50)
 
@@ -102,7 +108,7 @@ class TrajectoryPublisher:
         self.receive_count += 1
         
         # 解析数据
-        data = msg.data
+        data = list(msg.data)  # 转换为 list 以便修改
         if len(data) < 2:
             rospy.logwarn(f"收到空轨迹数据，忽略")
             return
@@ -115,6 +121,25 @@ class TrajectoryPublisher:
         # 解析为点列表
         num_points = len(data) // 2
         positions = np.array(data).reshape(num_points, 2)
+        
+        # 验证数据有效性：检查 NaN 和 Inf
+        if not np.all(np.isfinite(positions)):
+            invalid_mask = ~np.isfinite(positions)
+            invalid_count = np.sum(invalid_mask)
+            rospy.logwarn_throttle(
+                1.0,
+                f"轨迹数据包含 {invalid_count} 个无效值 (NaN/Inf)，忽略此帧"
+            )
+            return
+        
+        # 可选：检查坐标范围是否合理（防止异常大的值）
+        MAX_COORD = 100.0  # 最大合理坐标值 (米)
+        if np.any(np.abs(positions) > MAX_COORD):
+            rospy.logwarn_throttle(
+                1.0,
+                f"轨迹坐标超出合理范围 (>{MAX_COORD}m)，忽略此帧"
+            )
+            return
         
         # 创建并发布消息
         traj_msg = self.create_trajectory_msg(positions)
@@ -146,7 +171,7 @@ class TrajectoryPublisher:
         # Header
         msg.header = Header()
         msg.header.stamp = rospy.Time.now()
-        msg.header.frame_id = "base_footprint"  # TurtleBot 使用 base_footprint 坐标系
+        msg.header.frame_id = self.frame_id  # 使用配置的坐标系
         
         # 轨迹模式
         msg.mode = mode
@@ -206,6 +231,9 @@ class StopTrajectoryPublisher:
     def __init__(self):
         rospy.init_node('stop_trajectory_publisher', anonymous=True)
         output_topic = rospy.get_param('~output_topic', '/nn/local_trajectory')
+        # 坐标系配置 - 与 TrajectoryPublisher 保持一致
+        self.frame_id = rospy.get_param('~frame_id', 
+                                        rospy.get_param('tf/source_frame', 'base_footprint'))
         self.pub = rospy.Publisher(output_topic, LocalTrajectoryV4, queue_size=1)
         rospy.sleep(0.5)  # 等待连接
     
@@ -214,7 +242,7 @@ class StopTrajectoryPublisher:
         msg = LocalTrajectoryV4()
         msg.header = Header()
         msg.header.stamp = rospy.Time.now()
-        msg.header.frame_id = "base_footprint"  # TurtleBot 使用 base_footprint 坐标系
+        msg.header.frame_id = self.frame_id  # 使用配置的坐标系
         msg.mode = MODE_STOP
         msg.points = [Point(x=0.0, y=0.0, z=0.0)]
         msg.velocities_flat = []

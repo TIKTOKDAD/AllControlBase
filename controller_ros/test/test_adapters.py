@@ -293,3 +293,91 @@ def test_trajectory_adapter_zero_dt_sec():
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+def test_trajectory_adapter_velocity_padding_stop_mode():
+    """测试轨迹适配器在停止模式下使用零速度填充"""
+    from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+    
+    adapter = TrajectoryAdapter()
+    ros_msg = MockRosTrajectory()
+    ros_msg.points = [MockRosPoint(i * 0.1, 0, 0) for i in range(10)]  # 10 个位置点
+    ros_msg.mode = 1  # MODE_STOP
+    ros_msg.soft_enabled = True
+    # 只有 3 个速度点
+    ros_msg.velocities_flat = [
+        1.0, 0.1, 0.0, 0.01,
+        2.0, 0.2, 0.0, 0.02,
+        3.0, 0.3, 0.0, 0.03,
+    ]
+    
+    uc_traj = adapter.to_uc(ros_msg)
+    
+    assert uc_traj.soft_enabled == True
+    assert uc_traj.velocities is not None
+    assert uc_traj.velocities.shape == (10, 4)
+    
+    # 前 3 个点应该是原始值
+    assert uc_traj.velocities[0, 0] == 1.0
+    assert uc_traj.velocities[1, 0] == 2.0
+    assert uc_traj.velocities[2, 0] == 3.0
+    
+    # 后 7 个点应该用零填充 (停止模式)
+    for i in range(3, 10):
+        assert uc_traj.velocities[i, 0] == 0.0, f"Point {i} should be padded with zero for stop mode"
+        assert uc_traj.velocities[i, 1] == 0.0
+        assert uc_traj.velocities[i, 2] == 0.0
+        assert uc_traj.velocities[i, 3] == 0.0
+
+
+def test_trajectory_adapter_velocity_padding_emergency_mode():
+    """测试轨迹适配器在紧急模式下使用零速度填充"""
+    from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+    
+    adapter = TrajectoryAdapter()
+    ros_msg = MockRosTrajectory()
+    ros_msg.points = [MockRosPoint(i * 0.1, 0, 0) for i in range(5)]  # 5 个位置点
+    ros_msg.mode = 3  # MODE_EMERGENCY
+    ros_msg.soft_enabled = True
+    # 只有 2 个速度点
+    ros_msg.velocities_flat = [
+        1.0, 0.0, 0.0, 0.1,
+        0.5, 0.0, 0.0, 0.05,
+    ]
+    
+    uc_traj = adapter.to_uc(ros_msg)
+    
+    assert uc_traj.soft_enabled == True
+    assert uc_traj.velocities is not None
+    assert uc_traj.velocities.shape == (5, 4)
+    
+    # 前 2 个点应该是原始值
+    assert uc_traj.velocities[0, 0] == 1.0
+    assert uc_traj.velocities[1, 0] == 0.5
+    
+    # 后 3 个点应该用零填充 (紧急模式)
+    for i in range(2, 5):
+        assert uc_traj.velocities[i, 0] == 0.0, f"Point {i} should be padded with zero for emergency mode"
+
+
+def test_trajectory_adapter_confidence_clamping():
+    """测试轨迹适配器置信度范围限制"""
+    from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+    
+    adapter = TrajectoryAdapter()
+    
+    # 测试置信度超出上限
+    ros_msg = MockRosTrajectory()
+    ros_msg.confidence = 1.5
+    uc_traj = adapter.to_uc(ros_msg)
+    assert uc_traj.confidence == 1.0, "Confidence should be clamped to 1.0"
+    
+    # 测试置信度低于下限
+    ros_msg.confidence = -0.5
+    uc_traj = adapter.to_uc(ros_msg)
+    assert uc_traj.confidence == 0.0, "Confidence should be clamped to 0.0"
+    
+    # 测试正常置信度
+    ros_msg.confidence = 0.8
+    uc_traj = adapter.to_uc(ros_msg)
+    assert uc_traj.confidence == 0.8, "Normal confidence should not be changed"

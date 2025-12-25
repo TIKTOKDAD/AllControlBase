@@ -104,14 +104,18 @@ class PurePursuitController(ITrajectoryTracker):
     def set_manual_heading(self, heading: float) -> None:
         self._manual_heading = heading
     
-    def shutdown(self) -> None:
-        """关闭控制器并重置状态"""
-        self._is_shutdown = True
-        # 重置内部状态
+    def reset(self) -> None:
+        """重置控制器内部状态（不释放资源）"""
         self.last_cmd = None
         self._last_turn_direction = None
         self._current_position = None
         self._manual_heading = None
+        # 注意：不重置 _is_shutdown，因为 reset 不应该改变关闭状态
+    
+    def shutdown(self) -> None:
+        """关闭控制器并重置状态"""
+        self._is_shutdown = True
+        self.reset()
     
     def compute(self, state: np.ndarray, trajectory: Trajectory, 
                 consistency: ConsistencyResult) -> ControlOutput:
@@ -137,7 +141,7 @@ class PurePursuitController(ITrajectoryTracker):
         dx = lookahead_point.x - px
         dy = lookahead_point.y - py
         dist_to_target = np.sqrt(dx**2 + dy**2)
-        target_v = self._compute_target_velocity(trajectory, target_idx)
+        target_v = self._compute_target_velocity(trajectory, target_idx, consistency.alpha)
         
         vz = 0.0
         if self.is_3d and target_idx < len(trajectory.points):
@@ -165,8 +169,17 @@ class PurePursuitController(ITrajectoryTracker):
     def get_health_metrics(self) -> Dict[str, Any]:
         return {'type': 'pure_pursuit', 'active': True}
     
-    def set_horizon(self, horizon: int) -> None:
+    def set_horizon(self, horizon: int) -> bool:
+        """
+        设置预测时域长度
+        
+        Pure Pursuit 不使用 horizon，但为了接口一致性保留此方法。
+        
+        Returns:
+            bool: 始终返回 True
+        """
         self._horizon = horizon
+        return True
     
     def _get_omega_limit(self, current_v: float) -> float:
         """获取角速度限制，使用线性插值避免阶跃切换"""
@@ -236,7 +249,9 @@ class PurePursuitController(ITrajectoryTracker):
                     else:
                         # 首次遇到正后方情况，选择较短的转向方向
                         # 使用 local_y 的符号来决定（目标点偏左还是偏右）
-                        if abs(local_y) > 1e-3:
+                        # 阈值设为 min_distance_thresh 的一半，确保有足够的判断余量
+                        rear_direction_thresh = max(self.min_distance_thresh * 0.5, 0.02)
+                        if abs(local_y) > rear_direction_thresh:
                             self._last_turn_direction = 1 if local_y > 0 else -1
                         else:
                             # 完全在正后方，默认左转
@@ -440,55 +455,79 @@ class PurePursuitController(ITrajectoryTracker):
             return points[-1], len(points) - 1
         return None, 0
     
-    def _compute_target_velocity(self, trajectory: Trajectory, target_idx: int) -> float:
-        if trajectory.soft_enabled and trajectory.velocities is not None:
-            try:
-                if target_idx < len(trajectory.velocities):
-                    vel = trajectory.velocities[target_idx]
-                    # 处理不同的数组形状
-                    if isinstance(vel, np.ndarray):
-                        if vel.ndim == 0:
-                            # 0维数组 (标量)
-                            v_soft = abs(float(vel))
-                        elif vel.size == 0:
-                            # 空数组
-                            v_soft = self.v_max * self.default_speed_ratio
-                        elif len(vel) >= 2:
-                            # 多维速度向量 [vx, vy, ...]
-                            v_soft = np.sqrt(vel[0]**2 + vel[1]**2)
-                        elif len(vel) == 1:
-                            # 单元素数组
-                            v_soft = abs(float(vel[0]))
-                        else:
-                            # 不应该到达这里，但作为安全保护
-                            v_soft = self.v_max * self.default_speed_ratio
-                    elif hasattr(vel, '__len__'):
-                        # 列表或元组
-                        if len(vel) >= 2:
-                            v_soft = np.sqrt(float(vel[0])**2 + float(vel[1])**2)
-                        elif len(vel) == 1:
-                            v_soft = abs(float(vel[0]))
-                        else:
-                            # 空列表/元组
-                            v_soft = self.v_max * self.default_speed_ratio
-                    elif np.isscalar(vel):
-                        # 纯标量
-                        v_soft = abs(float(vel))
-                    else:
-                        v_soft = self.v_max * self.default_speed_ratio
-                    target_v = min(v_soft, self.v_max)
-                else:
-                    target_v = self.v_max * self.default_speed_ratio
-            except (IndexError, TypeError, ValueError) as e:
-                # 数组形状不正确，使用默认值
-                # 记录调试日志以便排查数据格式问题
-                logger.debug(f"Velocity data format issue at index {target_idx}: {e}, using default speed")
-                target_v = self.v_max * self.default_speed_ratio
-        else:
-            target_v = self.v_max * self.default_speed_ratio
+    def _compute_target_velocity(self, trajectory: Trajectory, target_idx: int, 
+                                  alpha: float = 1.0) -> float:
+        """计算目标速度 - 混合模式
         
+        使用混合公式: final_vel = alpha * soft_vel + (1 - alpha) * hard_vel
+        当 soft_enabled=False 时，alpha=1.0，结果为 hard_vel
+        
+        Args:
+            trajectory: 轨迹对象
+            target_idx: 目标点索引
+            alpha: 一致性系数，用于混合 soft 和 hard velocities
+        """
+        hard_velocities = trajectory.get_hard_velocities()
+        
+        # 计算 hard velocity 大小
+        v_hard_mag = self._extract_velocity_magnitude(hard_velocities, target_idx)
+        if v_hard_mag is None:
+            v_hard_mag = self.v_max * self.default_speed_ratio
+        
+        # 计算 soft velocity 大小（如果启用）
+        if trajectory.soft_enabled and trajectory.velocities is not None:
+            v_soft_mag = self._extract_velocity_magnitude(trajectory.velocities, target_idx)
+            if v_soft_mag is None:
+                v_soft_mag = v_hard_mag  # fallback to hard
+            # 混合: alpha * soft + (1 - alpha) * hard
+            target_v = alpha * v_soft_mag + (1 - alpha) * v_hard_mag
+        else:
+            # soft_enabled=False: 完全使用 hard velocities
+            target_v = v_hard_mag
+        
+        target_v = min(target_v, self.v_max)
         v_min_forward = max(0.0, self.v_min)
         return np.clip(target_v, v_min_forward, self.v_max)
+    
+    def _extract_velocity_magnitude(self, velocities: np.ndarray, idx: int) -> float:
+        """从速度数组中提取速度大小，处理各种数据格式"""
+        if velocities is None or idx >= len(velocities):
+            return None
+        
+        try:
+            vel = velocities[idx]
+            # 处理不同的数组形状
+            if isinstance(vel, np.ndarray):
+                if vel.ndim == 0:
+                    # 0维数组 (标量)
+                    return abs(float(vel))
+                elif vel.size == 0:
+                    # 空数组
+                    return None
+                elif len(vel) >= 2:
+                    # 多维速度向量 [vx, vy, ...]
+                    return np.sqrt(vel[0]**2 + vel[1]**2)
+                elif len(vel) == 1:
+                    # 单元素数组
+                    return abs(float(vel[0]))
+                else:
+                    return None
+            elif hasattr(vel, '__len__'):
+                # 列表或元组
+                if len(vel) >= 2:
+                    return np.sqrt(float(vel[0])**2 + float(vel[1])**2)
+                elif len(vel) == 1:
+                    return abs(float(vel[0]))
+                else:
+                    return None
+            elif np.isscalar(vel):
+                # 纯标量
+                return abs(float(vel))
+            else:
+                return None
+        except (IndexError, TypeError, ValueError) as e:
+            logger.debug(f"Velocity data format issue at index {idx}: {e}")
+            return None
     
     def _apply_omni_constraints(self, cmd: ControlOutput) -> ControlOutput:
         constrained_vx = np.clip(cmd.vx, self.vx_min, self.vx_max)

@@ -60,6 +60,7 @@ TRANSFORM_CONFIG = {
     'drift_estimation_enabled': False,    # 漂移估计开关
     'recovery_correction_enabled': True, # 恢复校正开关
     'drift_rate': 0.01,               # 漂移率 (米/秒)
+    'drift_velocity_factor': 0.1,     # 速度漂移因子 (每 1 m/s 增加的漂移率比例)
     'max_drift_dt': 0.5,              # 漂移估计最大时间间隔 (秒)
     'drift_correction_thresh': 0.01,  # 漂移校正阈值 (米/弧度)
     # 坐标系验证
@@ -131,6 +132,7 @@ MODULES_VALIDATION_RULES = {
     'transform.fallback_critical_limit_ms': (0, 30000, 'TF2 临界降级限制 (ms)'),
     'transform.timeout_ms': (1, 1000, 'TF2 查询超时 (ms)'),
     'transform.drift_rate': (0.0, 1.0, '漂移率 (米/秒)'),
+    'transform.drift_velocity_factor': (0.0, 1.0, '速度漂移因子'),
     'transform.max_drift_dt': (0.01, 5.0, '漂移估计最大时间间隔 (秒)'),
     'transform.drift_correction_thresh': (0.0, 1.0, '漂移校正阈值 (米/弧度)'),
     # 过渡配置

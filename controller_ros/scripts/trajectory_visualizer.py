@@ -59,6 +59,7 @@ class TrajectoryVisualizer:
         # 显示参数
         self.point_radius = rospy.get_param('~point_radius', 8)
         self.line_thickness = rospy.get_param('~line_thickness', 3)
+        self.boundary_margin = rospy.get_param('~boundary_margin', 50)  # 边界容差（像素）
         
         # 单应性矩阵
         self.H = None  # 地面坐标 -> 图像坐标
@@ -390,8 +391,9 @@ class TrajectoryVisualizer:
             projected = self.project_point(pt.x, pt.y)
             if projected:
                 h, w = image.shape[:2]
-                # 允许稍微超出边界
-                if -50 <= projected[0] < w + 50 and -50 <= projected[1] < h + 50:
+                margin = self.boundary_margin
+                # 允许稍微超出边界（使用可配置的边界容差）
+                if -margin <= projected[0] < w + margin and -margin <= projected[1] < h + margin:
                     u = max(0, min(w - 1, projected[0]))
                     v = max(0, min(h - 1, projected[1]))
                     points_2d.append((u, v))
@@ -481,18 +483,59 @@ class TrajectoryVisualizer:
         """运行标定流程"""
         rate = rospy.Rate(30)
         
+        # 检测平台并选择输入检测方法
+        import sys
+        import platform
+        
+        is_windows = platform.system() == 'Windows'
+        
+        if is_windows:
+            # Windows 平台：使用 msvcrt 进行非阻塞输入检测
+            try:
+                import msvcrt
+                has_msvcrt = True
+            except ImportError:
+                has_msvcrt = False
+                rospy.logwarn(
+                    "Windows platform detected but msvcrt not available. "
+                    "Calibration input may not work properly."
+                )
+        else:
+            # Unix 平台：使用 select
+            import select
+            has_msvcrt = False
+        
+        # 输入缓冲区（用于 Windows 逐字符读取）
+        input_buffer = ""
+        
         while not rospy.is_shutdown():
             # 检查是否需要输入地面坐标
             if len(self.calib_image_points) > len(self.calib_ground_points):
                 try:
-                    # 非阻塞检查输入
-                    import select
-                    import sys
-                    if select.select([sys.stdin], [], [], 0.0)[0]:
-                        line = sys.stdin.readline().strip()
-                        if line:
-                            parts = line.split()
-                            if len(parts) >= 2:
+                    line = None
+                    
+                    if is_windows and has_msvcrt:
+                        # Windows: 使用 msvcrt 非阻塞读取
+                        while msvcrt.kbhit():
+                            char = msvcrt.getwch()
+                            if char in ('\r', '\n'):
+                                line = input_buffer.strip()
+                                input_buffer = ""
+                                break
+                            elif char == '\b':  # 退格
+                                input_buffer = input_buffer[:-1]
+                            else:
+                                input_buffer += char
+                                print(char, end='', flush=True)
+                    else:
+                        # Unix: 使用 select 非阻塞检查输入
+                        if select.select([sys.stdin], [], [], 0.0)[0]:
+                            line = sys.stdin.readline().strip()
+                    
+                    if line:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            try:
                                 x, y = float(parts[0]), float(parts[1])
                                 self.calib_ground_points.append([x, y])
                                 rospy.loginfo(f"地面坐标: ({x}, {y})")
@@ -500,9 +543,12 @@ class TrajectoryVisualizer:
                                 # 如果有4个点，计算单应性矩阵
                                 if len(self.calib_ground_points) >= 4:
                                     self._compute_homography()
-                            else:
-                                rospy.logwarn("请输入两个数字: x y")
+                            except ValueError:
+                                rospy.logwarn("请输入有效的数字: x y")
+                        else:
+                            rospy.logwarn("请输入两个数字: x y")
                 except Exception as e:
+                    # 静默处理异常，避免干扰标定流程
                     pass
             
             rate.sleep()

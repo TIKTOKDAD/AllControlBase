@@ -221,6 +221,10 @@ class ControllerNodeBase(ABC):
             cmd: 速度控制命令
         """
         try:
+            # 显式检查 controller_bridge 是否存在
+            if self._controller_bridge is None:
+                return
+            
             manager = self._controller_bridge.manager
             if manager is None:
                 return
@@ -506,7 +510,11 @@ class ControllerNodeBase(ABC):
         """
         处理设置状态请求
         
-        出于安全考虑，只支持请求 STOPPING 状态。
+        支持的状态转换:
+        - STOPPING: 请求停止 (安全操作，始终允许)
+        - NORMAL: 从紧急停止恢复 (需要先清除紧急停止标志)
+        
+        其他状态转换出于安全考虑不允许外部直接设置。
         """
         if target_state == ControllerState.STOPPING.value:
             if self._controller_bridge is not None:
@@ -515,10 +523,20 @@ class ControllerNodeBase(ABC):
                     self._log_info('Stop requested via service')
                 return success
             return False
+        elif target_state == ControllerState.NORMAL.value:
+            # 允许从紧急停止恢复到正常状态
+            if self._emergency_stop_requested:
+                self._clear_emergency_stop()
+                self._log_info('Emergency stop cleared via set_state service, resuming normal operation')
+                return True
+            else:
+                self._log_warn('Set state to NORMAL requested but not in emergency stop state')
+                return False
         else:
             self._log_warn(
                 f'Set state to {target_state} not allowed. '
-                f'Only STOPPING ({ControllerState.STOPPING.value}) is supported for safety reasons.'
+                f'Only STOPPING ({ControllerState.STOPPING.value}) and '
+                f'NORMAL ({ControllerState.NORMAL.value}) are supported for safety reasons.'
             )
             return False
     

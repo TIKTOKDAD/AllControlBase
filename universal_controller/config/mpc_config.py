@@ -21,9 +21,6 @@ MPC_CONFIG = {
         # 控制输入权重 (R 矩阵) - 惩罚控制输入的大小，实现平滑控制
         'control_accel': 0.1,     # 加速度控制权重 (用于 ax, ay, az)
         'control_alpha': 0.1,     # 角加速度控制权重 (用于 alpha)
-        # 向后兼容别名 (已弃用，请使用 control_accel/control_alpha)
-        'control_v': 0.1,         # [已弃用] 同 control_accel
-        'control_omega': 0.1,     # [已弃用] 同 control_alpha
     },
     
     # MPC 健康监控参数
@@ -78,9 +75,6 @@ MPC_VALIDATION_RULES = {
     'mpc.weights.heading': (0.0, None, 'MPC 航向权重'),
     'mpc.weights.control_accel': (0.0, None, 'MPC 加速度控制权重'),
     'mpc.weights.control_alpha': (0.0, None, 'MPC 角加速度控制权重'),
-    # 向后兼容 (已弃用)
-    'mpc.weights.control_v': (0.0, None, 'MPC 加速度控制权重 (已弃用，请用 control_accel)'),
-    'mpc.weights.control_omega': (0.0, None, 'MPC 角加速度控制权重 (已弃用，请用 control_alpha)'),
     # ACADOS 求解器参数
     'mpc.solver.nlp_max_iter': (1, 1000, 'NLP 求解器最大迭代次数'),
     # MPC 健康监控参数

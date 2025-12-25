@@ -56,17 +56,33 @@ class MPCController(ITrajectoryTracker):
         self.is_omni = self.platform_type == PlatformType.OMNI
         
         # MPC 权重
-        # 优先使用新命名，向后兼容旧命名
         mpc_weights = mpc_config.get('weights', {})
         self.Q_pos = mpc_weights.get('position', 10.0)
         self.Q_vel = mpc_weights.get('velocity', 1.0)
         self.Q_heading = mpc_weights.get('heading', 5.0)
-        # 控制输入权重：优先使用新命名 control_accel/control_alpha
-        # 向后兼容旧命名 control_v/control_omega
-        self.R_accel = mpc_weights.get('control_accel', 
-                                        mpc_weights.get('control_v', 0.1))
-        self.R_alpha = mpc_weights.get('control_alpha', 
-                                        mpc_weights.get('control_omega', 0.1))
+        
+        # 控制输入权重
+        # 优先使用新命名 control_accel/control_alpha
+        # 向后兼容旧命名 control_v/control_omega（已弃用）
+        if 'control_accel' in mpc_weights:
+            self.R_accel = mpc_weights['control_accel']
+        elif 'control_v' in mpc_weights:
+            logger.warning(
+                "MPC weight 'control_v' is deprecated, use 'control_accel' instead"
+            )
+            self.R_accel = mpc_weights['control_v']
+        else:
+            self.R_accel = 0.1
+        
+        if 'control_alpha' in mpc_weights:
+            self.R_alpha = mpc_weights['control_alpha']
+        elif 'control_omega' in mpc_weights:
+            logger.warning(
+                "MPC weight 'control_omega' is deprecated, use 'control_alpha' instead"
+            )
+            self.R_alpha = mpc_weights['control_omega']
+        else:
+            self.R_alpha = 0.1
         
         # Fallback 求解器参数
         fallback_config = mpc_config.get('fallback', {})
@@ -112,11 +128,21 @@ class MPCController(ITrajectoryTracker):
         
         如果初始化失败，会清理所有已创建的资源，
         并将 _is_initialized 设为 False，后续调用会使用 fallback 求解器。
+        
+        资源管理策略:
+        - 初始化前先调用 _release_solver_resources() 确保旧资源完全释放
+        - 使用局部变量 ocp 和 solver 进行初始化
+        - 只有在完全成功后才赋值给实例变量
+        - 失败时清理局部变量并强制 GC
         """
         if not ACADOS_AVAILABLE:
             logger.info("ACADOS not available, using fallback mode")
             self._is_initialized = False
             return
+        
+        # 确保之前的资源已完全清理（包括 GC）
+        # 这对于 ACADOS C 资源的正确释放至关重要
+        self._release_solver_resources()
         
         # 临时变量，用于在失败时清理
         ocp = None
@@ -266,11 +292,14 @@ class MPCController(ITrajectoryTracker):
             
         except Exception as e:
             logger.error(f"ACADOS initialization failed: {e}")
-            # 清理可能已创建的资源
+            # 清理局部变量
+            solver = None
+            ocp = None
+            # 确保实例变量也被清理
             self._solver = None
             self._ocp = None
             self._is_initialized = False
-            gc.collect()  # 尝试回收任何部分创建的资源
+            gc.collect()  # 强制垃圾回收，确保 ACADOS C 资源被释放
 
     
     def _solve_with_acados(self, state: np.ndarray, trajectory: Trajectory,
@@ -279,19 +308,39 @@ class MPCController(ITrajectoryTracker):
         self._solver.set(0, 'lbx', state)
         self._solver.set(0, 'ubx', state)
         
-        ref_velocities = trajectory.velocities if trajectory.soft_enabled else trajectory.get_hard_velocities()
+        # 获取 hard velocities（始终需要）
+        hard_velocities = trajectory.get_hard_velocities()
+        # 获取 soft velocities（如果启用）
+        soft_velocities = trajectory.velocities if trajectory.soft_enabled else None
+        
         theta_ref = state[6]
+        alpha = consistency.alpha
         
         for i in range(self.horizon):
             traj_idx = min(i, len(trajectory.points) - 1)
             ref_point = trajectory.points[traj_idx]
             
-            if ref_velocities is not None and traj_idx < len(ref_velocities):
-                ref_vel = ref_velocities[traj_idx]
-                vx_ref, vy_ref, vz_ref = ref_vel[0], ref_vel[1], ref_vel[2]
-                wz_ref = ref_vel[3] if len(ref_vel) > 3 else 0.0
+            # 混合速度计算: final_vel = alpha * soft_vel + (1 - alpha) * hard_vel
+            # 当 soft_enabled=False 时，alpha=1.0，结果为 hard_vel
+            if hard_velocities is not None and traj_idx < len(hard_velocities):
+                hard_vel = hard_velocities[traj_idx]
+                vx_hard, vy_hard, vz_hard = hard_vel[0], hard_vel[1], hard_vel[2]
+                wz_hard = hard_vel[3] if len(hard_vel) > 3 else 0.0
             else:
-                vx_ref, vy_ref, vz_ref, wz_ref = 0.0, 0.0, 0.0, 0.0
+                vx_hard, vy_hard, vz_hard, wz_hard = 0.0, 0.0, 0.0, 0.0
+            
+            if soft_velocities is not None and traj_idx < len(soft_velocities):
+                soft_vel = soft_velocities[traj_idx]
+                vx_soft, vy_soft, vz_soft = soft_vel[0], soft_vel[1], soft_vel[2]
+                wz_soft = soft_vel[3] if len(soft_vel) > 3 else 0.0
+                # 混合: alpha * soft + (1 - alpha) * hard
+                vx_ref = alpha * vx_soft + (1 - alpha) * vx_hard
+                vy_ref = alpha * vy_soft + (1 - alpha) * vy_hard
+                vz_ref = alpha * vz_soft + (1 - alpha) * vz_hard
+                wz_ref = alpha * wz_soft + (1 - alpha) * wz_hard
+            else:
+                # 没有 soft velocities，完全使用 hard velocities
+                vx_ref, vy_ref, vz_ref, wz_ref = vx_hard, vy_hard, vz_hard, wz_hard
             
             if i == 0:
                 theta_ref = state[6]
@@ -304,11 +353,6 @@ class MPCController(ITrajectoryTracker):
                 dy = next_point.y - ref_point.y
                 if np.sqrt(dx**2 + dy**2) > 0.01:
                     theta_ref = np.arctan2(dy, dx)
-            
-            alpha = consistency.alpha
-            vx_ref *= alpha
-            vy_ref *= alpha
-            vz_ref *= alpha
             
             # y_ref 维度 = 8 (状态) + 4 (控制参考，通常为0)
             y_ref = np.array([ref_point.x, ref_point.y, ref_point.z,
@@ -362,8 +406,8 @@ class MPCController(ITrajectoryTracker):
         )
         
         # 使用 VelocitySmoother 进行速度平滑
+        # smooth() 会复制 health_metrics，无需再次赋值
         result = self._velocity_smoother.smooth(raw_result, self._last_cmd)
-        result.health_metrics = raw_result.health_metrics
         
         self._last_cmd = result
         return result
@@ -445,15 +489,32 @@ class MPCController(ITrajectoryTracker):
         dy = target.y - py
         dist = np.sqrt(dx**2 + dy**2)
         
+        # 计算目标速度 - 混合模式
+        # final_vel = alpha * soft_vel + (1 - alpha) * hard_vel
+        hard_velocities = trajectory.get_hard_velocities()
+        alpha = consistency.alpha
+        
+        # 计算 hard velocity 大小
+        if hard_velocities is not None and lookahead_idx < len(hard_velocities):
+            v_hard = hard_velocities[lookahead_idx]
+            v_hard_mag = np.sqrt(v_hard[0]**2 + v_hard[1]**2)
+        else:
+            v_hard_mag = self.v_max * self.default_speed_ratio
+        
+        # 计算 soft velocity 大小（如果启用）
         if trajectory.soft_enabled and trajectory.velocities is not None:
             if lookahead_idx < len(trajectory.velocities):
-                v_ref = trajectory.velocities[lookahead_idx]
-                target_v = np.sqrt(v_ref[0]**2 + v_ref[1]**2) * consistency.alpha
-                target_v = min(target_v, self.v_max)
+                v_soft = trajectory.velocities[lookahead_idx]
+                v_soft_mag = np.sqrt(v_soft[0]**2 + v_soft[1]**2)
             else:
-                target_v = self.v_max * self.default_speed_ratio
+                v_soft_mag = v_hard_mag  # fallback to hard
+            # 混合: alpha * soft + (1 - alpha) * hard
+            target_v = alpha * v_soft_mag + (1 - alpha) * v_hard_mag
         else:
-            target_v = self.v_max * self.default_speed_ratio
+            # soft_enabled=False: alpha=1.0，完全使用 hard velocities
+            target_v = v_hard_mag
+        
+        target_v = min(target_v, self.v_max)
         
         if self.is_omni or self.is_3d:
             if dist > self.fallback_min_distance_thresh:
@@ -517,19 +578,68 @@ class MPCController(ITrajectoryTracker):
             frame_id = self.output_frame  # 使用配置的输出坐标系
         
         # 构建原始控制输出
-        raw_result = ControlOutput(vx=vx, vy=vy, vz=vz, omega=omega,
-                                   frame_id=frame_id, success=True)
+        # fallback 求解器没有 KKT 残差等指标，使用 0 值表示
+        raw_result = ControlOutput(
+            vx=vx, vy=vy, vz=vz, omega=omega,
+            frame_id=frame_id, success=True,
+            health_metrics={
+                'kkt_residual': 0.0,
+                'condition_number': 1.0,
+                'solver_type': 'fallback'
+            }
+        )
         
         # 使用 VelocitySmoother 进行速度平滑
         result = self._velocity_smoother.smooth(raw_result, self._last_cmd)
         
+        # 更新内部状态
         self._last_kkt_residual = 0.0
         self._last_condition_number = 1.0
         self._last_cmd = result
         
         return result
     
-    def set_horizon(self, horizon: int) -> None:
+    def _release_solver_resources(self) -> None:
+        """
+        释放 ACADOS 求解器资源
+        
+        ACADOS Python 绑定在 __del__ 中会释放 C 资源，但 Python 的 GC 
+        不保证立即调用 __del__。此方法通过以下策略确保资源及时释放：
+        
+        1. 显式删除引用并设为 None
+        2. 调用 gc.collect() 触发垃圾回收
+        3. 记录资源释放状态用于调试
+        
+        注意：此方法是幂等的，可以安全地多次调用
+        """
+        has_resources = self._solver is not None or self._ocp is not None
+        
+        if self._solver is not None:
+            try:
+                # 保存引用用于日志
+                solver_id = id(self._solver)
+                # 显式删除引用
+                del self._solver
+                self._solver = None
+                logger.debug(f"Released solver reference (id={solver_id})")
+            except Exception as e:
+                logger.warning(f"Error releasing solver: {e}")
+                self._solver = None
+        
+        if self._ocp is not None:
+            try:
+                del self._ocp
+                self._ocp = None
+            except Exception as e:
+                logger.warning(f"Error releasing OCP: {e}")
+                self._ocp = None
+        
+        # 只有在确实有资源需要释放时才调用 gc.collect()
+        # 避免不必要的性能开销
+        if has_resources:
+            gc.collect()
+    
+    def set_horizon(self, horizon: int) -> bool:
         """
         动态调整预测 horizon
         
@@ -539,9 +649,12 @@ class MPCController(ITrajectoryTracker):
         
         Args:
             horizon: 新的预测时域长度
+        
+        Returns:
+            bool: True 表示 horizon 已更新，False 表示被节流或无需更新
         """
         if horizon == self.horizon:
-            return
+            return True  # 无需更新，但状态是一致的
         
         # 节流检查：防止频繁重新初始化
         current_time = time.time()
@@ -549,9 +662,10 @@ class MPCController(ITrajectoryTracker):
             elapsed = current_time - self._last_horizon_change_time
             if elapsed < self._horizon_change_min_interval:
                 logger.debug(
-                    f"Horizon change throttled: {elapsed:.2f}s < {self._horizon_change_min_interval}s"
+                    f"Horizon change throttled: {elapsed:.2f}s < {self._horizon_change_min_interval}s, "
+                    f"requested={horizon}, current={self.horizon}"
                 )
-                return
+                return False  # 明确返回 False 表示未更新
         
         old_horizon = self.horizon
         self.horizon = horizon
@@ -560,18 +674,12 @@ class MPCController(ITrajectoryTracker):
         
         if self._is_initialized:
             logger.info("Reinitializing ACADOS solver with new horizon...")
-            # 先释放旧的求解器资源
-            if self._solver is not None:
-                try:
-                    # ACADOS 求解器没有显式的 close/destroy 方法
-                    # 将其设为 None 并强制 GC 回收资源
-                    # 注意：ACADOS Python 绑定在 __del__ 中会释放 C 资源
-                    self._solver = None
-                    gc.collect()  # 强制垃圾回收，确保资源及时释放
-                except Exception as e:
-                    logger.warning(f"Error releasing old solver: {e}")
+            # 使用统一的资源释放方法
+            self._release_solver_resources()
             self._is_initialized = False
             self._initialize_solver()
+        
+        return True  # 成功更新
     
     def get_health_metrics(self) -> Dict[str, Any]:
         return {
@@ -583,27 +691,31 @@ class MPCController(ITrajectoryTracker):
             'acados_available': self._is_initialized
         }
     
-    def shutdown(self) -> None:
-        """释放资源并重置状态"""
-        if self._solver is not None:
-            self._solver = None
-            gc.collect()  # 强制垃圾回收，确保 ACADOS 资源及时释放
-        self._ocp = None  # 同时释放 OCP 对象
-        self._is_initialized = False
-        # 重置内部状态
+    def reset(self) -> None:
+        """重置控制器内部状态（不释放求解器资源）"""
         self._last_cmd = None
         self._last_solve_time_ms = 0.0
         self._last_kkt_residual = 0.0
         self._last_condition_number = 1.0
+        # 注意：不重置 _solver 和 _is_initialized，保留求解器资源
+    
+    def shutdown(self) -> None:
+        """释放资源并重置状态"""
+        self._release_solver_resources()
+        self._is_initialized = False
+        self.reset()  # 重置内部状态
     
     def __del__(self) -> None:
         """析构函数，确保资源释放"""
         # 注意：__del__ 中不应该抛出异常
         # 也不应该依赖其他可能已被销毁的对象
         try:
+            # 直接设为 None，不调用 _release_solver_resources 
+            # 因为 __del__ 中其他对象可能已被销毁
             if hasattr(self, '_solver') and self._solver is not None:
                 self._solver = None
             if hasattr(self, '_ocp') and self._ocp is not None:
                 self._ocp = None
+            # 不在 __del__ 中调用 gc.collect()，可能导致问题
         except Exception:
             pass  # 忽略析构时的异常

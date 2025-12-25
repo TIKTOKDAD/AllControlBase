@@ -4,6 +4,7 @@ TF2InjectionManager 单元测试
 import pytest
 import sys
 import os
+import time
 
 # 添加 src 目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -184,91 +185,98 @@ class TestTF2InjectionManager:
         result = injection_manager.try_reinjection_if_needed()
         assert result == False
     
-    def test_try_reinjection_interval(self):
-        """测试重试间隔"""
+    def test_try_reinjection_interval_time_based(self):
+        """测试基于时间的重试间隔"""
         tf_bridge = MockTFBridge(initialized=True, can_transform_result=False)
-        manager = MockControllerManager()
+        manager = MockControllerManager(has_coord_transformer=False)  # 让注入失败
+        
+        # 使用可控的时间函数
+        mock_time = [0.0]
+        def get_mock_time():
+            return mock_time[0]
         
         injection_manager = TF2InjectionManager(
             tf_bridge=tf_bridge,
             controller_manager=manager,
-            config={'retry_interval_cycles': 5},
-        )
-        
-        # 先尝试注入（会失败因为 can_transform 返回 False，但回调仍会注入）
-        # 为了测试重试逻辑，我们需要模拟注入失败的情况
-        # 这里我们手动设置状态
-        injection_manager._injection_attempted = True
-        injection_manager._injected = False
-        
-        # 前 4 次调用不应该触发重试
-        for i in range(4):
-            result = injection_manager.try_reinjection_if_needed()
-            assert result == False, f"Should not retry at iteration {i}"
-        
-        # 第 5 次应该触发重试
-        result = injection_manager.try_reinjection_if_needed()
-        assert result == True
-        assert injection_manager.retry_count == 1
-    
-    def test_try_reinjection_max_retries(self):
-        """测试最大重试次数"""
-        # 使用未初始化的 TF bridge，这样注入会失败
-        tf_bridge = MockTFBridge(initialized=False)
-        manager = MockControllerManager()
-        
-        injection_manager = TF2InjectionManager(
-            tf_bridge=tf_bridge,
-            controller_manager=manager,
-            config={
-                'retry_interval_cycles': 1,  # 每次都重试
-                'max_retries': 3,
-            },
+            config={'retry_interval_sec': 1.0},  # 1 秒重试间隔
+            get_time_func=get_mock_time,
         )
         
         # 手动设置状态（模拟初始注入失败后的状态）
         injection_manager._injection_attempted = True
         injection_manager._injected = False
         
-        # 现在让 TF bridge 变为已初始化，但注入仍会失败（因为 coord_transformer 会被注入）
-        # 为了测试最大重试次数，我们需要让注入一直失败
-        # 移除 coord_transformer
-        manager.coord_transformer = None
+        # 第一次调用应该触发重试（因为 _last_retry_time 为 None）
+        result = injection_manager.try_reinjection_if_needed()
+        assert result == True
+        assert injection_manager.retry_count == 1
         
-        # 前 3 次应该重试
-        for i in range(3):
-            result = injection_manager.try_reinjection_if_needed()
-            # 由于 TF bridge 未初始化，不会触发重试
-            # 我们需要让它初始化
-        
-        # 重新设置：让 TF bridge 初始化，但没有 coord_transformer
-        tf_bridge.is_initialized = True
-        injection_manager._retry_count = 0
-        
-        # 前 3 次应该重试
-        for i in range(3):
-            result = injection_manager.try_reinjection_if_needed()
-            assert result == True, f"Should retry at iteration {i}"
-            # 注入会失败因为没有 coord_transformer，所以 _injected 保持 False
-            assert injection_manager.is_injected == False
-        
-        # 第 4 次不应该重试（超过最大次数）
+        # 时间未过，不应该重试
+        mock_time[0] = 0.5  # 0.5 秒后
         result = injection_manager.try_reinjection_if_needed()
         assert result == False
+        assert injection_manager.retry_count == 1
+        
+        # 时间已过，应该重试
+        mock_time[0] = 1.5  # 1.5 秒后
+        result = injection_manager.try_reinjection_if_needed()
+        assert result == True
+        assert injection_manager.retry_count == 2
     
-    def test_try_reinjection_unlimited(self):
-        """测试无限重试"""
-        # 使用没有 coord_transformer 的 manager，这样注入会失败
-        tf_bridge = MockTFBridge(initialized=True, can_transform_result=False)
-        manager = MockControllerManager(has_coord_transformer=False)
+    def test_try_reinjection_max_retries(self):
+        """测试最大重试次数"""
+        tf_bridge = MockTFBridge(initialized=True)
+        manager = MockControllerManager(has_coord_transformer=False)  # 让注入失败
+        
+        # 使用可控的时间函数
+        mock_time = [0.0]
+        def get_mock_time():
+            return mock_time[0]
         
         injection_manager = TF2InjectionManager(
             tf_bridge=tf_bridge,
             controller_manager=manager,
             config={
-                'retry_interval_cycles': 1,
+                'retry_interval_sec': 0.1,  # 短间隔
+                'max_retries': 3,
+            },
+            get_time_func=get_mock_time,
+        )
+        
+        # 手动设置状态
+        injection_manager._injection_attempted = True
+        injection_manager._injected = False
+        
+        # 前 3 次应该重试
+        for i in range(3):
+            mock_time[0] = i * 0.2  # 每次增加 0.2 秒
+            result = injection_manager.try_reinjection_if_needed()
+            assert result == True, f"Should retry at iteration {i}"
+            assert injection_manager.is_injected == False
+        
+        # 第 4 次不应该重试（超过最大次数）
+        mock_time[0] = 1.0
+        result = injection_manager.try_reinjection_if_needed()
+        assert result == False
+    
+    def test_try_reinjection_unlimited(self):
+        """测试无限重试"""
+        tf_bridge = MockTFBridge(initialized=True)
+        manager = MockControllerManager(has_coord_transformer=False)  # 让注入失败
+        
+        # 使用可控的时间函数
+        mock_time = [0.0]
+        def get_mock_time():
+            return mock_time[0]
+        
+        injection_manager = TF2InjectionManager(
+            tf_bridge=tf_bridge,
+            controller_manager=manager,
+            config={
+                'retry_interval_sec': 0.1,
                 'max_retries': -1,  # 无限重试
             },
+            get_time_func=get_mock_time,
         )
         
         # 手动设置状态
@@ -277,9 +285,9 @@ class TestTF2InjectionManager:
         
         # 应该一直重试（测试 10 次）
         for i in range(10):
+            mock_time[0] = i * 0.2  # 每次增加 0.2 秒
             result = injection_manager.try_reinjection_if_needed()
             assert result == True, f"Should retry at iteration {i}"
-            # 注入会失败因为没有 coord_transformer
             assert injection_manager.is_injected == False
     
     def test_reset(self):
@@ -287,21 +295,26 @@ class TestTF2InjectionManager:
         tf_bridge = MockTFBridge()
         manager = MockControllerManager()
         
+        # 使用可控的时间函数
+        mock_time = [0.0]
+        def get_mock_time():
+            return mock_time[0]
+        
         injection_manager = TF2InjectionManager(
             tf_bridge=tf_bridge,
             controller_manager=manager,
-            config={'retry_interval_cycles': 5},
+            get_time_func=get_mock_time,
         )
         
         # 模拟一些状态
         injection_manager._injection_attempted = True
-        injection_manager._retry_counter = 3
+        injection_manager._last_retry_time = 10.0
         
         # 重置
         injection_manager.reset()
         
-        # 计数器应该重置
-        assert injection_manager._retry_counter == 0
+        # 重试时间应该重置
+        assert injection_manager._last_retry_time == None
         # 注入状态不应该重置
         assert injection_manager._injection_attempted == True
     
@@ -316,6 +329,7 @@ class TestTF2InjectionManager:
             config={
                 'source_frame': 'base_link',
                 'target_frame': 'odom',
+                'retry_interval_sec': 2.0,
             },
         )
         
@@ -327,6 +341,7 @@ class TestTF2InjectionManager:
         assert status['injection_attempted'] == True
         assert status['source_frame'] == 'base_link'
         assert status['target_frame'] == 'odom'
+        assert status['retry_interval_sec'] == 2.0
     
     def test_custom_config(self):
         """测试自定义配置"""
@@ -341,7 +356,7 @@ class TestTF2InjectionManager:
                 'target_frame': 'custom_odom',
                 'buffer_warmup_timeout_sec': 5.0,
                 'buffer_warmup_interval_sec': 0.2,
-                'retry_interval_cycles': 100,
+                'retry_interval_sec': 2.0,
                 'max_retries': 10,
             },
         )
@@ -350,8 +365,31 @@ class TestTF2InjectionManager:
         assert injection_manager._target_frame == 'custom_odom'
         assert injection_manager._buffer_warmup_timeout_sec == 5.0
         assert injection_manager._buffer_warmup_interval_sec == 0.2
-        assert injection_manager._retry_interval_cycles == 100
+        assert injection_manager._retry_interval_sec == 2.0
         assert injection_manager._max_retries == 10
+    
+    def test_deprecated_retry_interval_cycles(self):
+        """测试废弃的 retry_interval_cycles 参数向后兼容"""
+        tf_bridge = MockTFBridge()
+        manager = MockControllerManager()
+        
+        log_messages = []
+        
+        injection_manager = TF2InjectionManager(
+            tf_bridge=tf_bridge,
+            controller_manager=manager,
+            config={
+                'retry_interval_cycles': 100,  # 废弃参数
+            },
+            log_warn=lambda msg: log_messages.append(msg),
+        )
+        
+        # 应该转换为秒（假设 50Hz）
+        assert injection_manager._retry_interval_sec == 2.0  # 100 / 50 = 2.0
+        
+        # 应该有警告日志
+        assert len(log_messages) == 1
+        assert 'deprecated' in log_messages[0].lower()
 
 
 if __name__ == '__main__':

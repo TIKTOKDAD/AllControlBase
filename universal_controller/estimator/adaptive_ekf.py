@@ -18,19 +18,35 @@ logger = logging.getLogger(__name__)
 # 设计说明：
 # - 四元数范数偏离 1.0 通常是由于数值累积误差或传感器噪声
 # - 正确的处理方式是：检测到非单位四元数时进行归一化
-# - 只有当四元数接近零向量（无法归一化）时才拒绝
+# - 只有当四元数接近零向量（无法归一化）或明显错误时才拒绝
 # 
 # 阈值选择：
-# - MIN: 0.01 (范数 > 0.1) - 低于此值认为四元数无效，无法可靠归一化
-# - MAX: 100.0 (范数 < 10) - 高于此值可能是数据错误，但仍可尝试归一化
+# - MIN: 0.25 (范数 > 0.5) - 低于此值认为四元数无效，无法可靠归一化
+# - MAX: 4.0 (范数 < 2.0) - 高于此值认为数据明显错误
+# 
+# 范围 [0.5, 2.0] 的理由：
+# - 正常的数值误差不会导致范数偏离 1.0 超过 2 倍
+# - 如果范数 < 0.5 或 > 2.0，说明数据本身有问题，不应使用
 # 
 # 注意：euler_from_quaternion 函数内部会进行归一化，这里只是预检查
-QUATERNION_NORM_SQ_MIN = 0.01  # 范数平方下界 (范数 > 0.1)，低于此值无法可靠归一化
-QUATERNION_NORM_SQ_MAX = 100.0  # 范数平方上界 (范数 < 10)，高于此值可能是数据错误
+QUATERNION_NORM_SQ_MIN = 0.25  # 范数平方下界 (范数 > 0.5)，低于此值无法可靠归一化
+QUATERNION_NORM_SQ_MAX = 4.0   # 范数平方上界 (范数 < 2.0)，高于此值认为数据错误
 
 
 class AdaptiveEKFEstimator(IStateEstimator):
-    """自适应 EKF 状态估计器"""
+    """自适应 EKF 状态估计器
+    
+    线程安全性:
+    - predict(), update_odom(), update_imu() 方法不是线程安全的
+    - 这些方法应在单线程中按顺序调用（通常在控制循环中）
+    - 如需多线程访问，调用者应在外部加锁
+    
+    典型调用顺序:
+        1. predict(dt)      - 运动学预测
+        2. update_odom(odom) - 里程计更新
+        3. update_imu(imu)   - IMU 更新（可选）
+        4. get_state()       - 获取估计结果
+    """
     
     def __init__(self, config: Dict[str, Any]):
         ekf_config = config.get('ekf', config)
@@ -102,6 +118,10 @@ class AdaptiveEKFEstimator(IStateEstimator):
         self.drift_thresh = anomaly.get('drift_thresh', 0.1)
         self.jump_thresh = anomaly.get('jump_thresh', 0.5)
         self.min_eigenvalue = ekf_config.get('covariance', {}).get('min_eigenvalue', 1e-6)
+        # 协方差爆炸检测阈值 - 当协方差范数超过此值时认为估计器发散
+        self.covariance_explosion_thresh = anomaly.get('covariance_explosion_thresh', 1000.0)
+        # 创新度异常阈值 - 当创新度超过此值时认为测量异常
+        self.innovation_anomaly_thresh = anomaly.get('innovation_anomaly_thresh', 10.0)
         
         # IMU 运动加速度补偿
         self.imu_motion_compensation = ekf_config.get('imu_motion_compensation', False)
@@ -170,8 +190,15 @@ class AdaptiveEKFEstimator(IStateEstimator):
         3. 更新协方差 P = F @ P @ F.T + Q
         
         注意: Jacobian 必须在状态更新之前计算，使用预测前的状态值
+        
+        Args:
+            dt: 时间步长（秒），必须为正有限值
         """
-        if dt <= 0:
+        # 验证 dt 是有效的正有限值
+        # - dt <= 0: 无效的时间步长
+        # - np.isnan(dt): NaN 值（NaN <= 0 返回 False，需要单独检查）
+        # - np.isinf(dt): 无穷大值
+        if dt <= 0 or not np.isfinite(dt):
             return
         
         # 1. 先在当前状态上计算 Jacobian (预测前的状态)
@@ -341,9 +368,20 @@ class AdaptiveEKFEstimator(IStateEstimator):
                         if is_valid:
                             roll, pitch, _ = euler_from_quaternion((qx, qy, qz, qw))
                             
+                            # 检查 euler_from_quaternion 返回值是否有效
+                            # 虽然 euler_from_quaternion 内部有归一化，但仍可能返回 NaN
+                            if not (np.isfinite(roll) and np.isfinite(pitch)):
+                                # 欧拉角计算失败，使用默认姿态
+                                if not hasattr(self, '_euler_nan_logged'):
+                                    logger.warning(
+                                        f"euler_from_quaternion returned NaN/Inf: "
+                                        f"roll={roll}, pitch={pitch}, q=({qx},{qy},{qz},{qw})"
+                                    )
+                                    self._euler_nan_logged = True
+                                use_imu_orientation = False
                             # 额外检查: roll 和 pitch 应该在合理范围内
                             # 使用配置的最大倾斜角阈值
-                            if abs(roll) < self.max_tilt_angle and abs(pitch) < self.max_tilt_angle:
+                            elif abs(roll) < self.max_tilt_angle and abs(pitch) < self.max_tilt_angle:
                                 use_imu_orientation = True
             except (TypeError, ValueError, IndexError, AttributeError) as e:
                 # 四元数数据格式错误，使用默认姿态
@@ -571,18 +609,47 @@ class AdaptiveEKFEstimator(IStateEstimator):
         return np.mean(self.slip_history)
     
     def detect_anomalies(self) -> List[str]:
+        """
+        检测估计器异常
+        
+        检测以下异常情况:
+        - SLIP_DETECTED: 检测到轮子打滑
+        - IMU_DRIFT: IMU 漂移（静止时陀螺仪有输出）
+        - ODOM_JUMP: 里程计位置跳变
+        - IMU_UNAVAILABLE: IMU 数据不可用
+        - COVARIANCE_EXPLOSION: 协方差矩阵发散
+        - INNOVATION_ANOMALY: 测量创新度异常大
+        
+        Returns:
+            异常标识列表
+        """
         anomalies = []
+        
         if self.slip_detected:
             anomalies.append("SLIP_DETECTED")
+        
         if self._is_stationary() and abs(self.gyro_z) > self.drift_thresh:
             anomalies.append("IMU_DRIFT")
             self._imu_drift_detected = True
         else:
             self._imu_drift_detected = False
+        
         if self.position_jump > self.jump_thresh:
             anomalies.append("ODOM_JUMP")
+        
         if not self._imu_available:
             anomalies.append("IMU_UNAVAILABLE")
+        
+        # 协方差爆炸检测
+        covariance_norm = np.linalg.norm(self.P[:8, :8])
+        if covariance_norm > self.covariance_explosion_thresh:
+            anomalies.append("COVARIANCE_EXPLOSION")
+            logger.warning(f"Covariance explosion detected: norm={covariance_norm:.2f}")
+        
+        # 创新度异常检测
+        if self.last_innovation_norm > self.innovation_anomaly_thresh:
+            anomalies.append("INNOVATION_ANOMALY")
+        
         return anomalies
     
     def get_state(self) -> EstimatorOutput:

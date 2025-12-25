@@ -77,7 +77,7 @@ class TrajectoryAdapter(IMsgConverter):
         return dt_sec
     
     def _process_velocities(self, velocities_flat: list, num_points: int, 
-                           soft_enabled: bool) -> Tuple[Optional[np.ndarray], bool]:
+                           soft_enabled: bool, mode: int = 0) -> Tuple[Optional[np.ndarray], bool]:
         """
         处理速度数组
         
@@ -85,9 +85,14 @@ class TrajectoryAdapter(IMsgConverter):
             velocities_flat: 扁平化的速度数组
             num_points: 位置点数量
             soft_enabled: 是否启用 soft 模式
+            mode: 轨迹模式 (用于决定填充策略)
         
         Returns:
             (velocities, soft_enabled): 处理后的速度数组和 soft 模式状态
+        
+        填充策略:
+        - MODE_STOP/MODE_EMERGENCY: 使用零速度填充 (平滑停车)
+        - 其他模式: 使用最后一个速度点填充 (保持运动连续性)
         """
         if not soft_enabled:
             return None, False
@@ -123,13 +128,41 @@ class TrajectoryAdapter(IMsgConverter):
                 )
                 velocities = velocities[:num_points]
             else:
-                # 速度点少于位置点，使用最后一个速度点填充 (比零填充更合理)
-                logger.warning(
-                    f"Velocity points ({num_vel_points}) < position points ({num_points}), "
-                    f"padding with last velocity"
-                )
-                last_vel = velocities[-1:, :]  # 保持 2D 形状
-                padding = np.tile(last_vel, (num_points - num_vel_points, 1))
+                # 速度点少于位置点，需要填充
+                # 根据轨迹模式决定填充策略
+                padding_count = num_points - num_vel_points
+                
+                # 判断是否为停止模式 (MODE_STOP=1, MODE_EMERGENCY=3)
+                is_stop_mode = mode in (1, 3)  # TrajectoryMode.MODE_STOP, MODE_EMERGENCY
+                
+                if is_stop_mode:
+                    # 停止模式：使用零速度填充，实现平滑停车
+                    padding = np.zeros((padding_count, 4))
+                    logger.debug(
+                        f"Velocity points ({num_vel_points}) < position points ({num_points}), "
+                        f"padding with zeros for stop mode"
+                    )
+                else:
+                    # 跟踪模式：使用最后一个速度点填充（假设保持恒定速度）
+                    last_vel = velocities[-1, :]
+                    last_vel_magnitude = np.sqrt(last_vel[0]**2 + last_vel[1]**2 + last_vel[2]**2)
+                    
+                    # 如果最后一个速度很大，发出更强的警告
+                    if last_vel_magnitude > 1.0:  # 超过 1 m/s
+                        logger.warning(
+                            f"Velocity points ({num_vel_points}) < position points ({num_points}), "
+                            f"padding with last velocity (magnitude={last_vel_magnitude:.2f} m/s). "
+                            f"This may cause unexpected behavior. Please fix upstream trajectory generation."
+                        )
+                    else:
+                        logger.warning(
+                            f"Velocity points ({num_vel_points}) < position points ({num_points}), "
+                            f"padding with last velocity"
+                        )
+                    
+                    last_vel_2d = velocities[-1:, :]  # 保持 2D 形状
+                    padding = np.tile(last_vel_2d, (padding_count, 1))
+                
                 velocities = np.vstack([velocities, padding])
         
         return velocities, True
@@ -167,11 +200,12 @@ class TrajectoryAdapter(IMsgConverter):
                 soft_enabled=False
             )
         
-        # 处理速度数组
+        # 处理速度数组 (传入 mode 用于决定填充策略)
         velocities, soft_enabled = self._process_velocities(
             ros_msg.velocities_flat, 
             num_points, 
-            ros_msg.soft_enabled
+            ros_msg.soft_enabled,
+            ros_msg.mode  # 传入轨迹模式
         )
         
         # 转换轨迹模式
@@ -186,6 +220,15 @@ class TrajectoryAdapter(IMsgConverter):
         # 验证 dt_sec
         dt_sec = self._validate_dt_sec(ros_msg.dt_sec)
         
+        # 验证并限制置信度在 [0, 1] 范围内
+        confidence = ros_msg.confidence
+        if confidence < 0.0 or confidence > 1.0:
+            logger.warning(
+                f"Trajectory confidence {confidence} out of valid range [0, 1], "
+                f"clamping to valid range."
+            )
+            confidence = max(0.0, min(1.0, confidence))
+        
         return UcTrajectory(
             header=Header(
                 stamp=self._ros_time_to_sec(ros_msg.header.stamp),
@@ -194,7 +237,7 @@ class TrajectoryAdapter(IMsgConverter):
             points=points,
             velocities=velocities,
             dt_sec=dt_sec,
-            confidence=ros_msg.confidence,
+            confidence=confidence,
             mode=mode,
             soft_enabled=soft_enabled
         )
