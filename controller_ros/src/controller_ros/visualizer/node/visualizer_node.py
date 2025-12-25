@@ -204,6 +204,10 @@ class VisualizerNode:
                 Image, self._camera_topic,
                 self._image_callback, 1
             )
+            self._ros.log_info(f"  Camera topic: {self._camera_topic}")
+            self._ros.log_info(f"  Homography file: {self._homography_file}")
+        else:
+            self._ros.log_info("  Camera mode: disabled (no camera_image topic)")
     
     def _create_publishers(self):
         """创建发布器"""
@@ -321,6 +325,7 @@ class VisualizerNode:
     def start_gui(self):
         """启动 GUI (在主线程中调用)"""
         from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import QTimer
         
         # 创建 Qt 应用
         app = QApplication(sys.argv)
@@ -346,11 +351,22 @@ class VisualizerNode:
         self._ros_thread = threading.Thread(target=self._ros_spin, daemon=True)
         self._ros_thread.start()
         
+        # 创建定时器检查 ROS 关闭状态，确保 Qt 能响应 Ctrl+C
+        def check_ros_shutdown():
+            if self._ros.is_shutdown():
+                self._ros.log_info("ROS shutdown detected, closing GUI...")
+                app.quit()
+        
+        shutdown_timer = QTimer()
+        shutdown_timer.timeout.connect(check_ros_shutdown)
+        shutdown_timer.start(100)  # 每 100ms 检查一次
+        
         # 运行 Qt 事件循环
         exit_code = app.exec_()
         
         # 清理
         self._running = False
+        shutdown_timer.stop()
         self._ros.shutdown()
         
         return exit_code

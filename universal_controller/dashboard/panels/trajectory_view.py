@@ -29,9 +29,23 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
-# 设置中文字体支持
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+# 设置中文字体支持 - 跨平台兼容
+# 优先使用系统中可用的中文字体，如果都不可用则使用默认字体
+import warnings
+_font_candidates = [
+    'Microsoft YaHei',  # Windows
+    'SimHei',           # Windows
+    'WenQuanYi Micro Hei',  # Linux (文泉驿微米黑)
+    'WenQuanYi Zen Hei',    # Linux (文泉驿正黑)
+    'Noto Sans CJK SC',     # Linux (Google Noto)
+    'Droid Sans Fallback',  # Linux
+    'DejaVu Sans',          # 通用回退
+]
+plt.rcParams['font.sans-serif'] = _font_candidates
 plt.rcParams['axes.unicode_minus'] = False
+
+# 抑制字体警告 (当中文字体不可用时)
+warnings.filterwarnings('ignore', message='Glyph.*missing from current font')
 
 from ..styles import COLORS
 

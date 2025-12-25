@@ -70,6 +70,9 @@ class ControllerNodeROS1(ControllerNodeBase):
     """
     
     def __init__(self):
+        # 关闭标志 - 防止关闭过程中发布到已关闭的话题
+        self._shutting_down = False
+        
         # 先初始化 ROS1 节点
         rospy.init_node('universal_controller_node')
         
@@ -209,6 +212,10 @@ class ControllerNodeROS1(ControllerNodeBase):
     
     def _control_callback(self, event):
         """控制循环回调"""
+        # 检查关闭标志，避免在关闭过程中发布
+        if self._shutting_down:
+            return
+        
         cmd = self._control_loop_core()
         
         if cmd is not None:
@@ -270,6 +277,10 @@ class ControllerNodeROS1(ControllerNodeBase):
     
     def shutdown(self):
         """关闭节点"""
+        # 设置关闭标志，阻止定时器回调继续发布
+        self._shutting_down = True
+        
+        # 停止定时器
         if hasattr(self, '_timer') and self._timer is not None:
             self._timer.shutdown()
             self._timer = None
