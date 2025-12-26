@@ -10,14 +10,15 @@
 - reset(): 重置数据聚合器状态
 
 手柄控制架构：
-- 本节点负责：订阅 /joy，处理手柄输入，发布 /joy_cmd_vel 和 /visualizer/control_mode
-- cmd_vel_adapter 负责：根据模式选择命令源，应用速度限制，以固定频率发布到底盘
-- 本节点只在收到 joy 消息时发布命令，持续发布由 cmd_vel_adapter 负责
+- 本节点负责：订阅 /joy，处理手柄输入，以固定频率发布 /joy_cmd_vel
+- cmd_vel_adapter 负责：根据模式选择命令源，应用速度限制，发布到底盘
+- 定时发布确保即使 joy_node 不持续发布，手柄命令也能持续输出
 """
 from typing import Dict, Any, Optional
 import threading
 import sys
 import logging
+import time
 
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Joy, Image
@@ -135,9 +136,17 @@ class VisualizerNode:
         self._mode_pub = None
         self._estop_pub = None
         
+        # 手柄命令定时发布 (解决 joy_node 不持续发布的问题)
+        self._last_joy_cmd: Optional[VelocityData] = None
+        self._joy_publish_rate = self._config.get('joystick', {}).get('publish_rate', 20.0)
+        self._joy_publish_timer = None
+        
         # 创建订阅和发布
         self._create_subscriptions()
         self._create_publishers()
+        
+        # 创建手柄命令定时发布器
+        self._create_joy_publish_timer()
         
         self._ros.log_info(f"Visualizer node initialized (ROS{ROS_VERSION})")
         self._ros.log_info(f"  Odom topic: {self._odom_topic}")
@@ -151,6 +160,13 @@ class VisualizerNode:
         self._shutting_down = True
         
         self._ros.log_info("Visualizer node shutting down...")
+        
+        # 停止手柄命令定时器
+        if self._joy_publish_timer is not None:
+            if ROS_VERSION == 1:
+                self._joy_publish_timer.shutdown()
+            else:
+                self._joy_publish_timer.cancel()
         
         # 停止 ROS 线程
         self._running = False
@@ -166,6 +182,7 @@ class VisualizerNode:
         """重置可视化器状态"""
         self._data_aggregator.reset()
         self._joystick_handler.reset()
+        self._last_joy_cmd = None
         self._ros.log_info("Visualizer node reset")
     
     def _load_default_config(self) -> Dict[str, Any]:
@@ -265,6 +282,47 @@ class VisualizerNode:
         self._cmd_vel_pub = self._ros.create_publisher(Twist, self._cmd_vel_topic, 10)
         self._mode_pub = self._ros.create_publisher(Bool, self._mode_topic, 10)
         self._estop_pub = self._ros.create_publisher(Empty, self._estop_topic, 1)
+    
+    def _create_joy_publish_timer(self):
+        """
+        创建手柄命令定时发布器
+        
+        解决问题：当手柄保持不动时，joy_node 不发布新消息，
+        导致 cmd_vel_adapter 超时后发布零速度。
+        
+        解决方案：在手柄模式下，以固定频率持续发布最后的手柄命令。
+        """
+        if ROS_VERSION == 1:
+            import rospy
+            period = rospy.Duration(1.0 / self._joy_publish_rate)
+            self._joy_publish_timer = rospy.Timer(period, self._joy_publish_timer_callback)
+        else:
+            # ROS2 使用 create_timer
+            period = 1.0 / self._joy_publish_rate
+            self._joy_publish_timer = self._ros.node.create_timer(period, self._joy_publish_timer_callback_ros2)
+        
+        self._ros.log_info(f"  Joy publish rate: {self._joy_publish_rate} Hz")
+    
+    def _joy_publish_timer_callback(self, event=None):
+        """
+        手柄命令定时发布回调 (ROS1)
+        
+        在手柄模式下，持续发布最后的手柄命令。
+        """
+        if self._shutting_down:
+            return
+        
+        # 只在手柄模式下发布
+        if self._joystick_handler.current_mode != ControlMode.JOYSTICK:
+            return
+        
+        # 发布最后的手柄命令
+        if self._last_joy_cmd is not None:
+            self._publish_cmd_vel(self._last_joy_cmd)
+    
+    def _joy_publish_timer_callback_ros2(self):
+        """手柄命令定时发布回调 (ROS2)"""
+        self._joy_publish_timer_callback()
 
     # ==================== 订阅回调 ====================
     
@@ -329,8 +387,9 @@ class VisualizerNode:
         # 处理手柄输入
         cmd = self._joystick_handler.update(state)
         
-        # 如果在手柄模式，发布命令
+        # 如果在手柄模式，保存并发布命令
         if cmd is not None:
+            self._last_joy_cmd = cmd
             self._publish_cmd_vel(cmd)
     
     def _image_callback(self, msg: Image):
@@ -352,6 +411,10 @@ class VisualizerNode:
     def _on_mode_change(self, mode: ControlMode):
         """控制模式切换回调"""
         self._data_aggregator.update_control_mode(mode)
+        
+        # 切换到网络模式时，清除最后的手柄命令
+        if mode == ControlMode.NETWORK:
+            self._last_joy_cmd = None
         
         # 发布模式
         msg = Bool()
