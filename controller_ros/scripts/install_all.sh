@@ -274,6 +274,83 @@ else
     print_success "ACADOS 编译完成 ✓"
 fi
 
+# ============================================================================
+# 下载 Tera 渲染器 (ACADOS 模板渲染必需)
+# ============================================================================
+print_info "检查 Tera 渲染器..."
+
+TERA_RENDERER_PATH="$ACADOS_INSTALL_DIR/bin/t_renderer"
+TERA_VERSION="v0.0.34"
+
+# 检查是否需要下载/更新 Tera 渲染器
+NEED_TERA_DOWNLOAD=false
+
+if [ ! -f "$TERA_RENDERER_PATH" ]; then
+    print_info "Tera 渲染器不存在，需要下载..."
+    NEED_TERA_DOWNLOAD=true
+else
+    # 检查版本是否过旧 (通过文件大小或尝试运行来判断)
+    if ! "$TERA_RENDERER_PATH" --version &> /dev/null; then
+        print_warning "Tera 渲染器版本过旧或损坏，需要更新..."
+        NEED_TERA_DOWNLOAD=true
+    else
+        CURRENT_TERA_VERSION=$("$TERA_RENDERER_PATH" --version 2>/dev/null | head -1 || echo "unknown")
+        print_info "当前 Tera 版本: $CURRENT_TERA_VERSION"
+        # 如果版本低于 0.0.34，需要更新
+        if [[ "$CURRENT_TERA_VERSION" < "0.0.34" ]] 2>/dev/null; then
+            print_warning "Tera 渲染器版本过旧，需要更新到 $TERA_VERSION..."
+            NEED_TERA_DOWNLOAD=true
+        fi
+    fi
+fi
+
+if [ "$NEED_TERA_DOWNLOAD" = true ]; then
+    print_info "下载 Tera 渲染器 $TERA_VERSION..."
+    
+    # 确保 bin 目录存在
+    mkdir -p "$ACADOS_INSTALL_DIR/bin"
+    
+    # 删除旧版本
+    rm -f "$TERA_RENDERER_PATH" 2>/dev/null || true
+    
+    # 下载新版本
+    TERA_URL="https://github.com/acados/tera_renderer/releases/download/${TERA_VERSION}/t_renderer-${TERA_VERSION}-linux"
+    
+    if command -v wget &> /dev/null; then
+        wget -q --show-progress -O "$TERA_RENDERER_PATH" "$TERA_URL" || {
+            print_error "wget 下载 Tera 渲染器失败"
+            print_info "请手动下载: $TERA_URL"
+            print_info "并放置到: $TERA_RENDERER_PATH"
+            exit 1
+        }
+    elif command -v curl &> /dev/null; then
+        curl -L -o "$TERA_RENDERER_PATH" "$TERA_URL" || {
+            print_error "curl 下载 Tera 渲染器失败"
+            print_info "请手动下载: $TERA_URL"
+            print_info "并放置到: $TERA_RENDERER_PATH"
+            exit 1
+        }
+    else
+        print_error "wget 和 curl 都不可用，无法下载 Tera 渲染器"
+        print_info "请手动下载: $TERA_URL"
+        print_info "并放置到: $TERA_RENDERER_PATH"
+        exit 1
+    fi
+    
+    # 添加执行权限
+    chmod +x "$TERA_RENDERER_PATH"
+    
+    # 验证下载成功
+    if [ -f "$TERA_RENDERER_PATH" ] && [ -x "$TERA_RENDERER_PATH" ]; then
+        print_success "Tera 渲染器 $TERA_VERSION 下载完成 ✓"
+    else
+        print_error "Tera 渲染器下载验证失败"
+        exit 1
+    fi
+else
+    print_success "Tera 渲染器已是最新版本 ✓"
+fi
+
 # 安装 ACADOS Python 接口
 print_info "安装 ACADOS Python 接口..."
 pip3 install --user "$ACADOS_INSTALL_DIR/interfaces/acados_template"
