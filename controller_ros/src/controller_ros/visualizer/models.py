@@ -96,8 +96,13 @@ class JoystickState:
     
     @property
     def angular_cmd(self) -> float:
-        """从右摇杆 X 轴获取角速度命令 [-1, 1]"""
-        return -self.right_x  # 通常需要取反
+        """从右摇杆 X 轴获取角速度命令 [-1, 1]
+        
+        Xbox 360 Controller (Linux xpad 驱动):
+        - 向右推杆 -> axes[3] 为负值 -> 应产生负 angular.z -> 机器人右转
+        - 向左推杆 -> axes[3] 为正值 -> 应产生正 angular.z -> 机器人左转
+        """
+        return self.right_x  # 直接使用，不取反
 
 
 @dataclass

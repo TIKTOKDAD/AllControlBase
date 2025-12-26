@@ -223,8 +223,8 @@ class JoystickPanel(QWidget):
             f"vx: {state.left_y:.2f}"
         )
         self._right_stick.set_position(
-            state.right_x, state.right_y,
-            f"ω: {-state.right_x:.2f}"
+            -state.right_x, state.right_y,  # GUI 显示取反，让向右推杆显示在右边
+            f"ω: {state.right_x:.2f}"
         )
         
         # 更新连接状态
