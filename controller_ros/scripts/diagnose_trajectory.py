@@ -306,7 +306,7 @@ def analyze_trajectory_msg(msg) -> TrajectoryAnalysis:
 class FullDiagnosticNode:
     """完整诊断节点"""
     
-    def __init__(self):
+    def __init__(self, log_file: str = None):
         # 数据存储
         self.last_traj: Optional[TrajectoryAnalysis] = None
         self.last_odom: Optional[StateAnalysis] = None
@@ -332,6 +332,13 @@ class FullDiagnosticNode:
         # 诊断间隔
         self.last_full_report_time = 0
         self.report_interval = 3.0  # 秒
+        
+        # 日志文件
+        self.log_file = log_file
+        self.log_handle = None
+        if log_file:
+            self.log_handle = open(log_file, 'w', encoding='utf-8')
+            self.log_handle.write(f"# 轨迹诊断日志 - {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
     
     def init_tf2(self):
         """初始化TF2"""
@@ -452,13 +459,30 @@ class FullDiagnosticNode:
             self.last_full_report_time = now
             self._print_full_report()
     
+    def _log(self, text: str):
+        """输出到控制台和日志文件"""
+        print(text)
+        if self.log_handle:
+            self.log_handle.write(text + '\n')
+            self.log_handle.flush()
+    
+    def close_log(self):
+        """关闭日志文件"""
+        if self.log_handle:
+            self.log_handle.close()
+            self.log_handle = None
+    
     def _print_full_report(self):
         """打印完整诊断报告"""
-        print("\n" + "="*75)
-        print("                    完整轨迹跟踪诊断报告")
-        print("="*75)
-        print(f"时间: {time.strftime('%H:%M:%S')}  |  轨迹#{self.traj_count}  |  命令#{self.cmd_count}")
-        print("-"*75)
+        lines = []
+        lines.append("\n" + "="*75)
+        lines.append("                    完整轨迹跟踪诊断报告")
+        lines.append("="*75)
+        lines.append(f"时间: {time.strftime('%H:%M:%S')}  |  轨迹#{self.traj_count}  |  命令#{self.cmd_count}")
+        lines.append("-"*75)
+        
+        for line in lines:
+            self._log(line)
         
         # 1. 轨迹分析
         self._print_trajectory_section()
@@ -475,60 +499,60 @@ class FullDiagnosticNode:
         # 5. 问题汇总
         self._print_issues_section()
         
-        print("="*75 + "\n")
+        self._log("="*75 + "\n")
     
     def _print_trajectory_section(self):
         """打印轨迹分析"""
-        print("\n【1. 轨迹输入分析】")
+        self._log("\n【1. 轨迹输入分析】")
         
         if self.last_traj is None:
-            print("  ❌ 未收到轨迹数据")
+            self._log("  ❌ 未收到轨迹数据")
             return
         
         t = self.last_traj
-        print(f"  坐标系: {t.frame_id}  |  点数: {t.num_points}  |  dt: {t.dt_sec}s")
-        print(f"  模式: {t.mode}(0=TRACK,1=STOP,2=HOLD)  |  置信度: {t.confidence:.2f}")
-        print(f"  soft_enabled: {t.soft_enabled}")
-        print()
-        print(f"  几何: 总距离={t.total_distance:.3f}m  总转向={t.total_turn_deg:.1f}°")
-        print(f"  速度: min={t.min_speed:.3f} avg={t.avg_speed:.3f} max={t.max_speed:.3f} m/s")
-        print()
-        print(f"  角速度wz分析:")
-        print(f"    Hard wz: sum={t.hard_wz_sum:.4f} max={t.hard_wz_max:.4f} 零值数={t.hard_wz_zero_count}/{t.num_points}")
+        self._log(f"  坐标系: {t.frame_id}  |  点数: {t.num_points}  |  dt: {t.dt_sec}s")
+        self._log(f"  模式: {t.mode}(0=TRACK,1=STOP,2=HOLD)  |  置信度: {t.confidence:.2f}")
+        self._log(f"  soft_enabled: {t.soft_enabled}")
+        self._log("")
+        self._log(f"  几何: 总距离={t.total_distance:.3f}m  总转向={t.total_turn_deg:.1f}°")
+        self._log(f"  速度: min={t.min_speed:.3f} avg={t.avg_speed:.3f} max={t.max_speed:.3f} m/s")
+        self._log("")
+        self._log(f"  角速度wz分析:")
+        self._log(f"    Hard wz: sum={t.hard_wz_sum:.4f} max={t.hard_wz_max:.4f} 零值数={t.hard_wz_zero_count}/{t.num_points}")
         if t.soft_wz_available:
-            print(f"    Soft wz: sum={t.soft_wz_sum:.4f} max={t.soft_wz_max:.4f}")
+            self._log(f"    Soft wz: sum={t.soft_wz_sum:.4f} max={t.soft_wz_max:.4f}")
         else:
-            print(f"    Soft wz: 不可用")
+            self._log(f"    Soft wz: 不可用")
 
     def _print_control_section(self):
         """打印控制输出分析"""
-        print("\n【2. 控制输出分析】")
+        self._log("\n【2. 控制输出分析】")
         
         if self.last_cmd is None:
-            print("  ❌ 未收到控制命令")
+            self._log("  ❌ 未收到控制命令")
             return
         
         c = self.last_cmd
-        print(f"  当前: vx={c.vx:.3f}m/s  vy={c.vy:.3f}m/s  omega={c.omega:.4f}rad/s")
+        self._log(f"  当前: vx={c.vx:.3f}m/s  vy={c.vy:.3f}m/s  omega={c.omega:.4f}rad/s")
         
         if len(self.omega_history) > 0:
             omegas = list(self.omega_history)
             avg_omega = np.mean(omegas)
             max_omega = max(abs(o) for o in omegas)
             nonzero_omega = sum(1 for o in omegas if abs(o) > 0.01)
-            print(f"  历史({len(omegas)}条): avg_omega={avg_omega:.4f} max_omega={max_omega:.4f}")
-            print(f"  非零omega数: {nonzero_omega}/{len(omegas)}")
+            self._log(f"  历史({len(omegas)}条): avg_omega={avg_omega:.4f} max_omega={max_omega:.4f}")
+            self._log(f"  非零omega数: {nonzero_omega}/{len(omegas)}")
             
             # 关键检测
             if self.last_traj and abs(self.last_traj.total_turn_deg) > 10 and max_omega < 0.05:
-                print(f"  🔴 问题: 轨迹需转{self.last_traj.total_turn_deg:.1f}°但omega输出很小!")
+                self._log(f"  🔴 问题: 轨迹需转{self.last_traj.total_turn_deg:.1f}°但omega输出很小!")
     
     def _print_diagnostics_section(self):
         """打印诊断信息"""
-        print("\n【3. 控制器诊断】")
+        self._log("\n【3. 控制器诊断】")
         
         if self.last_diag is None:
-            print("  ❌ 未收到诊断数据 (检查/controller/diagnostics话题)")
+            self._log("  ❌ 未收到诊断数据 (检查/controller/diagnostics话题)")
             return
         
         d = self.last_diag
@@ -538,58 +562,58 @@ class FullDiagnosticNode:
         }
         state_name = state_names.get(d['state'], f"UNKNOWN({d['state']})")
         
-        print(f"  状态: {state_name}")
-        print(f"  MPC成功: {d['mpc_success']}  |  备用激活: {d['backup_active']}")
-        print(f"  求解时间: {d['solve_time_ms']:.2f}ms  |  KKT残差: {d['kkt_residual']:.6f}")
-        print(f"  Alpha(soft权重): {d['alpha']:.3f}")
-        print(f"  TF2: 可用={d['tf2_available']} 已注入={d['tf2_injected']}")
-        print(f"  诊断中的cmd: vx={d['cmd_vx']:.3f} omega={d['cmd_omega']:.4f}")
-        print(f"  跟踪误差: 横向={d['tracking_lateral_error']:.3f}m 航向={np.degrees(d['tracking_heading_error']):.1f}°")
+        self._log(f"  状态: {state_name}")
+        self._log(f"  MPC成功: {d['mpc_success']}  |  备用激活: {d['backup_active']}")
+        self._log(f"  求解时间: {d['solve_time_ms']:.2f}ms  |  KKT残差: {d['kkt_residual']:.6f}")
+        self._log(f"  Alpha(soft权重): {d['alpha']:.3f}")
+        self._log(f"  TF2: 可用={d['tf2_available']} 已注入={d['tf2_injected']}")
+        self._log(f"  诊断中的cmd: vx={d['cmd_vx']:.3f} omega={d['cmd_omega']:.4f}")
+        self._log(f"  跟踪误差: 横向={d['tracking_lateral_error']:.3f}m 航向={np.degrees(d['tracking_heading_error']):.1f}°")
         
         if d['timeout_traj']:
-            print("  ⚠️ 轨迹超时!")
+            self._log("  ⚠️ 轨迹超时!")
         if not d['mpc_success']:
-            print("  ⚠️ MPC求解失败，使用备用控制器")
+            self._log("  ⚠️ MPC求解失败，使用备用控制器")
         if d['backup_active']:
-            print("  ⚠️ 备用控制器激活中")
+            self._log("  ⚠️ 备用控制器激活中")
         if d['alpha'] < 0.5:
-            print(f"  ⚠️ Alpha={d['alpha']:.2f}较低，soft velocity权重小")
+            self._log(f"  ⚠️ Alpha={d['alpha']:.2f}较低，soft velocity权重小")
     
     def _print_transform_section(self):
         """打印坐标变换分析"""
-        print("\n【4. 坐标变换分析】")
+        self._log("\n【4. 坐标变换分析】")
         
         # 从诊断获取TF状态
         if self.last_diag:
             d = self.last_diag
-            print(f"  TF2可用: {d['tf2_available']}  |  已注入: {d['tf2_injected']}")
+            self._log(f"  TF2可用: {d['tf2_available']}  |  已注入: {d['tf2_injected']}")
             if not d['tf2_available']:
-                print("  ⚠️ TF2不可用，可能使用fallback模式")
+                self._log("  ⚠️ TF2不可用，可能使用fallback模式")
             if not d['tf2_injected']:
-                print("  ⚠️ TF2未注入到控制器")
+                self._log("  ⚠️ TF2未注入到控制器")
         
         # 尝试直接获取TF
         tf_result = self.get_transform('odom', 'base_link')
         if tf_result and tf_result.tf2_available:
-            print(f"  直接查询: base_link → odom 成功")
-            print(f"  位置: ({tf_result.position[0]:.3f}, {tf_result.position[1]:.3f})")
-            print(f"  航向: {np.degrees(tf_result.yaw):.1f}°")
+            self._log(f"  直接查询: base_link → odom 成功")
+            self._log(f"  位置: ({tf_result.position[0]:.3f}, {tf_result.position[1]:.3f})")
+            self._log(f"  航向: {np.degrees(tf_result.yaw):.1f}°")
         else:
-            print("  直接查询TF失败")
+            self._log("  直接查询TF失败")
         
         # 检查轨迹坐标系
         if self.last_traj:
             frame = self.last_traj.frame_id
             if frame in ['base_link', 'base_link_0']:
-                print(f"  轨迹坐标系: {frame} (局部坐标系，需要TF变换)")
+                self._log(f"  轨迹坐标系: {frame} (局部坐标系，需要TF变换)")
             elif frame in ['odom', 'map', 'world']:
-                print(f"  轨迹坐标系: {frame} (全局坐标系，无需变换)")
+                self._log(f"  轨迹坐标系: {frame} (全局坐标系，无需变换)")
             else:
-                print(f"  ⚠️ 未知坐标系: {frame}")
+                self._log(f"  ⚠️ 未知坐标系: {frame}")
     
     def _print_issues_section(self):
         """打印问题汇总"""
-        print("\n【5. 问题汇总】")
+        self._log("\n【5. 问题汇总】")
         
         issues = []
         
@@ -617,17 +641,17 @@ class FullDiagnosticNode:
         
         if issues:
             for issue in issues:
-                print(f"  {issue}")
+                self._log(f"  {issue}")
         else:
-            print("  ✅ 未检测到明显问题")
+            self._log("  ✅ 未检测到明显问题")
         
         # 建议
         if any('低速' in str(i) or 'wz' in str(i) or 'omega' in str(i) for i in issues):
-            print("\n【建议】")
-            print("  1. 检查轨迹速度是否过低 (< 0.1 m/s)")
-            print("  2. 尝试降低 trajectory.low_speed_thresh 配置 (如改为0.01)")
-            print("  3. 检查轨迹消息中 velocities_flat 是否包含有效的wz数据")
-            print("  4. 如果soft_enabled=True，检查网络输出的角速度是否正确")
+            self._log("\n【建议】")
+            self._log("  1. 检查轨迹速度是否过低 (< 0.1 m/s)")
+            self._log("  2. 尝试降低 trajectory.low_speed_thresh 配置 (如改为0.01)")
+            self._log("  3. 检查轨迹消息中 velocities_flat 是否包含有效的wz数据")
+            self._log("  4. 如果soft_enabled=True，检查网络输出的角速度是否正确")
 
 
 # ============================================================================
@@ -638,16 +662,20 @@ def main_ros1():
     """ROS1主函数"""
     rospy.init_node('trajectory_full_diagnostics', anonymous=True)
     
-    node = FullDiagnosticNode()
+    # 日志文件路径
+    log_file = rospy.get_param('~log_file', '/tmp/trajectory_diag.log')
+    
+    node = FullDiagnosticNode(log_file=log_file)
     node.init_tf2()
     
     print("\n" + "="*75)
     print("         轨迹跟踪完整诊断工具 v2.0 (ROS1)")
     print("="*75)
+    print(f"\n日志文件: {log_file}")
     print("\n订阅话题:")
     
     # 轨迹
-    traj_topic = rospy.get_param('~trajectory_topic', '/local_trajectory')
+    traj_topic = rospy.get_param('~trajectory_topic', '/nn/local_trajectory')
     if CUSTOM_MSG_AVAILABLE:
         rospy.Subscriber(traj_topic, LocalTrajectoryV4, node.traj_callback, queue_size=10)
         print(f"  ✓ {traj_topic} (LocalTrajectoryV4)")
@@ -682,9 +710,13 @@ def main_ros1():
     print("-"*75 + "\n")
     
     # 定时打印
-    rate = rospy.Rate(1)
-    while not rospy.is_shutdown():
-        rate.sleep()
+    try:
+        rate = rospy.Rate(1)
+        while not rospy.is_shutdown():
+            rate.sleep()
+    finally:
+        node.close_log()
+        print(f"\n日志已保存到: {log_file}")
 
 
 def main_ros2():
@@ -694,14 +726,17 @@ def main_ros2():
     class DiagNode(Node):
         def __init__(self):
             super().__init__('trajectory_full_diagnostics')
-            self.diag = FullDiagnosticNode()
+            
+            log_file = '~/trajectory_diag.log'
+            self.diag = FullDiagnosticNode(log_file=log_file)
             
             print("\n" + "="*75)
             print("         轨迹跟踪完整诊断工具 v2.0 (ROS2)")
             print("="*75)
+            print(f"\n日志文件: {log_file}")
             
             if CUSTOM_MSG_AVAILABLE:
-                self.create_subscription(LocalTrajectoryV4, '/local_trajectory',
+                self.create_subscription(LocalTrajectoryV4, '/nn/local_trajectory',
                                         self.diag.traj_callback, 10)
                 self.create_subscription(UnifiedCmd, '/cmd_unified',
                                         self.diag.cmd_callback, 10)
@@ -713,6 +748,10 @@ def main_ros2():
             
             print("\n等待数据... 每3秒输出一次完整诊断报告")
             print("按 Ctrl+C 退出\n")
+        
+        def destroy_node(self):
+            self.diag.close_log()
+            super().destroy_node()
     
     node = DiagNode()
     try:
@@ -722,6 +761,7 @@ def main_ros2():
     finally:
         node.destroy_node()
         rclpy.shutdown()
+        print("\n日志已保存到: /tmp/trajectory_diag.log")
 
 
 if __name__ == '__main__':
