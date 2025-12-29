@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-统一诊断工具 v2.3 (Unified Diagnostics Tool)
+统一诊断工具 v2.1 (Unified Diagnostics Tool)
 
 完整合并 diagnose_trajectory.py v3.0 和 full_diagnostics.py 的所有功能。
 此脚本是控制器诊断的唯一入口，其他诊断脚本已废弃并重定向到此处。
@@ -12,20 +12,15 @@
                  需要控制器运行
   
   2. tuning    - 系统调优模式
-                 传感器频率/延迟/抖动分析，底盘测试，完整配置生成（14个配置模块）
+                 传感器频率/延迟/抖动分析，底盘测试，完整配置生成（13个配置模块）
                  不需要控制器运行
   
   3. full      - 完整模式
                  先运行调优分析，再进入实时监控
-                 两阶段日志统一保存到同一文件
 
 诊断内容:
   [实时监控] 轨迹输入、控制输出、MPC健康、一致性、状态估计、跟踪误差、超时、紧急停止、坐标变换、问题汇总
-  [系统调优] 传感器频率/延迟/抖动、底盘特性、轨迹质量(含曲率和速度统计)、运行时调优建议、完整配置生成
-
-配置模块 (14个):
-  system, watchdog, mpc, constraints, safety, ekf, consistency, transform,
-  transition, backup, tf, tracking, trajectory, cmd_vel_adapter
+  [系统调优] 传感器频率/延迟/抖动、底盘特性、轨迹质量(含曲率)、运行时调优建议、完整配置生成
 
 DiagnosticsV2 字段覆盖:
   - 基本状态: state, mpc_success, backup_active, solve_time_ms
@@ -51,14 +46,11 @@ DiagnosticsV2 字段覆盖:
   # 运行时调优 (需要控制器运行)
   rosrun controller_ros unified_diagnostics.py --mode tuning --runtime-tuning
   
-  # 指定低速阈值 (影响角速度计算)
-  rosrun controller_ros unified_diagnostics.py --mode tuning --low-speed-thresh 0.05
-  
   # 完整诊断
   rosrun controller_ros unified_diagnostics.py --mode full --duration 10
 
 作者: Kiro Auto-generated
-版本: 2.4 (修复ROS2兼容性警告、统一异常处理、统一日志输出)
+版本: 2.1 (统一诊断工具，替代 diagnose_trajectory.py 和 full_diagnostics.py)
 """
 import sys
 import os
@@ -66,7 +58,6 @@ import time
 import threading
 import argparse
 import yaml
-import re
 import numpy as np
 from collections import deque
 from dataclasses import dataclass, field
@@ -83,8 +74,7 @@ if sys.platform == 'win32':
     # 设置环境变量
     os.environ['PYTHONIOENCODING'] = 'utf-8'
 
-# ROS 导入 - 仅支持 ROS1 (Noetic)
-# 注意: 虽然保留了 ROS2 的导入结构，但实际功能仅在 ROS1 下完整实现
+# ROS 导入
 try:
     import rospy
     from std_msgs.msg import Header
@@ -95,7 +85,6 @@ try:
     import tf2_ros
     ROS_VERSION = 1
 except ImportError:
-    # ROS2 导入 - 仅用于基本兼容性检测，功能未完整实现
     try:
         import rclpy
         from rclpy.node import Node
@@ -105,20 +94,9 @@ except ImportError:
         from nav_msgs.msg import Path
         from sensor_msgs.msg import Imu
         ROS_VERSION = 2
-        print("警告: 检测到 ROS2 环境，但本工具仅完整支持 ROS1 (Noetic)")
-        print("      部分功能可能无法正常工作")
     except ImportError:
         print("错误: 未找到ROS环境")
         sys.exit(1)
-
-# 增强诊断模块
-try:
-    from enhanced_diagnostics import EnhancedDiagnostics
-    ENHANCED_DIAGNOSTICS_AVAILABLE = True
-except ImportError:
-    ENHANCED_DIAGNOSTICS_AVAILABLE = False
-    print("警告: enhanced_diagnostics 模块不可用，部分高级诊断功能将被禁用")
-
 
 # 自定义消息
 try:
@@ -286,6 +264,7 @@ def safe_print(text: str):
         # 如果UTF-8失败，尝试使用系统默认编码
         try:
             # 移除ANSI颜色代码
+            import re
             text_no_color = re.sub(r'\033\[[0-9;]+m', '', text)
             print(text_no_color.encode(sys.stdout.encoding, errors='replace').decode(sys.stdout.encoding))
         except:
@@ -356,29 +335,10 @@ class StateAnalysis:
 def compute_hard_velocities(points: List[Tuple[float, float, float]], 
                             dt_sec: float, 
                             low_speed_thresh: float = 0.1) -> Tuple[np.ndarray, List[str]]:
-    """
-    从轨迹点计算 hard velocities，模拟 universal_controller 中的实现
-    
-    此函数与 universal_controller.core.data_types.Trajectory.get_hard_velocities() 保持一致。
-    low_speed_thresh 参数应该从配置中读取，默认值 0.1 与 trajectory_config.py 中的定义一致。
-    
-    Args:
-        points: 轨迹点列表 [(x, y, z), ...]
-        dt_sec: 时间步长 (秒)
-        low_speed_thresh: 低速阈值 (m/s)，低于此速度时 wz 被置为 0
-                         此值应与 trajectory.low_speed_thresh 配置一致
-    
-    Returns:
-        (velocities, issues): 速度数组 [N, 4] 和问题列表
-    """
+    """从轨迹点计算 hard velocities，模拟 universal_controller 中的实现"""
     issues = []
     if len(points) < 2:
         return np.zeros((1, 4)), ["轨迹点数不足(<2)"]
-    
-    # 确保 dt_sec 有效
-    if dt_sec <= 0:
-        dt_sec = 0.1  # 使用默认值
-        issues.append("dt_sec无效，使用默认值0.1s")
     
     velocities = []
     n = len(points)
@@ -440,18 +400,8 @@ def compute_menger_curvature(points: List[Tuple[float, float]]) -> List[float]:
     return curvatures
 
 
-def analyze_trajectory_msg(msg, low_speed_thresh: float = 0.1) -> TrajectoryAnalysis:
-    """
-    完整分析轨迹消息
-    
-    Args:
-        msg: LocalTrajectoryV4 消息
-        low_speed_thresh: 低速阈值，用于角速度计算
-                         此值应与 trajectory.low_speed_thresh 配置一致
-    
-    Returns:
-        TrajectoryAnalysis: 分析结果
-    """
+def analyze_trajectory_msg(msg) -> TrajectoryAnalysis:
+    """完整分析轨迹消息"""
     result = TrajectoryAnalysis()
     result.timestamp = get_ros_time(msg.header.stamp)
     result.frame_id = msg.header.frame_id or "unknown"
@@ -489,11 +439,7 @@ def analyze_trajectory_msg(msg, low_speed_thresh: float = 0.1) -> TrajectoryAnal
         heading_changes.append(dh)
     result.total_turn_deg = np.degrees(sum(heading_changes)) if heading_changes else 0
     
-    # 速度分析 - 确保 dt_sec 有效
-    if result.dt_sec <= 0:
-        result.dt_sec = 0.1  # 使用默认值
-        result.issues.append("⚠️ dt_sec无效，使用默认值0.1s")
-    
+    # 速度分析
     speeds = [d / result.dt_sec for d in distances]
     if speeds:
         result.avg_speed = np.mean(speeds)
@@ -519,23 +465,25 @@ def analyze_trajectory_msg(msg, low_speed_thresh: float = 0.1) -> TrajectoryAnal
     elif result.soft_enabled:
         result.issues.append("⚠️ soft_enabled=True但无velocity数据")
     
-    # Hard velocities - 使用传入的 low_speed_thresh 参数
-    hard_vels, hard_issues = compute_hard_velocities(points, result.dt_sec, low_speed_thresh)
+    # Hard velocities
+    # 注意: low_speed_thresh=0.1 与 universal_controller 中的默认配置一致
+    # 这是诊断工具的独立分析，用于检测轨迹中可能导致 wz=0 的低速点
+    hard_vels, hard_issues = compute_hard_velocities(points, result.dt_sec, 0.1)
     result.hard_wz_sum = np.sum(np.abs(hard_vels[:, 3]))
     result.hard_wz_max = np.max(np.abs(hard_vels[:, 3]))
     result.hard_wz_zero_count = np.sum(np.abs(hard_vels[:, 3]) < 1e-6)
     result.issues.extend(hard_issues)
     
-    # 核心问题检测 - 使用传入的 low_speed_thresh 参数
+    # 核心问题检测
     if abs(result.total_turn_deg) > 10 and result.hard_wz_sum < 0.1:
         result.issues.append(f"🔴 关键问题: 轨迹转向{result.total_turn_deg:.1f}°但hard_wz≈0 (可能是低速阈值问题)")
     
     if result.hard_wz_zero_count > result.num_points * 0.8:
-        result.issues.append(f"🔴 {result.hard_wz_zero_count}/{result.num_points}个点的wz=0 (速度可能低于{low_speed_thresh}m/s阈值)")
+        result.issues.append(f"🔴 {result.hard_wz_zero_count}/{result.num_points}个点的wz=0 (速度可能低于0.1m/s阈值)")
     
-    low_speed_count = sum(1 for s in speeds if s < low_speed_thresh)
+    low_speed_count = sum(1 for s in speeds if s < 0.1)
     if low_speed_count > len(speeds) * 0.5:
-        result.issues.append(f"⚠️ {low_speed_count}/{len(speeds)}个点速度<{low_speed_thresh}m/s，会导致wz被置0")
+        result.issues.append(f"⚠️ {low_speed_count}/{len(speeds)}个点速度<0.1m/s，会导致wz被置0")
     
     return result
 
@@ -558,18 +506,10 @@ class TopicMonitor:
         self.sub = None
         
     def start(self) -> bool:
-        """
-        启动话题订阅
-        
-        Returns:
-            bool: 是否成功启动
-        """
         try:
             self.sub = rospy.Subscriber(self.topic, self.msg_type, self._callback, queue_size=10)
             return True
-        except Exception as e:
-            # 记录错误但不中断程序
-            safe_print(f"警告: 订阅 {self.topic} 失败: {e}")
+        except:
             return False
     
     def stop(self):
@@ -653,29 +593,20 @@ class OdometryAnalyzer(TopicMonitor):
 
 
 class TrajectoryMonitor(TopicMonitor):
-    """分析轨迹特性（含曲率分析和速度统计）"""
+    """分析轨迹特性（含曲率分析）"""
     
     def __init__(self, topic: str):
         if CUSTOM_MSG_AVAILABLE:
             super().__init__(topic, LocalTrajectoryV4)
         else:
-            # Fallback: 使用 AnyMsg 进行基本监控
-            # 注意: 仅在 ROS1 下可用
-            if ROS_VERSION == 1:
-                from rospy.msg import AnyMsg
-                super().__init__(topic, AnyMsg)
-            else:
-                # ROS2 下没有 AnyMsg，使用 Odometry 作为占位符（不会真正解析）
-                super().__init__(topic, Odometry)
-                safe_print(f"警告: 轨迹监控在 ROS2 下功能受限")
+            from rospy.msg import AnyMsg
+            super().__init__(topic, AnyMsg)
         self.traj_info = {
             'num_points': 0, 'dt_sec': 0.1, 'has_velocities': False,
             'confidence': 0.9, 'frame_id': '', 'total_length': 0, 'max_curvature': 0,
-            'min_speed': 0.0, 'avg_speed': 0.0, 'max_speed': 0.0,  # 速度统计
         }
         self.point_counts = deque(maxlen=100)
         self.dt_values = deque(maxlen=100)
-        self.speed_samples = deque(maxlen=500)  # 存储速度样本用于统计
         
     def _callback(self, msg):
         super()._callback(msg)
@@ -693,29 +624,13 @@ class TrajectoryMonitor(TopicMonitor):
             if hasattr(msg, 'header'):
                 self.traj_info['frame_id'] = msg.header.frame_id
             
-            # 计算轨迹长度、曲率和速度
+            # 计算轨迹长度和曲率
             if hasattr(msg, 'points') and len(msg.points) >= 2:
                 points = [(p.x, p.y) for p in msg.points]
-                dt_sec = msg.dt_sec if hasattr(msg, 'dt_sec') and msg.dt_sec > 0 else 0.1
-                
-                # 计算相邻点距离和速度
-                distances = []
-                for i in range(len(points) - 1):
-                    dx = points[i+1][0] - points[i][0]
-                    dy = points[i+1][1] - points[i][1]
-                    dist = np.sqrt(dx**2 + dy**2)
-                    distances.append(dist)
-                
-                self.traj_info['total_length'] = sum(distances)
-                
-                # 计算速度统计 (用于 _calculate_low_speed_thresh)
-                if distances:
-                    speeds = [d / dt_sec for d in distances]
-                    self.traj_info['min_speed'] = min(speeds)
-                    self.traj_info['avg_speed'] = np.mean(speeds)
-                    self.traj_info['max_speed'] = max(speeds)
-                    # 存储样本用于长期统计
-                    self.speed_samples.extend(speeds)
+                length = sum(np.sqrt((points[i+1][0]-points[i][0])**2 + 
+                                    (points[i+1][1]-points[i][1])**2) 
+                            for i in range(len(points)-1))
+                self.traj_info['total_length'] = length
                 
                 # Menger 曲率
                 curvatures = compute_menger_curvature(points)
@@ -733,59 +648,34 @@ class TrajectoryMonitor(TopicMonitor):
             if self.dt_values:
                 stats['avg_dt'] = np.mean(list(self.dt_values))
                 stats['dt_variance'] = np.std(list(self.dt_values))
-            # 长期速度统计 (基于所有收集的样本)
-            if self.speed_samples:
-                speed_list = list(self.speed_samples)
-                stats['min_speed'] = min(speed_list)
-                stats['avg_speed'] = np.mean(speed_list)
-                stats['max_speed'] = max(speed_list)
-                stats['speed_std'] = np.std(speed_list)
         return stats
 
 
 class ControllerDiagnosticsMonitor:
     """监控控制器诊断信息用于运行时调优"""
     
-    def __init__(self, topic: str = '/controller/diagnostics', max_samples: int = 1000):
-        """
-        初始化诊断监控器
-        
-        Args:
-            topic: 诊断话题
-            max_samples: 最大样本数，应根据 duration * 诊断频率 设置
-                        默认 1000 支持 100 秒 @ 10Hz 或 50 秒 @ 20Hz
-        """
+    def __init__(self, topic: str = '/controller/diagnostics'):
         self.topic = topic
         self.sub = None
         self.lock = threading.Lock()
         self.msg_count = 0
-        self.mpc_solve_times = deque(maxlen=max_samples)
-        self.mpc_successes = deque(maxlen=max_samples)
-        self.mpc_kkt_residuals = deque(maxlen=max_samples)
-        self.lateral_errors = deque(maxlen=max_samples)
-        self.longitudinal_errors = deque(maxlen=max_samples)
-        self.heading_errors = deque(maxlen=max_samples)
-        self.alpha_values = deque(maxlen=max_samples)
-        self.states = deque(maxlen=max_samples)
+        self.mpc_solve_times = deque(maxlen=500)
+        self.mpc_successes = deque(maxlen=500)
+        self.mpc_kkt_residuals = deque(maxlen=500)
+        self.lateral_errors = deque(maxlen=500)
+        self.longitudinal_errors = deque(maxlen=500)
+        self.heading_errors = deque(maxlen=500)
+        self.alpha_values = deque(maxlen=500)
+        self.states = deque(maxlen=500)
         self.backup_active_count = 0
-        # diagnostics deque 大小与其他统计 deque 保持一致
-        self.diagnostics = deque(maxlen=max_samples)
         
     def start(self) -> bool:
-        """
-        启动诊断话题订阅
-        
-        Returns:
-            bool: 是否成功启动
-        """
         if not CUSTOM_MSG_AVAILABLE:
-            safe_print("警告: controller_ros 自定义消息不可用")
             return False
         try:
             self.sub = rospy.Subscriber(self.topic, DiagnosticsV2, self._callback, queue_size=10)
             return True
-        except Exception as e:
-            safe_print(f"警告: 订阅 {self.topic} 失败: {e}")
+        except:
             return False
     
     def stop(self):
@@ -804,7 +694,6 @@ class ControllerDiagnosticsMonitor:
             self.heading_errors.append(abs(msg.tracking_heading_error))
             self.alpha_values.append(msg.consistency_alpha_soft)
             self.states.append(msg.state)
-            self.diagnostics.append(msg)  # 存储原始消息用于增强分析
             if msg.backup_active:
                 self.backup_active_count += 1
     
@@ -836,22 +725,13 @@ class ControllerDiagnosticsMonitor:
 # ============================================================================
 
 class ChassisTestRunner:
-    """
-    运行底盘能力测试
+    """运行底盘能力测试"""
     
-    Args:
-        cmd_topic: 速度命令话题
-        odom_analyzer: 里程计分析器
-        log_func: 日志函数，用于统一输出 (可选，默认使用 safe_print)
-    """
-    
-    def __init__(self, cmd_topic: str, odom_analyzer: OdometryAnalyzer, log_func=None):
+    def __init__(self, cmd_topic: str, odom_analyzer: OdometryAnalyzer):
         self.cmd_topic = cmd_topic
         self.odom = odom_analyzer
         self.cmd_pub = None
         self.results = {}
-        # 使用传入的日志函数，或默认使用 safe_print
-        self._log = log_func if log_func else safe_print
         
     def setup(self):
         self.cmd_pub = rospy.Publisher(self.cmd_topic, Twist, queue_size=1)
@@ -859,11 +739,11 @@ class ChassisTestRunner:
         
     def test_max_velocity(self, target_v: float = 1.0, duration: float = 3.0) -> float:
         """测试最大速度"""
-        self._log(f"  测试最大速度 (目标: {target_v} m/s)...")
+        safe_print(f"  测试最大速度 (目标: {target_v} m/s)...")
         # 清空历史数据，只统计本次测试（线程安全）
         with self.odom.lock:
             self.odom.velocities.clear()
-        time.sleep(0.5)  # 等待足够的新数据（至少10个样本@20Hz）
+        time.sleep(0.2)  # 等待新数据
         
         cmd = Twist()
         cmd.linear.x = target_v
@@ -882,7 +762,7 @@ class ChassisTestRunner:
     
     def test_acceleration(self, target_v: float = 0.5) -> float:
         """测试加速能力"""
-        self._log(f"  测试加速度 (目标: {target_v} m/s)...")
+        safe_print(f"  测试加速度 (目标: {target_v} m/s)...")
         # 停止机器人
         self.cmd_pub.publish(Twist())
         time.sleep(1.0)
@@ -894,8 +774,8 @@ class ChassisTestRunner:
             self.odom.last_vel = None
             self.odom.last_time = None
         
-        # 等待足够的新数据开始收集（与其他测试方法保持一致）
-        time.sleep(0.5)
+        # 等待新数据开始收集
+        time.sleep(0.2)
         
         # 开始加速测试
         cmd = Twist()
@@ -924,11 +804,11 @@ class ChassisTestRunner:
     
     def test_angular_velocity(self, target_w: float = 1.0, duration: float = 2.0) -> float:
         """测试最大角速度"""
-        self._log(f"  测试角速度 (目标: {target_w} rad/s)...")
+        safe_print(f"  测试角速度 (目标: {target_w} rad/s)...")
         # 清空历史数据，只统计本次测试（线程安全）
         with self.odom.lock:
             self.odom.velocities.clear()
-        time.sleep(0.5)  # 等待足够的新数据
+        time.sleep(0.2)  # 等待新数据
         
         cmd = Twist()
         cmd.angular.z = target_w
@@ -947,14 +827,14 @@ class ChassisTestRunner:
     
     def test_response_time(self, step_v: float = 0.3) -> Optional[float]:
         """测试响应时间"""
-        self._log(f"  测试响应时间...")
+        safe_print(f"  测试响应时间...")
         self.cmd_pub.publish(Twist())
         time.sleep(1.0)
         
         # 清空历史数据（线程安全）
         with self.odom.lock:
             self.odom.velocities.clear()
-        time.sleep(0.5)  # 等待足够的新数据
+        time.sleep(0.2)  # 等待新数据
         
         start_time = time.time()
         threshold = step_v * 0.63  # 63% 时间常数
@@ -985,15 +865,7 @@ class UnifiedDiagnostics:
     - 单一类处理所有诊断模式，避免代码重复
     - 内部模块化：话题监控、实时诊断、配置生成
     - 通过 mode 参数控制执行流程
-    
-    配置生成覆盖 (14个配置模块):
-    - system, watchdog, mpc, constraints, safety, ekf
-    - consistency, transform, transition, backup, tf, tracking
-    - cmd_vel_adapter, trajectory (新增)
     """
-    
-    # 默认 low_speed_thresh，与 universal_controller/config/trajectory_config.py 保持一致
-    DEFAULT_LOW_SPEED_THRESH = 0.1
     
     def __init__(self, args):
         self.args = args
@@ -1012,14 +884,10 @@ class UnifiedDiagnostics:
         # 监控器
         self.monitors = {}
         self.diag_monitor = None
-        self.enhanced_analyzer = None  # 增强诊断分析器
         
         # 结果存储
         self.results = {}
         self.recommended = {}
-        
-        # 配置参数 - 从命令行或默认值
-        self.low_speed_thresh = getattr(args, 'low_speed_thresh', self.DEFAULT_LOW_SPEED_THRESH)
         
         # 实时诊断状态
         self.last_traj: Optional[TrajectoryAnalysis] = None
@@ -1095,11 +963,13 @@ class UnifiedDiagnostics:
         if self.log_handle:
             try:
                 # 移除ANSI颜色代码后再写入文件
+                import re
                 text_no_color = re.sub(r'\033\[[0-9;]+m', '', text)
                 self.log_handle.write(text_no_color + '\n')
                 self.log_handle.flush()
             except UnicodeEncodeError:
                 # 如果写入失败，尝试只写入ASCII
+                import re
                 text_no_color = re.sub(r'\033\[[0-9;]+m', '', text)
                 self.log_handle.write(text_no_color.encode('ascii', errors='replace').decode('ascii') + '\n')
                 self.log_handle.flush()
@@ -1133,8 +1003,7 @@ class UnifiedDiagnostics:
         """轨迹回调"""
         with self.lock:
             self.traj_count += 1
-            # 使用配置的 low_speed_thresh 进行分析
-            self.last_traj = analyze_trajectory_msg(msg, self.low_speed_thresh)
+            self.last_traj = analyze_trajectory_msg(msg)
             self._maybe_print_realtime_report()
     
     def _odom_callback(self, msg):
@@ -1253,7 +1122,7 @@ class UnifiedDiagnostics:
         """打印完整实时诊断报告（10个板块）"""
         lines = [
             "\n" + "="*80,
-            "                    统一控制器诊断报告 v2.2",
+            "                    统一控制器诊断报告 v2.1",
             "="*80,
             f"时间: {time.strftime('%H:%M:%S')}  |  轨迹#{self.traj_count}  |  诊断#{self.diag_count}  |  命令#{self.cmd_count}",
             "-"*80
@@ -1621,10 +1490,9 @@ class UnifiedDiagnostics:
         """阶段2: 底盘能力测试"""
         self._log(f"\n{Colors.BLUE}阶段2: 底盘能力测试{Colors.NC}\n")
         self._log(f"  {Colors.YELLOW}警告: 机器人会移动! 确保周围空间安全。{Colors.NC}")
-        self._log("  按 Enter 开始测试 (Ctrl+C 跳过)...")
         
         try:
-            input()  # 等待用户确认
+            input("  按 Enter 开始测试 (Ctrl+C 跳过)...")
         except KeyboardInterrupt:
             self._log("\n  跳过底盘测试")
             return
@@ -1643,8 +1511,7 @@ class UnifiedDiagnostics:
             self._log("  等待里程计数据...")
             time.sleep(1.0)
             
-            # 传入 self._log 作为日志函数，确保测试输出写入日志
-            tester = ChassisTestRunner(self.topics['cmd_vel'], odom_monitor, log_func=self._log)
+            tester = ChassisTestRunner(self.topics['cmd_vel'], odom_monitor)
             tester.setup()
             tester.test_max_velocity(target_v=0.5)
             tester.test_acceleration(target_v=0.3)
@@ -1663,56 +1530,16 @@ class UnifiedDiagnostics:
             self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} controller_ros 消息不可用，跳过")
             return
         
-        # 计算需要的样本数：duration * 预期诊断频率(10-20Hz) * 1.5 安全系数
-        expected_diag_rate = 20  # 假设最高 20Hz
-        max_samples = int(self.args.duration * expected_diag_rate * 1.5)
-        max_samples = max(max_samples, 500)  # 至少 500 个样本
-        
-        self.diag_monitor = ControllerDiagnosticsMonitor(self.topics['diagnostics'], max_samples=max_samples)
+        self.diag_monitor = ControllerDiagnosticsMonitor(self.topics['diagnostics'])
         if self.diag_monitor.start():
             self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 订阅 {self.topics['diagnostics']}")
         else:
             self._log(f"  {Colors.RED}[FAIL]{Colors.NC} 无法订阅，控制器是否运行?")
             return
         
-        # 初始化增强诊断分析器，window_size 与 max_samples 保持一致
-        if ENHANCED_DIAGNOSTICS_AVAILABLE:
-            self.enhanced_analyzer = EnhancedDiagnostics(window_size=max_samples)
-            self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 增强诊断分析器已启用")
-        
         self._log(f"\n  收集控制器诊断 {self.args.duration} 秒...")
         self._log(f"  {Colors.YELLOW}[INFO]{Colors.NC} 移动机器人以生成跟踪数据!")
-        
-        # 收集数据并实时分析
-        # 使用更高频率的采样，避免丢失数据
-        start_time = time.time()
-        last_processed_count = 0
-        
-        while time.time() - start_time < self.args.duration:
-            time.sleep(0.05)  # 50ms 采样间隔，支持 20Hz 诊断频率
-            
-            # 如果有增强分析器，处理所有新增的样本
-            if self.enhanced_analyzer:
-                with self.diag_monitor.lock:
-                    current_count = len(self.diag_monitor.diagnostics)
-                    # 处理所有新增的诊断消息，避免丢失数据
-                    for i in range(last_processed_count, current_count):
-                        if i < len(self.diag_monitor.diagnostics):
-                            diag_msg = self.diag_monitor.diagnostics[i]
-                            diag_dict = {
-                                'header': diag_msg.header,
-                                'cmd_vx': diag_msg.cmd_vx,
-                                'cmd_vy': diag_msg.cmd_vy,
-                                'cmd_omega': diag_msg.cmd_omega,
-                                'tracking_lateral_error': diag_msg.tracking_lateral_error,
-                                'tracking_longitudinal_error': diag_msg.tracking_longitudinal_error,
-                                'tracking_heading_error': diag_msg.tracking_heading_error,
-                                'alpha': diag_msg.consistency_alpha_soft,
-                                'state': diag_msg.state,
-                                'mpc_success': diag_msg.mpc_success
-                            }
-                            self.enhanced_analyzer.add_sample(diag_dict)
-                    last_processed_count = current_count
+        time.sleep(self.args.duration)
         
         controller_stats = self.diag_monitor.get_stats()
         self.diag_monitor.stop()
@@ -1720,23 +1547,11 @@ class UnifiedDiagnostics:
         if controller_stats:
             self.results['controller'] = controller_stats
             self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 收集 {controller_stats['msg_count']} 条诊断消息")
-            
-            # 运行增强分析
-            if self.enhanced_analyzer:
-                self._log(f"\n  {Colors.CYAN}运行增强诊断分析...{Colors.NC}")
-                # 注意: analyze_control_smoothness 已合并到 analyze_mpc_weights 中
-                # 控制平滑性分析现在通过 mpc_weights 的 metrics 中的 avg_accel/max_accel 等指标体现
-                self.results['enhanced_diagnostics'] = {
-                    'mpc_weights': self.enhanced_analyzer.analyze_mpc_weights(),
-                    'consistency_check': self.enhanced_analyzer.analyze_consistency_check(),
-                    'state_machine': self.enhanced_analyzer.analyze_state_machine()
-                }
-                self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 增强诊断分析完成")
         else:
             self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未收到控制器诊断数据")
     
     def _calculate_recommendations(self):
-        """阶段4: 计算完整推荐配置（14个配置模块）"""
+        """阶段4: 计算完整推荐配置（13个配置模块）"""
         self._log(f"\n{Colors.BLUE}阶段4: 计算推荐配置{Colors.NC}\n")
         
         odom = self.results.get('odom', {})
@@ -1753,19 +1568,18 @@ class UnifiedDiagnostics:
         odom_latency = odom.get('latency_ms', 0)
         traj_jitter = traj.get('jitter_ms', 0)
         
-        # 控制频率 - 必须在使用前确保有效值
+        # 控制频率
         if odom_rate >= 100: ctrl_freq = 50
         elif odom_rate >= 50: ctrl_freq = 40
         elif odom_rate >= 20: ctrl_freq = 20
-        elif odom_rate > 0: ctrl_freq = max(10, int(odom_rate / 2))
-        else: ctrl_freq = 20  # 无里程计数据时使用默认值
+        else: ctrl_freq = max(10, int(odom_rate / 2))
         
-        # 安全检查：确保 ctrl_freq 不为0（必须在计算 ctrl_period_ms 之前）
+        # 安全检查：确保 ctrl_freq 不为0
         if ctrl_freq <= 0:
             self._log(f"  {Colors.RED}[ERROR]{Colors.NC} 控制频率计算错误，使用默认值 20 Hz")
             ctrl_freq = 20
         
-        ctrl_period_ms = 1000.0 / ctrl_freq
+        ctrl_period_ms = 1000 / ctrl_freq
         
         # 底盘参数
         # 优先使用测试结果，其次使用阶段1的里程计数据，最后使用默认值
@@ -1790,13 +1604,11 @@ class UnifiedDiagnostics:
         # 轨迹参数
         num_points = traj_info.get('num_points', 8)
         dt_sec = traj_info.get('dt_sec', 0.1)
-        # MPC horizon 限制：不超过轨迹点数-1，不超过 20，且考虑控制周期
-        max_horizon_by_time = max(3, int(ctrl_period_ms * 10 / (dt_sec * 1000))) if dt_sec > 0 else 20
-        mpc_horizon = min(max(num_points - 1, 3), max_horizon_by_time, 20)
+        mpc_horizon = min(max(num_points - 1, 3), 30)
         traj_length = traj_info.get('total_length', 1.0)
         
-        # EKF噪声因子 - 限制最大放大倍数为 2
-        odom_noise_factor = 1.0 + min(odom_jitter / 50.0, 1.0)
+        # EKF噪声因子
+        odom_noise_factor = 1.0 + (odom_jitter / 50.0)
         
         # Lookahead
         lookahead = max(0.3, min(max_v * response_time * 2, 2.0)) if max_v > 0 else 0.5
@@ -1808,12 +1620,11 @@ class UnifiedDiagnostics:
         }
         
         # ===== 2. Watchdog =====
-        # 超时设置为 5 个周期，确保有足够的容错空间
         self.recommended['watchdog'] = {
-            'odom_timeout_ms': int(1000 / max(odom_rate, 1) * 5) if odom_rate > 0 else 500,
-            'traj_timeout_ms': int(1000 / max(traj_rate, 1) * 3) if traj_rate > 0 else 1000,
-            'traj_grace_ms': int(1000 / max(traj_rate, 1) * 1.5) if traj_rate > 0 else 500,
-            'imu_timeout_ms': int(1000 / max(imu_rate, 1) * 5) if imu_rate > 0 else -1,
+            'odom_timeout_ms': int(3000 / max(odom_rate, 1)) if odom_rate > 0 else 500,
+            'traj_timeout_ms': int(2000 / max(traj_rate, 1)) if traj_rate > 0 else 1000,
+            'traj_grace_ms': int(1000 / max(traj_rate, 1)) if traj_rate > 0 else 500,
+            'imu_timeout_ms': int(3000 / max(imu_rate, 1)) if imu_rate > 0 else -1,
             'startup_grace_ms': 5000,
         }
         
@@ -2024,185 +1835,6 @@ class UnifiedDiagnostics:
             'mode_topic': '/visualizer/control_mode',
             'output_topic': self.topics['cmd_vel'],
         }
-        
-        # ===== 14. Trajectory (新增) =====
-        # 此配置模块定义轨迹处理参数，特别是 low_speed_thresh
-        # low_speed_thresh 是影响角速度计算的关键参数
-        self.recommended['trajectory'] = {
-            'default_dt_sec': dt_sec if dt_sec > 0 else 0.1,
-            'min_dt_sec': 0.01,
-            'max_dt_sec': 1.0,
-            'min_points': 2,
-            'max_points': 100,
-            'default_num_points': num_points if num_points > 0 else 20,
-            # low_speed_thresh: 低于此速度时，角速度 wz 被置为 0
-            # 这是影响轨迹跟踪的关键参数
-            # 默认值 0.1 m/s，如果轨迹速度普遍较低，应降低此值
-            'low_speed_thresh': self._calculate_low_speed_thresh(traj_info),
-            'max_point_distance': 10.0,
-            'min_confidence': 0.0,
-            'max_confidence': 1.0,
-            'default_confidence': traj_info.get('confidence', 0.9),
-            'default_frame_id': traj_info.get('frame_id', 'base_link') or 'base_link',
-            'output_frame_id': 'odom',
-        }
-        
-        # ===== 基于运行时数据调优 MPC 权重 =====
-        self._tune_mpc_weights_from_runtime()
-        
-        # ===== 基于运行时数据调优一致性参数 =====
-        self._tune_consistency_from_runtime()
-    
-    def _calculate_low_speed_thresh(self, traj_info: Dict) -> float:
-        """
-        根据轨迹特性计算推荐的 low_speed_thresh
-        
-        Args:
-            traj_info: 轨迹信息字典
-        
-        Returns:
-            推荐的 low_speed_thresh 值
-        """
-        # 默认值
-        default_thresh = 0.1
-        
-        # 如果没有轨迹信息，使用默认值
-        if not traj_info:
-            return default_thresh
-        
-        # 获取轨迹的最小速度和平均速度
-        min_speed = traj_info.get('min_speed', 0)
-        avg_speed = traj_info.get('avg_speed', 0)
-        
-        # 优先使用最小速度来计算阈值，确保所有点都能正确计算角速度
-        # 如果最小速度接近或低于默认阈值，需要降低阈值
-        if min_speed > 0 and min_speed < default_thresh * 1.5:
-            # 使用最小速度的 50% 作为阈值，确保有足够裕度
-            recommended = max(0.01, min_speed * 0.5)
-            self._log(f"  {Colors.YELLOW}[INFO]{Colors.NC} 轨迹最小速度 ({min_speed:.3f} m/s) 接近阈值，"
-                     f"建议 low_speed_thresh = {recommended:.3f}")
-            return round(recommended, 3)
-        
-        # 如果平均速度很低，也需要降低阈值
-        if avg_speed > 0 and avg_speed < 0.15:
-            # 轨迹速度很低，使用更低的阈值
-            # 使用平均速度的 30% 作为阈值（比之前的 50% 更保守）
-            recommended = max(0.01, avg_speed * 0.3)
-            self._log(f"  {Colors.YELLOW}[INFO]{Colors.NC} 轨迹平均速度较低 ({avg_speed:.3f} m/s)，"
-                     f"建议 low_speed_thresh = {recommended:.3f}")
-            return round(recommended, 3)
-        
-        return default_thresh
-    
-    def _tune_mpc_weights_from_runtime(self):
-        """
-        基于运行时跟踪误差调整 MPC 权重
-        
-        此方法分析控制器运行时的跟踪误差和控制平滑性，
-        自动调整 MPC 权重以优化跟踪性能。
-        """
-        controller = self.results.get('controller')
-        if not controller:
-            return
-        
-        # 获取跟踪误差
-        lateral_error_avg = controller.get('lateral_error_avg', 0)
-        lateral_error_max = controller.get('lateral_error_max', 0)
-        heading_error_avg = controller.get('heading_error_avg', 0)
-        
-        # 获取增强诊断结果
-        enhanced = self.results.get('enhanced_diagnostics', {})
-        mpc_analysis = enhanced.get('mpc_weights', {})
-        
-        if mpc_analysis.get('status') == 'ok':
-            metrics = mpc_analysis.get('metrics', {})
-            suggestions = mpc_analysis.get('suggestions', [])
-            
-            # 根据建议调整权重
-            for sug in suggestions:
-                if sug.get('priority') in ['critical', 'high']:
-                    param = sug.get('parameter', '')
-                    
-                    if 'position' in param:
-                        # 横向误差大，增加 position 权重
-                        if lateral_error_avg > 0.15:
-                            self.recommended['mpc']['weights']['position'] = 15.0
-                            self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 横向误差较大 ({lateral_error_avg:.3f}m)，"
-                                     f"增加 position 权重到 15.0")
-                        elif lateral_error_avg > 0.10:
-                            self.recommended['mpc']['weights']['position'] = 12.0
-                    
-                    elif 'heading' in param:
-                        # 航向误差大，增加 heading 权重
-                        if heading_error_avg > 0.3:
-                            self.recommended['mpc']['weights']['heading'] = 8.0
-                            self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 航向误差较大 ({np.degrees(heading_error_avg):.1f}°)，"
-                                     f"增加 heading 权重到 8.0")
-                        elif heading_error_avg > 0.2:
-                            self.recommended['mpc']['weights']['heading'] = 6.0
-                    
-                    elif 'control_accel' in param:
-                        # 加速度抖动大，增加 control_accel 权重
-                        max_accel = metrics.get('max_accel', 0)
-                        if max_accel > 8.0:
-                            self.recommended['mpc']['weights']['control_accel'] = 0.5
-                            self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 加速度抖动大 ({max_accel:.2f} m/s²)，"
-                                     f"增加 control_accel 权重到 0.5")
-                    
-                    elif 'control_alpha' in param:
-                        # 角加速度抖动大，增加 control_alpha 权重
-                        max_angular_accel = metrics.get('max_angular_accel', 0)
-                        if max_angular_accel > 15.0:
-                            self.recommended['mpc']['weights']['control_alpha'] = 0.5
-                            self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 角加速度抖动大 ({max_angular_accel:.2f} rad/s²)，"
-                                     f"增加 control_alpha 权重到 0.5")
-        
-        # 即使没有增强诊断，也根据基本指标调整
-        elif lateral_error_avg > 0.15:
-            self.recommended['mpc']['weights']['position'] = 15.0
-            self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 横向误差较大 ({lateral_error_avg:.3f}m)，"
-                     f"增加 position 权重到 15.0")
-        
-        if heading_error_avg > 0.3:
-            self.recommended['mpc']['weights']['heading'] = 8.0
-            self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 航向误差较大 ({np.degrees(heading_error_avg):.1f}°)，"
-                     f"增加 heading 权重到 8.0")
-    
-    def _tune_consistency_from_runtime(self):
-        """
-        基于运行时 alpha 值调整一致性参数
-        
-        此方法分析一致性检查的拒绝率，自动调整阈值。
-        """
-        controller = self.results.get('controller')
-        if not controller:
-            return
-        
-        alpha_avg = controller.get('alpha_avg', 1.0)
-        alpha_min = controller.get('alpha_min', 1.0)
-        
-        # 获取增强诊断结果
-        enhanced = self.results.get('enhanced_diagnostics', {})
-        consistency_analysis = enhanced.get('consistency_check', {})
-        
-        if consistency_analysis.get('status') == 'ok':
-            metrics = consistency_analysis.get('metrics', {})
-            rejection_rate = metrics.get('rejection_rate', 0)
-            
-            # 如果拒绝率过高，放宽阈值
-            if rejection_rate > 0.1:
-                self.recommended['consistency']['kappa_thresh'] = 0.7
-                self.recommended['consistency']['v_dir_thresh'] = 0.9
-                self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 一致性拒绝率过高 ({rejection_rate*100:.1f}%)，"
-                         f"放宽阈值 (kappa: 0.7, v_dir: 0.9)")
-            elif rejection_rate > 0.05:
-                self.recommended['consistency']['kappa_thresh'] = 0.6
-                self.recommended['consistency']['v_dir_thresh'] = 0.85
-        
-        # 如果 alpha 经常很低，可能需要调整
-        if alpha_min < 0.2:
-            self._log(f"  {Colors.YELLOW}[警告]{Colors.NC} Alpha 最小值很低 ({alpha_min:.2f})，"
-                     f"检查轨迹质量或放宽一致性阈值")
 
     def _show_tuning_results(self):
         """显示调优结果和运行时调优建议"""
@@ -2353,32 +1985,12 @@ class UnifiedDiagnostics:
                 self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 检测到低alpha值 (min: {controller['alpha_min']:.2f})")
                 self._log(f"    → 轨迹一致性较差")
                 self._log(f"    → 检查网络输出质量")
-        
-        # 增强诊断结果
-        if 'enhanced_diagnostics' in self.results and self.enhanced_analyzer:
-            self._log(f"\n{Colors.CYAN}增强诊断分析:{Colors.NC}")
-            
-            # 显示完整报告
-            report = self.enhanced_analyzer.generate_report()
-            for line in report.split('\n'):
-                self._log(line)
-            
-            # 收集所有高优先级建议
-            all_suggestions = self.enhanced_analyzer.get_all_suggestions()
-            high_priority_suggestions = [s for s in all_suggestions if s['priority'] in ['critical', 'high']]
-            
-            if high_priority_suggestions:
-                self._log(f"\n{Colors.RED}⚠️  高优先级配置建议:{Colors.NC}")
-                for idx, sug in enumerate(high_priority_suggestions, 1):
-                    self._log(f"  {idx}. {sug['parameter']}")
-                    self._log(f"     问题: {sug['current_issue']}")
-                    self._log(f"     建议: {sug['suggestion']}")
     
     def _generate_config(self, output_file: str):
         """生成完整配置文件"""
         self._log(f"\n{Colors.BLUE}生成配置文件: {output_file}{Colors.NC}")
         
-        # 构建完整配置 (14个配置模块)
+        # 构建完整配置
         config = {
             'system': self.recommended['system'],
             'topics': {
@@ -2401,7 +2013,6 @@ class UnifiedDiagnostics:
             'transition': self.recommended['transition'],
             'backup': self.recommended['backup'],
             'tracking': self.recommended['tracking'],
-            'trajectory': self.recommended['trajectory'],  # 第14个配置模块
             'cmd_vel_adapter': self.recommended['cmd_vel_adapter'],
             'diagnostics': {'publish_rate': 10},
         }
@@ -2457,179 +2068,151 @@ class UnifiedDiagnostics:
 
     # ==================== 运行入口 ====================
     
-    def _print_header(self, mode_name: str, sub_phase: str = None):
-        """
-        打印统一的标题头
-        
-        Args:
-            mode_name: 模式名称 (实时监控/系统调优/完整模式)
-            sub_phase: 子阶段名称 (可选，用于 full 模式的阶段标识)
-        """
-        self._log(f"\n{Colors.GREEN}{'='*80}")
-        self._log(f"         统一诊断工具 v2.4 - {mode_name}")
-        self._log(f"{'='*80}{Colors.NC}")
-        if self.log_file:
-            self._log(f"\n日志文件: {self.log_file}")
-        if sub_phase:
-            self._log(f"\n{Colors.MAGENTA}=== {sub_phase} ==={Colors.NC}\n")
-    
-    def _print_realtime_info(self):
-        """打印实时监控模式的诊断内容说明"""
-        self._log("\n诊断内容:")
-        self._log("  1. 轨迹输入分析    5. 状态估计器健康    9. 坐标变换状态")
-        self._log("  2. 控制输出分析    6. 跟踪误差         10. 问题汇总")
-        self._log("  3. MPC健康状态     7. 超时状态")
-        self._log("  4. 一致性指标      8. 紧急停止")
-    
-    def _setup_realtime_subscribers(self):
-        """
-        设置实时监控所需的话题订阅
-        
-        Returns:
-            bool: 是否成功设置（自定义消息是否可用）
-        """
-        self._log("\n订阅话题:")
-        
-        custom_msg_ok = False
-        if CUSTOM_MSG_AVAILABLE:
-            rospy.Subscriber(self.topics['trajectory'], LocalTrajectoryV4, self._traj_callback, queue_size=10)
-            self._log(f"  {Colors.GREEN}✓{Colors.NC} {self.topics['trajectory']} (LocalTrajectoryV4)")
-            rospy.Subscriber(self.topics['diagnostics'], DiagnosticsV2, self._diag_callback, queue_size=10)
-            self._log(f"  {Colors.GREEN}✓{Colors.NC} {self.topics['diagnostics']} (DiagnosticsV2)")
-            rospy.Subscriber(self.topics['cmd_unified'], UnifiedCmd, self._cmd_callback, queue_size=10)
-            self._log(f"  {Colors.GREEN}✓{Colors.NC} {self.topics['cmd_unified']} (UnifiedCmd)")
-            custom_msg_ok = True
-        else:
-            self._log(f"  {Colors.RED}✗{Colors.NC} 自定义消息不可用")
-        
-        rospy.Subscriber(self.topics['odom'], Odometry, self._odom_callback, queue_size=10)
-        self._log(f"  {Colors.GREEN}✓{Colors.NC} {self.topics['odom']} (Odometry)")
-        rospy.Subscriber(self.topics['cmd_vel'], Twist, self._twist_callback, queue_size=10)
-        self._log(f"  {Colors.GREEN}✓{Colors.NC} {self.topics['cmd_vel']} (Twist)")
-        
-        return custom_msg_ok
-    
-    def _run_realtime_loop(self):
-        """
-        运行实时监控主循环
-        
-        此方法会阻塞直到 ROS 关闭或用户中断
-        """
-        self._log("\n" + "-"*75)
-        self._log("等待数据... 每3秒输出一次完整诊断报告")
-        self._log("按 Ctrl+C 退出")
-        self._log("-"*75 + "\n")
-        
-        rate = rospy.Rate(1)
-        while not rospy.is_shutdown():
-            rate.sleep()
-    
-    def _run_tuning_phases(self):
-        """
-        运行系统调优的所有阶段
-        
-        包含: 话题监控、底盘测试(可选)、运行时诊断(可选)、配置计算、结果显示、配置生成(可选)
-        """
-        # 阶段1: 话题监控
-        self._run_topic_monitoring()
-        
-        # 阶段2: 底盘测试 (可选)
-        if self.args.test_chassis:
-            self._run_chassis_tests()
-        
-        # 阶段3: 控制器运行时诊断 (可选)
-        if self.args.runtime_tuning:
-            self._run_controller_diagnostics()
-        
-        # 阶段4: 计算推荐配置
-        self._calculate_recommendations()
-        
-        # 阶段5: 显示结果
-        self._show_tuning_results()
-        
-        # 阶段6: 生成配置文件
-        if self.args.output:
-            self._generate_config(self.args.output)
-    
     def run_realtime(self):
-        """
-        运行实时监控模式
-        
-        订阅 DiagnosticsV2 等话题，显示完整控制器内部状态（10个诊断板块）
-        需要控制器运行
-        """
+        """运行实时监控模式"""
         self._init_ros_node('unified_diagnostics_realtime')
         self._init_tf2()
         self._init_log()
         
+        print("\n" + "="*80)
+        print("         统一诊断工具 v2.1 - 实时监控模式")
+        print("="*80)
+        if self.log_file:
+            print(f"\n日志文件: {self.log_file}")
+        print("\n诊断内容:")
+        print("  1. 轨迹输入分析    5. 状态估计器健康    9. 坐标变换状态")
+        print("  2. 控制输出分析    6. 跟踪误差         10. 问题汇总")
+        print("  3. MPC健康状态     7. 超时状态")
+        print("  4. 一致性指标      8. 紧急停止")
+        print("\n订阅话题:")
+        
+        if CUSTOM_MSG_AVAILABLE:
+            rospy.Subscriber(self.topics['trajectory'], LocalTrajectoryV4, self._traj_callback, queue_size=10)
+            print(f"  ✓ {self.topics['trajectory']} (LocalTrajectoryV4)")
+            rospy.Subscriber(self.topics['diagnostics'], DiagnosticsV2, self._diag_callback, queue_size=10)
+            print(f"  ✓ {self.topics['diagnostics']} (DiagnosticsV2)")
+            rospy.Subscriber(self.topics['cmd_unified'], UnifiedCmd, self._cmd_callback, queue_size=10)
+            print(f"  ✓ {self.topics['cmd_unified']} (UnifiedCmd)")
+        else:
+            print("  ✗ 自定义消息不可用")
+        
+        rospy.Subscriber(self.topics['odom'], Odometry, self._odom_callback, queue_size=10)
+        print(f"  ✓ {self.topics['odom']} (Odometry)")
+        rospy.Subscriber(self.topics['cmd_vel'], Twist, self._twist_callback, queue_size=10)
+        print(f"  ✓ {self.topics['cmd_vel']} (Twist)")
+        
+        print("\n" + "-"*75)
+        print("等待数据... 每3秒输出一次完整诊断报告")
+        print("按 Ctrl+C 退出")
+        print("-"*75 + "\n")
+        
         try:
-            self._print_header("实时监控模式")
-            self._print_realtime_info()
-            self._setup_realtime_subscribers()
-            self._run_realtime_loop()
+            rate = rospy.Rate(1)
+            while not rospy.is_shutdown():
+                rate.sleep()
         finally:
             self._close_log()
             if self.log_file:
-                safe_print(f"\n日志已保存到: {self.log_file}")
+                print(f"\n日志已保存到: {self.log_file}")
     
     def run_tuning(self):
-        """
-        运行系统调优模式
-        
-        传感器频率/延迟/抖动分析，底盘测试，完整配置生成（14个配置模块）
-        不需要控制器运行
-        """
+        """运行系统调优模式"""
         self._init_ros_node('unified_diagnostics_tuning')
-        self._init_log()
+        self._init_log()  # 初始化日志文件
         
         try:
-            self._print_header("系统调优模式")
-            self._run_tuning_phases()
+            self._log(f"\n{Colors.GREEN}{'='*70}")
+            self._log("  统一诊断工具 v2.1 - 系统调优模式")
+            self._log(f"{'='*70}{Colors.NC}\n")
+            
+            # 阶段1: 话题监控
+            self._run_topic_monitoring()
+            
+            # 阶段2: 底盘测试 (可选)
+            if self.args.test_chassis:
+                self._run_chassis_tests()
+            
+            # 阶段3: 控制器运行时诊断 (可选)
+            if self.args.runtime_tuning:
+                self._run_controller_diagnostics()
+            
+            # 阶段4: 计算推荐配置
+            self._calculate_recommendations()
+            
+            # 阶段5: 显示结果
+            self._show_tuning_results()
+            
+            # 阶段6: 生成配置文件
+            if self.args.output:
+                self._generate_config(self.args.output)
         finally:
-            self._close_log()
+            self._close_log()  # 确保日志文件被关闭
             if self.log_file:
-                safe_print(f"\n日志已保存到: {self.log_file}")
+                print(f"\n日志已保存到: {self.log_file}")
     
     def run_full(self):
-        """
-        运行完整模式 - 先调优后实时监控
-        
-        第一阶段: 系统调优诊断 (同 tuning 模式)
-        第二阶段: 实时监控 (同 realtime 模式)
-        
-        两阶段的日志会追加到同一个文件中
-        """
+        """运行完整模式 - 先调优后实时监控"""
         self._init_ros_node('unified_diagnostics_full')
-        self._init_log()
+        
+        print(f"\n{Colors.GREEN}{'='*70}")
+        print("  统一诊断工具 v2.1 - 完整模式")
+        print(f"{'='*70}{Colors.NC}\n")
+        
+        # ===== 第一阶段: 系统调优 =====
+        print(f"{Colors.MAGENTA}=== 第一阶段: 系统调优诊断 ==={Colors.NC}\n")
+        
+        self._init_log()  # Initialize log for tuning phase
         
         try:
-            # ===== 第一阶段: 系统调优 =====
-            self._print_header("完整模式", "第一阶段: 系统调优诊断")
-            self._run_tuning_phases()
+            self._run_topic_monitoring()
             
-            # 阶段分隔
-            self._log(f"\n{Colors.GREEN}{'='*80}")
-            self._log("  第一阶段完成")
-            self._log(f"{'='*80}{Colors.NC}\n")
+            if self.args.test_chassis:
+                self._run_chassis_tests()
             
-            # ===== 等待用户确认进入第二阶段 =====
-            self._log(f"{Colors.MAGENTA}=== 第二阶段: 实时监控 ==={Colors.NC}")
-            self._log("按 Enter 进入实时监控模式 (Ctrl+C 退出)...")
-            try:
-                input()
-            except KeyboardInterrupt:
-                self._log("\n诊断结束 (用户取消第二阶段)")
-                return
+            if self.args.runtime_tuning:
+                self._run_controller_diagnostics()
             
-            # ===== 第二阶段: 实时监控 =====
-            self._init_tf2()
-            self._print_realtime_info()
-            self._setup_realtime_subscribers()
-            self._run_realtime_loop()
+            self._calculate_recommendations()
+            self._show_tuning_results()
+            
+            if self.args.output:
+                self._generate_config(self.args.output)
+        finally:
+            self._close_log()  # Close log after tuning phase
+            if self.log_file:
+                print(f"\n第一阶段日志已保存到: {self.log_file}")
+        
+        # ===== 第二阶段: 实时监控 =====
+        print(f"\n{Colors.MAGENTA}=== 第二阶段: 实时监控 ==={Colors.NC}")
+        print("按 Enter 进入实时监控模式 (Ctrl+C 退出)...")
+        try:
+            input()
+        except KeyboardInterrupt:
+            print("\n诊断结束")
+            return
+        
+        self._init_tf2()
+        self._init_log()  # Reinitialize log for realtime phase
+        
+        if CUSTOM_MSG_AVAILABLE:
+            rospy.Subscriber(self.topics['trajectory'], LocalTrajectoryV4, self._traj_callback, queue_size=10)
+            rospy.Subscriber(self.topics['diagnostics'], DiagnosticsV2, self._diag_callback, queue_size=10)
+            rospy.Subscriber(self.topics['cmd_unified'], UnifiedCmd, self._cmd_callback, queue_size=10)
+        
+        rospy.Subscriber(self.topics['odom'], Odometry, self._odom_callback, queue_size=10)
+        rospy.Subscriber(self.topics['cmd_vel'], Twist, self._twist_callback, queue_size=10)
+        
+        print("\n等待数据... 每3秒输出一次完整诊断报告")
+        print("按 Ctrl+C 退出\n")
+        
+        try:
+            rate = rospy.Rate(1)
+            while not rospy.is_shutdown():
+                rate.sleep()
         finally:
             self._close_log()
             if self.log_file:
-                safe_print(f"\n日志已保存到: {self.log_file}")
+                print(f"\n日志已保存到: {self.log_file}")
     
     def run(self):
         """
@@ -2670,7 +2253,7 @@ def main():
             pass
     
     parser = argparse.ArgumentParser(
-        description='统一诊断工具 v2.4 - 完整合并实时监控与系统调优',
+        description='统一诊断工具 v2.1 - 完整合并实时监控与系统调优',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
@@ -2696,7 +2279,7 @@ def main():
   realtime  - 实时监控控制器内部状态 (10个诊断板块)
               需要: turtlebot_bringup + network + controller_ros
               
-  tuning    - 系统调优，传感器分析，完整配置生成 (14个配置模块)
+  tuning    - 系统调优，传感器分析，完整配置生成 (13个配置模块)
               需要: turtlebot_bringup + network trajectory
               
   full      - 完整诊断，先调优后实时监控
@@ -2717,27 +2300,22 @@ def main():
     parser.add_argument('--cmd-vel-topic', default='/cmd_vel', help='速度命令话题')
     parser.add_argument('--cmd-topic', default='/cmd_unified', help='UnifiedCmd话题')
     parser.add_argument('--diag-topic', default='/controller/diagnostics', help='诊断话题')
-    parser.add_argument('--duration', type=float, default=10.0, help='监控时长 (秒，默认: 10)')
+    parser.add_argument('--duration', type=float, default=5.0, help='监控时长 (秒)')
     parser.add_argument('--output', '-o', help='输出配置文件')
-    parser.add_argument('--log-file', help='日志文件路径 (默认: /moshi/unified_diag.log)')
+    parser.add_argument('--log-file', help='日志文件路径 (默认: /tmp/unified_diag.log)')
     parser.add_argument('--test-chassis', action='store_true', help='运行底盘测试 (机器人会移动!)')
     parser.add_argument('--runtime-tuning', action='store_true', help='运行控制器运行时诊断')
-    parser.add_argument('--low-speed-thresh', type=float, default=0.1,
-                        help='低速阈值 (m/s)，低于此速度时角速度wz被置为0 (默认: 0.1)')
     
     args = parser.parse_args()
     
     # 默认日志文件 - 所有模式都支持日志
     if args.log_file is None:
-        # 使用跨平台的临时目录
-        import tempfile
-        temp_dir = tempfile.gettempdir()
         if args.mode == 'realtime':
-            args.log_file = os.path.join(temp_dir, 'unified_diag_realtime.log')
+            args.log_file = '/tmp/unified_diag_realtime.log'
         elif args.mode == 'tuning':
-            args.log_file = os.path.join(temp_dir, 'unified_diag_tuning.log')
+            args.log_file = '/tmp/unified_diag_tuning.log'
         elif args.mode == 'full':
-            args.log_file = os.path.join(temp_dir, 'unified_diag_full.log')
+            args.log_file = '/tmp/unified_diag_full.log'
     
     try:
         diag = UnifiedDiagnostics(args)

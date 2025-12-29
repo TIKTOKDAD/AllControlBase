@@ -1,0 +1,177 @@
+# 增强 unified_diagnostics.py 的补丁说明
+# 
+# 此文件包含需要添加到 unified_diagnostics.py 的代码片段
+# 
+# 修改位置：
+# 1. 在文件开头导入增强诊断模块
+# 2. 在 UnifiedDiagnostics 类中添加增强诊断器
+# 3. 在 _run_controller_diagnostics 方法中集成增强分析
+# 4. 在 _show_tuning_results 方法中显示增强诊断结果
+
+# ============================================================================
+# 1. 在文件开头添加导入 (约第 75 行，在其他导入之后)
+# ============================================================================
+
+# 增强诊断模块
+try:
+    from enhanced_diagnostics import EnhancedDiagnostics
+    ENHANCED_DIAGNOSTICS_AVAILABLE = True
+except ImportError:
+    ENHANCED_DIAGNOSTICS_AVAILABLE = False
+    print("警告: enhanced_diagnostics 模块不可用，部分高级诊断功能将被禁用")
+
+
+# ============================================================================
+# 2. 在 UnifiedDiagnostics.__init__ 方法中添加 (约第 900 行)
+# ============================================================================
+
+# 在 self.diag_monitor = None 之后添加：
+self.enhanced_analyzer = None  # 增强诊断分析器
+
+
+# ============================================================================
+# 3. 修改 _run_controller_diagnostics 方法 (约第 1525 行)
+# ============================================================================
+
+# 替换整个方法为：
+
+def _run_controller_diagnostics(self):
+    """阶段3: 控制器运行时诊断（增强版）"""
+    self._log(f"\n{Colors.BLUE}阶段3: 控制器运行时诊断 ({self.args.duration}秒){Colors.NC}\n")
+    
+    if not CUSTOM_MSG_AVAILABLE:
+        self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} controller_ros 消息不可用，跳过")
+        return
+    
+    self.diag_monitor = ControllerDiagnosticsMonitor(self.topics['diagnostics'])
+    if self.diag_monitor.start():
+        self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 订阅 {self.topics['diagnostics']}")
+    else:
+        self._log(f"  {Colors.RED}[FAIL]{Colors.NC} 无法订阅，控制器是否运行?")
+        return
+    
+    # 初始化增强诊断分析器
+    if ENHANCED_DIAGNOSTICS_AVAILABLE:
+        self.enhanced_analyzer = EnhancedDiagnostics(window_size=200)
+        self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 增强诊断分析器已启用")
+    
+    self._log(f"\n  收集控制器诊断 {self.args.duration} 秒...")
+    self._log(f"  {Colors.YELLOW}[INFO]{Colors.NC} 移动机器人以生成跟踪数据!")
+    
+    # 收集数据并实时分析
+    start_time = time.time()
+    while time.time() - start_time < self.args.duration:
+        time.sleep(0.1)
+        
+        # 如果有增强分析器，实时添加样本
+        if self.enhanced_analyzer and self.diag_monitor.diagnostics:
+            latest_diag = self.diag_monitor.diagnostics[-1]
+            diag_dict = {
+                'cmd_vx': latest_diag.cmd_vx,
+                'cmd_vy': latest_diag.cmd_vy,
+                'cmd_omega': latest_diag.cmd_omega,
+                'tracking_lateral_error': latest_diag.tracking_lateral_error,
+                'tracking_heading_error': latest_diag.tracking_heading_error,
+                'alpha': latest_diag.alpha,
+                'state': latest_diag.state,
+                'mpc_success': latest_diag.mpc_success
+            }
+            self.enhanced_analyzer.add_sample(diag_dict)
+    
+    controller_stats = self.diag_monitor.get_stats()
+    self.diag_monitor.stop()
+    
+    if controller_stats:
+        self.results['controller'] = controller_stats
+        self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 收集 {controller_stats['msg_count']} 条诊断消息")
+        
+        # 运行增强分析
+        if self.enhanced_analyzer:
+            self._log(f"\n  {Colors.CYAN}运行增强诊断分析...{Colors.NC}")
+            self.results['enhanced_diagnostics'] = {
+                'mpc_weights': self.enhanced_analyzer.analyze_mpc_weights(),
+                'consistency_check': self.enhanced_analyzer.analyze_consistency_check(),
+                'control_smoothness': self.enhanced_analyzer.analyze_control_smoothness(),
+                'state_machine': self.enhanced_analyzer.analyze_state_machine()
+            }
+            self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 增强诊断分析完成")
+    else:
+        self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未收到控制器诊断数据")
+
+
+# ============================================================================
+# 4. 在 _show_tuning_results 方法中添加增强诊断显示 (约第 2050 行)
+# ============================================================================
+
+# 在 "运行时调优建议" 部分之后添加：
+
+# 增强诊断结果
+if 'enhanced_diagnostics' in self.results and self.enhanced_analyzer:
+    self._log(f"\n{Colors.CYAN}增强诊断分析:{Colors.NC}")
+    
+    # 显示完整报告
+    report = self.enhanced_analyzer.generate_report()
+    for line in report.split('\n'):
+        self._log(line)
+    
+    # 收集所有高优先级建议
+    all_suggestions = self.enhanced_analyzer.get_all_suggestions()
+    high_priority_suggestions = [s for s in all_suggestions if s['priority'] in ['critical', 'high']]
+    
+    if high_priority_suggestions:
+        self._log(f"\n{Colors.RED}⚠️  高优先级配置建议:{Colors.NC}")
+        for i, sug in enumerate(high_priority_suggestions, 1):
+            self._log(f"  {i}. {sug['parameter']}")
+            self._log(f"     问题: {sug['current_issue']}")
+            self._log(f"     建议: {sug['suggestion']}")
+
+
+# ============================================================================
+# 5. 在 _generate_config 方法中应用增强诊断建议 (约第 1900 行)
+# ============================================================================
+
+# 在生成 MPC 权重配置时，应用增强诊断的建议：
+
+# 在 'mpc' 配置生成之后添加：
+
+# 应用增强诊断建议调整 MPC 权重
+if 'enhanced_diagnostics' in self.results and self.enhanced_analyzer:
+    suggestions = self.enhanced_analyzer.get_all_suggestions()
+    
+    for sug in suggestions:
+        param = sug['parameter']
+        priority = sug['priority']
+        
+        # 只应用 high 和 critical 优先级的建议
+        if priority not in ['high', 'critical']:
+            continue
+        
+        # MPC 权重调整
+        if 'mpc.weights.position' in param and 'avg_lateral_error' in sug.get('current_issue', ''):
+            self.recommended['mpc']['weights']['position'] = 15.0
+            self._log(f"  {Colors.CYAN}[ENHANCED]{Colors.NC} 根据增强诊断调整 position 权重: 10.0 → 15.0")
+        
+        if 'mpc.weights.heading' in param:
+            self.recommended['mpc']['weights']['heading'] = 8.0
+            self._log(f"  {Colors.CYAN}[ENHANCED]{Colors.NC} 根据增强诊断调整 heading 权重: 5.0 → 8.0")
+        
+        if 'mpc.weights.control_accel' in param:
+            self.recommended['mpc']['weights']['control_accel'] = 0.5
+            self._log(f"  {Colors.CYAN}[ENHANCED]{Colors.NC} 根据增强诊断调整 control_accel 权重: 0.2 → 0.5")
+        
+        if 'mpc.weights.control_alpha' in param:
+            self.recommended['mpc']['weights']['control_alpha'] = 0.5
+            self._log(f"  {Colors.CYAN}[ENHANCED]{Colors.NC} 根据增强诊断调整 control_alpha 权重: 0.2 → 0.5")
+        
+        # 一致性检查阈值调整
+        if 'consistency.kappa_thresh' in param:
+            if 'consistency' not in self.recommended:
+                self.recommended['consistency'] = {}
+            self.recommended['consistency']['kappa_thresh'] = 0.7
+            self._log(f"  {Colors.CYAN}[ENHANCED]{Colors.NC} 根据增强诊断调整 kappa_thresh: 0.5 → 0.7")
+        
+        if 'consistency.v_dir_thresh' in param:
+            if 'consistency' not in self.recommended:
+                self.recommended['consistency'] = {}
+            self.recommended['consistency']['v_dir_thresh'] = 0.9
+            self._log(f"  {Colors.CYAN}[ENHANCED]{Colors.NC} 根据增强诊断调整 v_dir_thresh: 0.8 → 0.9")
