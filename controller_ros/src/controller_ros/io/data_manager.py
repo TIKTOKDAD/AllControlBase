@@ -89,6 +89,9 @@ class DataManager(LifecycleMixin):
                           如果为 None，使用 time.time()。
                           ROS 环境应传入支持仿真时间的函数。
             on_clock_jump: 时钟跳变回调函数，用于通知上层。
+                          **重要**: 回调函数应快速返回，不应执行耗时操作。
+                          回调在锁外执行，可以安全地调用 DataManager 的其他方法。
+                          如果需要执行耗时操作，应在回调中启动新线程或使用队列。
             invalidate_on_forward_jump: 是否在大幅前跳时使数据无效。
                           默认 False (适合仿真快进场景)。
                           设为 True 可用于需要严格时间同步的场景。
@@ -148,7 +151,14 @@ class DataManager(LifecycleMixin):
         return self._traj_adapter
     
     def set_clock_jump_callback(self, callback: Optional[Callable[[ClockJumpEvent], None]]) -> None:
-        """设置时钟跳变回调"""
+        """
+        设置时钟跳变回调
+        
+        Args:
+            callback: 回调函数，接收 ClockJumpEvent 参数。
+                     **重要**: 回调应快速返回（< 1ms），不应执行耗时操作。
+                     如需执行耗时操作，请在回调中启动新线程或使用队列。
+        """
         with self._lock:
             self._on_clock_jump = callback
     

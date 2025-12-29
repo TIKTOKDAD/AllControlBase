@@ -44,10 +44,12 @@ def main():
     # 导入 Dashboard 组件
     try:
         from universal_controller.dashboard.main_window import DashboardWindow
-        from universal_controller.dashboard.ros_data_source import ROSDashboardDataSource
+        # ROSDashboardDataSource 已迁移到 controller_ros.dashboard
+        # 因为它依赖 controller_ros.msg，应该放在 ROS 层
+        from controller_ros.dashboard import ROSDashboardDataSource
     except ImportError as e:
         rospy.logerr(f"Failed to import dashboard modules: {e}")
-        rospy.logerr("Please ensure universal_controller is in PYTHONPATH")
+        rospy.logerr("Please ensure universal_controller and controller_ros are in PYTHONPATH")
         return 1
     
     # 从 ROS 参数加载配置

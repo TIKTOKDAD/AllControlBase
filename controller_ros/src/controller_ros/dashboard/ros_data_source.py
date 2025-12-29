@@ -63,6 +63,9 @@ try:
 except ImportError:
     ACADOS_AVAILABLE = False
 
+# 数据过期判断的最小阈值 (毫秒)
+# 即使诊断发布周期很短，也至少等待这么长时间才认为数据过期
+MIN_DATA_STALE_THRESHOLD_MS = 1000.0
 
 # 平台名称映射
 PLATFORM_NAMES = {
@@ -437,7 +440,7 @@ class ROSDashboardDataSource:
         diag_publish_rate = self._config.get('diagnostics', {}).get('publish_rate', 5)
         ctrl_freq = self._config.get('system', {}).get('ctrl_freq', 20)
         diag_period_ms = (1000.0 / ctrl_freq) * diag_publish_rate
-        data_stale_threshold_ms = max(diag_period_ms * 3, 1000)
+        data_stale_threshold_ms = max(diag_period_ms * 3, MIN_DATA_STALE_THRESHOLD_MS)
         data_stale = data_age_ms > data_stale_threshold_ms
         
         mpc_health = diagnostics.get('mpc_health', {})

@@ -939,7 +939,7 @@ main() {
     echo "  roslaunch controller_ros controller.launch config:=\$(pwd)/${OUTPUT_FILE:-optimized_config.yaml}"
     echo ""
     echo "For more detailed diagnostics (including chassis tests), use:"
-    echo "  rosrun controller_ros full_diagnostics.py --test-chassis --output my_config.yaml"
+    echo "  rosrun controller_ros unified_diagnostics.py --mode tuning --test-chassis --output my_config.yaml"
     echo ""
 }
 

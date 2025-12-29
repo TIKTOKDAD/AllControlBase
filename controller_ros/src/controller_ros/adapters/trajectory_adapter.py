@@ -21,6 +21,18 @@ from .base import IMsgConverter
 
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# 协议常量 (不应修改)
+# ============================================================================
+
+# 速度向量维度 [vx, vy, vz, wz]
+# 这是 ROS 消息格式的固定定义，不应该通过配置修改
+VELOCITY_DIMENSION = 4
+
+# ============================================================================
+# 默认值 (可通过配置覆盖，但通常不需要)
+# ============================================================================
+
 # 默认坐标系，当 ROS 消息的 frame_id 为空时使用
 DEFAULT_TRAJECTORY_FRAME_ID = 'base_link'
 
@@ -30,6 +42,22 @@ DEFAULT_DT_SEC = 0.1
 # dt_sec 的有效范围
 MIN_DT_SEC = 0.001  # 1ms
 MAX_DT_SEC = 10.0   # 10s
+
+# ============================================================================
+# 算法参数 (内部使用，通常不需要修改)
+# ============================================================================
+
+# 速度衰减填充的阈值 (m/s)
+# 当轨迹末端速度低于此值时，直接使用零填充；否则使用线性衰减填充
+# 
+# 设计说明：
+# - 较小的值 (如 0.05)：更激进的衰减填充，适合高速场景
+# - 较大的值 (如 0.2)：更保守的零填充，适合低速场景
+# - 默认 0.1 m/s 是一个平衡值，适用于大多数机器人
+# 
+# 如果需要调整此参数，可以在创建 TrajectoryAdapter 时传入配置：
+#   adapter = TrajectoryAdapter(config={'velocity_decay_threshold': 0.15})
+VELOCITY_DECAY_THRESHOLD = 0.1
 
 
 class TrajectoryAdapter(IMsgConverter):
@@ -46,11 +74,30 @@ class TrajectoryAdapter(IMsgConverter):
     坐标系处理:
     - 如果 ROS 消息的 frame_id 为空，使用默认值 'base_link'
     - 网络输出的轨迹通常在 base_link 坐标系下
+    
+    配置参数:
+    - velocity_decay_threshold: 速度衰减填充阈值 (m/s)，默认 0.1
     """
     
-    def __init__(self):
-        """初始化轨迹适配器"""
+    def __init__(self, config: dict = None):
+        """
+        初始化轨迹适配器
+        
+        Args:
+            config: 配置字典，可选。支持的配置项：
+                - velocity_decay_threshold: 速度衰减填充阈值 (m/s)
+        """
         super().__init__()
+        
+        # 从配置中读取参数，如果没有则使用默认值
+        if config is None:
+            config = {}
+        
+        # 速度衰减阈值：可通过配置覆盖
+        self._velocity_decay_threshold = config.get(
+            'velocity_decay_threshold', 
+            VELOCITY_DECAY_THRESHOLD
+        )
     
     def _validate_dt_sec(self, dt_sec: float) -> float:
         """
@@ -103,20 +150,21 @@ class TrajectoryAdapter(IMsgConverter):
         
         flat_len = len(velocities_flat)
         
-        # 检查长度是否为 4 的倍数
-        if flat_len % 4 != 0:
+        # 检查长度是否为 VELOCITY_DIMENSION 的倍数
+        if flat_len % VELOCITY_DIMENSION != 0:
             logger.warning(
-                f"velocities_flat length {flat_len} is not a multiple of 4 "
-                f"(expected multiple of 4 for [vx, vy, vz, wz]), truncating to {(flat_len // 4) * 4}. "
+                f"velocities_flat length {flat_len} is not a multiple of {VELOCITY_DIMENSION} "
+                f"(expected multiple of {VELOCITY_DIMENSION} for [vx, vy, vz, wz]), "
+                f"truncating to {(flat_len // VELOCITY_DIMENSION) * VELOCITY_DIMENSION}. "
                 f"This may indicate upstream data corruption."
             )
-            flat_len = (flat_len // 4) * 4
+            flat_len = (flat_len // VELOCITY_DIMENSION) * VELOCITY_DIMENSION
         
         if flat_len == 0:
             logger.debug("No valid velocity data after truncation, disabling soft mode")
             return None, False
         
-        velocities = np.array(velocities_flat[:flat_len]).reshape(-1, 4)
+        velocities = np.array(velocities_flat[:flat_len]).reshape(-1, VELOCITY_DIMENSION)
         num_vel_points = velocities.shape[0]
         
         # 检查速度点数与位置点数是否匹配
@@ -140,7 +188,7 @@ class TrajectoryAdapter(IMsgConverter):
                 
                 if is_stop_mode:
                     # 停止模式：使用零速度填充，实现平滑停车
-                    padding = np.zeros((padding_count, 4))
+                    padding = np.zeros((padding_count, VELOCITY_DIMENSION))
                     logger.debug(
                         f"Velocity points ({num_vel_points}) < position points ({num_points}), "
                         f"padding with zeros for stop mode"
@@ -152,13 +200,13 @@ class TrajectoryAdapter(IMsgConverter):
                     last_vel = velocities[-1, :]
                     last_vel_magnitude = np.sqrt(last_vel[0]**2 + last_vel[1]**2 + last_vel[2]**2)
                     
-                    if last_vel_magnitude > 0.1:  # 速度较大时使用衰减填充
+                    if last_vel_magnitude > self._velocity_decay_threshold:
                         logger.debug(
                             f"Velocity points ({num_vel_points}) < position points ({num_points}), "
                             f"padding with decaying velocity (magnitude={last_vel_magnitude:.2f} m/s)"
                         )
                         # 线性衰减到零：最后一个填充点速度为 0
-                        padding = np.zeros((padding_count, 4))
+                        padding = np.zeros((padding_count, VELOCITY_DIMENSION))
                         for i in range(padding_count):
                             # decay_factor: 从接近1衰减到0
                             # i=0 -> (padding_count-1)/padding_count
@@ -171,7 +219,7 @@ class TrajectoryAdapter(IMsgConverter):
                             f"Velocity points ({num_vel_points}) < position points ({num_points}), "
                             f"padding with zeros (last velocity magnitude={last_vel_magnitude:.2f} m/s is small)"
                         )
-                        padding = np.zeros((padding_count, 4))
+                        padding = np.zeros((padding_count, VELOCITY_DIMENSION))
                 
                 velocities = np.vstack([velocities, padding])
         

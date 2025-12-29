@@ -107,7 +107,11 @@ class ROS1Bridge(ROSBridgeBase):
         import rospy
         try:
             return rospy.Time.now().to_sec()
-        except:
+        except rospy.exceptions.ROSTimeMovedBackwardsException:
+            # 仿真时间回退，使用系统时间
+            return time.time()
+        except Exception:
+            # 其他异常（如 ROS 未初始化），使用系统时间
             return time.time()
     
     def log_info(self, msg: str):

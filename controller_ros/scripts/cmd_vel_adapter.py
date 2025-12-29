@@ -121,6 +121,10 @@ class CmdVelAdapter:
         # 定时器：以固定频率发布命令
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.publish_rate), self._timer_callback)
         
+        # 重置服务
+        from std_srvs.srv import Empty, EmptyResponse
+        self.reset_srv = rospy.Service('~reset', Empty, self._reset_service_callback)
+        
         rospy.loginfo(f"CmdVelAdapter 已启动:")
         rospy.loginfo(f"  控制器输入话题: {input_topic}")
         rospy.loginfo(f"  手柄输入话题: {joy_topic}")
@@ -130,6 +134,7 @@ class CmdVelAdapter:
         rospy.loginfo(f"  手柄超时: {self.joy_timeout} s")
         rospy.loginfo(f"  最大线速度: {self.max_linear} m/s")
         rospy.loginfo(f"  最大角速度: {self.max_angular} rad/s")
+        rospy.loginfo(f"  重置服务: ~reset")
         if self.max_linear_accel > 0:
             rospy.loginfo(f"  最大线加速度: {self.max_linear_accel} m/s² (启用)")
         if self.max_angular_accel > 0:
@@ -168,6 +173,12 @@ class CmdVelAdapter:
         self.clamp_count = 0
         self.rate_limit_count = 0
         rospy.loginfo("CmdVelAdapter 状态已重置")
+    
+    def _reset_service_callback(self, req):
+        """重置服务回调"""
+        from std_srvs.srv import EmptyResponse
+        self.reset()
+        return EmptyResponse()
     
     def _mode_callback(self, msg: Bool):
         """模式切换回调"""

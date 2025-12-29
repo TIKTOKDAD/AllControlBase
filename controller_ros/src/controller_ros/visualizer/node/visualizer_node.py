@@ -138,8 +138,13 @@ class VisualizerNode:
         
         # 手柄命令定时发布 (解决 joy_node 不持续发布的问题)
         self._last_joy_cmd: Optional[VelocityData] = None
+        self._joy_cmd_lock = threading.Lock()  # 保护 _last_joy_cmd 的线程安全
         self._joy_publish_rate = self._config.get('joystick', {}).get('publish_rate', 20.0)
         self._joy_publish_timer = None
+        
+        # 首次日志标志 (避免使用 hasattr 动态添加属性)
+        self._image_logged = False
+        self._image_error_logged = False
         
         # 创建订阅和发布
         self._create_subscriptions()
@@ -182,7 +187,13 @@ class VisualizerNode:
         """重置可视化器状态"""
         self._data_aggregator.reset()
         self._joystick_handler.reset()
-        self._last_joy_cmd = None
+        
+        with self._joy_cmd_lock:
+            self._last_joy_cmd = None
+        
+        # 重置首次日志标志，允许重新记录
+        self._image_logged = False
+        self._image_error_logged = False
         self._ros.log_info("Visualizer node reset")
     
     def _load_default_config(self) -> Dict[str, Any]:
@@ -316,9 +327,12 @@ class VisualizerNode:
         if self._joystick_handler.current_mode != ControlMode.JOYSTICK:
             return
         
-        # 发布最后的手柄命令
-        if self._last_joy_cmd is not None:
-            self._publish_cmd_vel(self._last_joy_cmd)
+        # 线程安全地读取最后的手柄命令
+        with self._joy_cmd_lock:
+            cmd = self._last_joy_cmd
+        
+        if cmd is not None:
+            self._publish_cmd_vel(cmd)
     
     def _joy_publish_timer_callback_ros2(self):
         """手柄命令定时发布回调 (ROS2)"""
@@ -387,9 +401,10 @@ class VisualizerNode:
         # 处理手柄输入
         cmd = self._joystick_handler.update(state)
         
-        # 如果在手柄模式，保存并发布命令
+        # 如果在手柄模式，线程安全地保存并发布命令
         if cmd is not None:
-            self._last_joy_cmd = cmd
+            with self._joy_cmd_lock:
+                self._last_joy_cmd = cmd
             self._publish_cmd_vel(cmd)
     
     def _image_callback(self, msg: Image):
@@ -398,11 +413,11 @@ class VisualizerNode:
         if image is not None:
             self._data_aggregator.update_camera_image(image)
             # 只在第一次收到图像时记录
-            if not hasattr(self, '_image_logged'):
+            if not self._image_logged:
                 self._ros.log_info(f"Camera image received: {msg.width}x{msg.height}, encoding={msg.encoding}")
                 self._image_logged = True
         else:
-            if not hasattr(self, '_image_error_logged'):
+            if not self._image_error_logged:
                 self._ros.log_warn(f"Failed to convert camera image: encoding={msg.encoding}")
                 self._image_error_logged = True
 
@@ -412,9 +427,10 @@ class VisualizerNode:
         """控制模式切换回调"""
         self._data_aggregator.update_control_mode(mode)
         
-        # 切换到网络模式时，清除最后的手柄命令
+        # 切换到网络模式时，线程安全地清除最后的手柄命令
         if mode == ControlMode.NETWORK:
-            self._last_joy_cmd = None
+            with self._joy_cmd_lock:
+                self._last_joy_cmd = None
         
         # 发布模式
         msg = Bool()

@@ -58,10 +58,21 @@ class HomographyTransform:
         
         try:
             import yaml
-            with open(calib_file, 'r') as f:
+            with open(calib_file, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
             
+            # 验证必需字段
+            if 'homography_matrix' not in data:
+                logger.error(f"Missing 'homography_matrix' in calibration file: {calib_file}")
+                return False
+            
             self._H = np.array(data['homography_matrix'], dtype=np.float64)
+            
+            # 验证矩阵形状
+            if self._H.shape != (3, 3):
+                logger.error(f"Invalid homography matrix shape: {self._H.shape}, expected (3, 3)")
+                return False
+            
             self._ground_points = data.get('ground_points', [])
             self._image_points = data.get('image_points', [])
             self._calib_file = calib_file
@@ -75,9 +86,18 @@ class HomographyTransform:
             
             logger.info(f"Loaded calibration from: {calib_file}")
             return True
-            
+        
+        except FileNotFoundError:
+            logger.error(f"Calibration file not found: {calib_file}")
+            return False
+        except yaml.YAMLError as e:
+            logger.error(f"Invalid YAML in calibration file {calib_file}: {e}")
+            return False
+        except (KeyError, ValueError, TypeError) as e:
+            logger.error(f"Invalid calibration data format in {calib_file}: {e}")
+            return False
         except Exception as e:
-            logger.error(f"Failed to load calibration: {e}")
+            logger.error(f"Failed to load calibration from {calib_file}: {e}")
             return False
     
     def project(self, x: float, y: float) -> Optional[Tuple[int, int]]:

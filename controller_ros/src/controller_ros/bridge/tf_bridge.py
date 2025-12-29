@@ -80,8 +80,12 @@ class TFBridge:
     def shutdown(self) -> None:
         """
         关闭 TF 桥接，释放资源
+        
+        支持重复调用，第二次及之后的调用会被忽略。
         """
-        if self._tf2_compat is not None:
-            self._tf2_compat.shutdown()
-            self._tf2_compat = None
+        if self._tf2_compat is None:
+            # 已经关闭，直接返回
+            return
+        self._tf2_compat.shutdown()
+        self._tf2_compat = None
         self._node = None

@@ -1,10 +1,18 @@
 #!/bin/bash
-# 轨迹方向诊断脚本
+# 轨迹方向诊断脚本 (数据采集)
+# 
+# 注意: 此脚本仅用于快速采集原始数据
+# 如需完整诊断分析，请使用:
+#   rosrun controller_ros unified_diagnostics.py --mode realtime
+#
 # 用法: ./diagnose_trajectory.sh
 
 echo "=============================================="
-echo "轨迹方向诊断工具"
+echo "轨迹方向诊断工具 (数据采集)"
 echo "=============================================="
+echo ""
+echo "提示: 如需完整诊断分析，请使用:"
+echo "  rosrun controller_ros unified_diagnostics.py --mode realtime"
 echo ""
 
 # 检查 ROS 环境
