@@ -962,11 +962,16 @@ class UnifiedDiagnostics:
         safe_print(text)
         if self.log_handle:
             try:
-                self.log_handle.write(text + '\n')
+                # 移除ANSI颜色代码后再写入文件
+                import re
+                text_no_color = re.sub(r'\033\[[0-9;]+m', '', text)
+                self.log_handle.write(text_no_color + '\n')
                 self.log_handle.flush()
             except UnicodeEncodeError:
                 # 如果写入失败，尝试只写入ASCII
-                self.log_handle.write(text.encode('ascii', errors='replace').decode('ascii') + '\n')
+                import re
+                text_no_color = re.sub(r'\033\[[0-9;]+m', '', text)
+                self.log_handle.write(text_no_color.encode('ascii', errors='replace').decode('ascii') + '\n')
                 self.log_handle.flush()
     
     # ==================== TF查询 ====================
@@ -1454,6 +1459,7 @@ class UnifiedDiagnostics:
     def _run_topic_monitoring(self):
         """阶段1: 话题监控"""
         self._log(f"{Colors.BLUE}阶段1: 话题监控 ({self.args.duration}秒){Colors.NC}\n")
+        self._log(f"  {Colors.YELLOW}[提示]{Colors.NC} 此阶段仅被动监听话题，如需测试底盘能力请使用 --test-chassis")
         
         self.monitors['odom'] = OdometryAnalyzer(self.topics['odom'])
         self.monitors['imu'] = TopicMonitor(self.topics['imu'], Imu)
@@ -1860,7 +1866,10 @@ class UnifiedDiagnostics:
         # 底盘特性
         chassis = self.results.get('chassis', {})
         if chassis:
-            self._log(f"\n{Colors.CYAN}底盘特性 (从里程计):{Colors.NC}")
+            self._log(f"\n{Colors.CYAN}底盘特性 (阶段1被动监听，仅供参考):{Colors.NC}")
+            max_speed = chassis.get('max_speed', 0)
+            if max_speed < 0.01:
+                self._log(f"  {Colors.YELLOW}[提示]{Colors.NC} 监听期间机器人未移动，数据为0是正常的")
             self._log(f"  最大速度: {chassis.get('max_speed', 0):.2f} m/s")
             self._log(f"  最大vx: {chassis.get('max_vx', 0):.2f} m/s")
             self._log(f"  最大wz: {chassis.get('max_wz', 0):.2f} rad/s")
@@ -1871,11 +1880,12 @@ class UnifiedDiagnostics:
         # 底盘测试结果
         tests = self.results.get('chassis_tests', {})
         if tests:
-            self._log(f"\n{Colors.CYAN}底盘测试结果:{Colors.NC}")
+            self._log(f"\n{Colors.CYAN}底盘测试结果 (阶段2主动测试，真实能力):{Colors.NC}")
             self._log(f"  实测最大速度: {tests.get('max_velocity_achieved', 0):.2f} m/s")
             self._log(f"  实测最大加速度: {tests.get('max_acceleration', 0):.2f} m/s^2")
             self._log(f"  实测最大角速度: {tests.get('max_angular_velocity', 0):.2f} rad/s")
             self._log(f"  响应时间: {tests.get('response_time', 0):.3f} sec")
+            self._log(f"  {Colors.GREEN}[提示]{Colors.NC} 配置生成将优先使用测试结果")
         
         # 推荐参数
         self._log(f"\n{Colors.CYAN}推荐参数:{Colors.NC}")
