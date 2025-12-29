@@ -1379,7 +1379,7 @@ class UnifiedDiagnostics:
     
     def _run_topic_monitoring(self):
         """阶段1: 话题监控"""
-        print(f"{Colors.BLUE}阶段1: 话题监控 ({self.args.duration}秒){Colors.NC}\n")
+        self._log(f"{Colors.BLUE}阶段1: 话题监控 ({self.args.duration}秒){Colors.NC}\n")
         
         self.monitors['odom'] = OdometryAnalyzer(self.topics['odom'])
         self.monitors['imu'] = TopicMonitor(self.topics['imu'], Imu)
@@ -1387,11 +1387,11 @@ class UnifiedDiagnostics:
         
         for name, mon in self.monitors.items():
             if mon.start():
-                print(f"  {Colors.GREEN}[OK]{Colors.NC} 订阅 {mon.topic}")
+                self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 订阅 {mon.topic}")
             else:
-                print(f"  {Colors.RED}[FAIL]{Colors.NC} 无法订阅 {mon.topic}")
+                self._log(f"  {Colors.RED}[FAIL]{Colors.NC} 无法订阅 {mon.topic}")
         
-        print(f"\n  收集数据 {self.args.duration} 秒...")
+        self._log(f"\n  收集数据 {self.args.duration} 秒...")
         time.sleep(self.args.duration)
         
         for name, mon in self.monitors.items():
@@ -1408,8 +1408,8 @@ class UnifiedDiagnostics:
     
     def _run_chassis_tests(self):
         """阶段2: 底盘能力测试"""
-        print(f"\n{Colors.BLUE}阶段2: 底盘能力测试{Colors.NC}\n")
-        print(f"  {Colors.YELLOW}警告: 机器人会移动! 确保周围空间安全。{Colors.NC}")
+        self._log(f"\n{Colors.BLUE}阶段2: 底盘能力测试{Colors.NC}\n")
+        self._log(f"  {Colors.YELLOW}警告: 机器人会移动! 确保周围空间安全。{Colors.NC}")
         input("  按 Enter 开始测试 (Ctrl+C 跳过)...")
         
         tester = ChassisTestRunner(self.topics['cmd_vel'], self.monitors['odom'])
@@ -1422,21 +1422,21 @@ class UnifiedDiagnostics:
     
     def _run_controller_diagnostics(self):
         """阶段3: 控制器运行时诊断"""
-        print(f"\n{Colors.BLUE}阶段3: 控制器运行时诊断 ({self.args.duration}秒){Colors.NC}\n")
+        self._log(f"\n{Colors.BLUE}阶段3: 控制器运行时诊断 ({self.args.duration}秒){Colors.NC}\n")
         
         if not CUSTOM_MSG_AVAILABLE:
-            print(f"  {Colors.YELLOW}[WARN]{Colors.NC} controller_ros 消息不可用，跳过")
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} controller_ros 消息不可用，跳过")
             return
         
         self.diag_monitor = ControllerDiagnosticsMonitor(self.topics['diagnostics'])
         if self.diag_monitor.start():
-            print(f"  {Colors.GREEN}[OK]{Colors.NC} 订阅 {self.topics['diagnostics']}")
+            self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 订阅 {self.topics['diagnostics']}")
         else:
-            print(f"  {Colors.RED}[FAIL]{Colors.NC} 无法订阅，控制器是否运行?")
+            self._log(f"  {Colors.RED}[FAIL]{Colors.NC} 无法订阅，控制器是否运行?")
             return
         
-        print(f"\n  收集控制器诊断 {self.args.duration} 秒...")
-        print(f"  {Colors.YELLOW}[INFO]{Colors.NC} 移动机器人以生成跟踪数据!")
+        self._log(f"\n  收集控制器诊断 {self.args.duration} 秒...")
+        self._log(f"  {Colors.YELLOW}[INFO]{Colors.NC} 移动机器人以生成跟踪数据!")
         time.sleep(self.args.duration)
         
         controller_stats = self.diag_monitor.get_stats()
@@ -1444,13 +1444,13 @@ class UnifiedDiagnostics:
         
         if controller_stats:
             self.results['controller'] = controller_stats
-            print(f"  {Colors.GREEN}[OK]{Colors.NC} 收集 {controller_stats['msg_count']} 条诊断消息")
+            self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 收集 {controller_stats['msg_count']} 条诊断消息")
         else:
-            print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未收到控制器诊断数据")
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未收到控制器诊断数据")
     
     def _calculate_recommendations(self):
         """阶段4: 计算完整推荐配置（13个配置模块）"""
-        print(f"\n{Colors.BLUE}阶段4: 计算推荐配置{Colors.NC}\n")
+        self._log(f"\n{Colors.BLUE}阶段4: 计算推荐配置{Colors.NC}\n")
         
         odom = self.results.get('odom', {})
         traj = self.results.get('trajectory', {})
@@ -1718,153 +1718,153 @@ class UnifiedDiagnostics:
 
     def _show_tuning_results(self):
         """显示调优结果和运行时调优建议"""
-        print(f"\n{Colors.BLUE}{'='*70}")
-        print("  诊断结果")
-        print(f"{'='*70}{Colors.NC}\n")
+        self._log(f"\n{Colors.BLUE}{'='*70}")
+        self._log("  诊断结果")
+        self._log(f"{'='*70}{Colors.NC}\n")
         
         # 传感器状态
-        print(f"{Colors.CYAN}传感器状态:{Colors.NC}")
+        self._log(f"{Colors.CYAN}传感器状态:{Colors.NC}")
         for name in ['odom', 'imu', 'trajectory']:
             stats = self.results.get(name, {})
             rate = stats.get('rate', 0)
             latency = stats.get('latency_ms', 0)
             jitter = stats.get('jitter_ms', 0)
             status = f"{Colors.GREEN}[OK]{Colors.NC}" if rate > 0 else f"{Colors.RED}[NO DATA]{Colors.NC}"
-            print(f"  {status} {name}: {rate:.1f} Hz, 延迟: {latency:.1f}ms, 抖动: {jitter:.1f}ms")
+            self._log(f"  {status} {name}: {rate:.1f} Hz, 延迟: {latency:.1f}ms, 抖动: {jitter:.1f}ms")
         
         # 轨迹特性
         traj_info = self.results.get('trajectory_info', {})
         if traj_info:
-            print(f"\n{Colors.CYAN}轨迹特性:{Colors.NC}")
-            print(f"  点数: {traj_info.get('num_points', 'N/A')}")
-            print(f"  时间步长: {traj_info.get('dt_sec', 'N/A')} sec")
-            print(f"  包含速度: {'是' if traj_info.get('has_velocities') else '否'}")
-            print(f"  坐标系: {traj_info.get('frame_id', 'N/A')}")
-            print(f"  长度: {traj_info.get('total_length', 0):.2f} m")
-            print(f"  最大曲率: {traj_info.get('max_curvature', 0):.2f} 1/m")
+            self._log(f"\n{Colors.CYAN}轨迹特性:{Colors.NC}")
+            self._log(f"  点数: {traj_info.get('num_points', 'N/A')}")
+            self._log(f"  时间步长: {traj_info.get('dt_sec', 'N/A')} sec")
+            self._log(f"  包含速度: {'是' if traj_info.get('has_velocities') else '否'}")
+            self._log(f"  坐标系: {traj_info.get('frame_id', 'N/A')}")
+            self._log(f"  长度: {traj_info.get('total_length', 0):.2f} m")
+            self._log(f"  最大曲率: {traj_info.get('max_curvature', 0):.2f} 1/m")
         
         # 底盘特性
         chassis = self.results.get('chassis', {})
         if chassis:
-            print(f"\n{Colors.CYAN}底盘特性 (从里程计):{Colors.NC}")
-            print(f"  最大速度: {chassis.get('max_speed', 0):.2f} m/s")
-            print(f"  最大vx: {chassis.get('max_vx', 0):.2f} m/s")
-            print(f"  最大wz: {chassis.get('max_wz', 0):.2f} rad/s")
+            self._log(f"\n{Colors.CYAN}底盘特性 (从里程计):{Colors.NC}")
+            self._log(f"  最大速度: {chassis.get('max_speed', 0):.2f} m/s")
+            self._log(f"  最大vx: {chassis.get('max_vx', 0):.2f} m/s")
+            self._log(f"  最大wz: {chassis.get('max_wz', 0):.2f} rad/s")
             if 'max_ax' in chassis:
-                print(f"  最大加速度: {chassis.get('max_ax', 0):.2f} m/s^2")
-                print(f"  最大角加速度: {chassis.get('max_alpha', 0):.2f} rad/s^2")
+                self._log(f"  最大加速度: {chassis.get('max_ax', 0):.2f} m/s^2")
+                self._log(f"  最大角加速度: {chassis.get('max_alpha', 0):.2f} rad/s^2")
         
         # 底盘测试结果
         tests = self.results.get('chassis_tests', {})
         if tests:
-            print(f"\n{Colors.CYAN}底盘测试结果:{Colors.NC}")
-            print(f"  实测最大速度: {tests.get('max_velocity_achieved', 0):.2f} m/s")
-            print(f"  实测最大加速度: {tests.get('max_acceleration', 0):.2f} m/s^2")
-            print(f"  实测最大角速度: {tests.get('max_angular_velocity', 0):.2f} rad/s")
-            print(f"  响应时间: {tests.get('response_time', 0):.3f} sec")
+            self._log(f"\n{Colors.CYAN}底盘测试结果:{Colors.NC}")
+            self._log(f"  实测最大速度: {tests.get('max_velocity_achieved', 0):.2f} m/s")
+            self._log(f"  实测最大加速度: {tests.get('max_acceleration', 0):.2f} m/s^2")
+            self._log(f"  实测最大角速度: {tests.get('max_angular_velocity', 0):.2f} rad/s")
+            self._log(f"  响应时间: {tests.get('response_time', 0):.3f} sec")
         
         # 推荐参数
-        print(f"\n{Colors.CYAN}推荐参数:{Colors.NC}")
-        print(f"  控制频率: {self.recommended['system']['ctrl_freq']} Hz")
-        print(f"  MPC horizon: {self.recommended['mpc']['horizon']}")
-        print(f"  MPC dt: {self.recommended['mpc']['dt']} sec")
-        print(f"  v_max: {self.recommended['constraints']['v_max']} m/s")
-        print(f"  omega_max: {self.recommended['constraints']['omega_max']} rad/s")
-        print(f"  a_max: {self.recommended['constraints']['a_max']} m/s^2")
-        print(f"  Odom timeout: {self.recommended['watchdog']['odom_timeout_ms']} ms")
-        print(f"  Traj timeout: {self.recommended['watchdog']['traj_timeout_ms']} ms")
-        print(f"  Lookahead: {self.recommended['backup']['lookahead_dist']} m")
+        self._log(f"\n{Colors.CYAN}推荐参数:{Colors.NC}")
+        self._log(f"  控制频率: {self.recommended['system']['ctrl_freq']} Hz")
+        self._log(f"  MPC horizon: {self.recommended['mpc']['horizon']}")
+        self._log(f"  MPC dt: {self.recommended['mpc']['dt']} sec")
+        self._log(f"  v_max: {self.recommended['constraints']['v_max']} m/s")
+        self._log(f"  omega_max: {self.recommended['constraints']['omega_max']} rad/s")
+        self._log(f"  a_max: {self.recommended['constraints']['a_max']} m/s^2")
+        self._log(f"  Odom timeout: {self.recommended['watchdog']['odom_timeout_ms']} ms")
+        self._log(f"  Traj timeout: {self.recommended['watchdog']['traj_timeout_ms']} ms")
+        self._log(f"  Lookahead: {self.recommended['backup']['lookahead_dist']} m")
         
         # 优化建议
-        print(f"\n{Colors.CYAN}优化建议:{Colors.NC}")
+        self._log(f"\n{Colors.CYAN}优化建议:{Colors.NC}")
         odom_rate = self.results.get('odom', {}).get('rate', 0)
         traj_rate = self.results.get('trajectory', {}).get('rate', 0)
         
         if odom_rate > 50:
-            print(f"  {Colors.GREEN}[OK]{Colors.NC} 里程计频率良好，支持高频控制")
+            self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 里程计频率良好，支持高频控制")
         elif odom_rate > 0:
-            print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 里程计频率较低，控制频率受限")
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 里程计频率较低，控制频率受限")
         else:
-            print(f"  {Colors.RED}[ERROR]{Colors.NC} 无里程计数据!")
+            self._log(f"  {Colors.RED}[ERROR]{Colors.NC} 无里程计数据!")
         
         if traj_rate > 0 and traj_rate < 2:
-            print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 轨迹频率较低，增加超时值")
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 轨迹频率较低，增加超时值")
         
         if traj_info.get('num_points', 0) < 5:
-            print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 轨迹点数少，MPC预测受限")
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 轨迹点数少，MPC预测受限")
         
         if not traj_info.get('has_velocities'):
-            print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 轨迹无速度信息，alpha检查禁用")
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 轨迹无速度信息，alpha检查禁用")
         
         odom_jitter = self.results.get('odom', {}).get('jitter_ms', 0)
         if odom_jitter > 20:
-            print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 里程计抖动较大 ({odom_jitter:.1f}ms)，已增加EKF噪声")
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 里程计抖动较大 ({odom_jitter:.1f}ms)，已增加EKF噪声")
         
         # 控制器运行时统计和调优建议
         controller = self.results.get('controller')
         if controller:
-            print(f"\n{Colors.CYAN}控制器运行时统计:{Colors.NC}")
-            print(f"  MPC求解时间: {controller['mpc_solve_time_avg_ms']:.2f}ms avg, {controller['mpc_solve_time_max_ms']:.2f}ms max")
-            print(f"  MPC成功率: {controller['mpc_success_rate']*100:.1f}%")
-            print(f"  备用控制器使用率: {controller['backup_active_ratio']*100:.1f}%")
-            print(f"  横向误差: {controller['lateral_error_avg']*100:.1f}cm avg, {controller['lateral_error_max']*100:.1f}cm max")
-            print(f"  航向误差: {np.degrees(controller['heading_error_avg']):.1f}° avg")
-            print(f"  Alpha (一致性): {controller['alpha_avg']:.2f} avg, {controller['alpha_min']:.2f} min")
+            self._log(f"\n{Colors.CYAN}控制器运行时统计:{Colors.NC}")
+            self._log(f"  MPC求解时间: {controller['mpc_solve_time_avg_ms']:.2f}ms avg, {controller['mpc_solve_time_max_ms']:.2f}ms max")
+            self._log(f"  MPC成功率: {controller['mpc_success_rate']*100:.1f}%")
+            self._log(f"  备用控制器使用率: {controller['backup_active_ratio']*100:.1f}%")
+            self._log(f"  横向误差: {controller['lateral_error_avg']*100:.1f}cm avg, {controller['lateral_error_max']*100:.1f}cm max")
+            self._log(f"  航向误差: {np.degrees(controller['heading_error_avg']):.1f}° avg")
+            self._log(f"  Alpha (一致性): {controller['alpha_avg']:.2f} avg, {controller['alpha_min']:.2f} min")
             
             # 运行时调优建议
-            print(f"\n{Colors.MAGENTA}运行时调优建议:{Colors.NC}")
+            self._log(f"\n{Colors.MAGENTA}运行时调优建议:{Colors.NC}")
             ctrl_freq = self.recommended.get('system', {}).get('ctrl_freq', 20)
             ctrl_period_ms = 1000 / ctrl_freq
             
             # MPC 时间
             if controller['mpc_solve_time_avg_ms'] > ctrl_period_ms * 0.5:
-                print(f"  {Colors.RED}[CRITICAL]{Colors.NC} MPC求解时间过高!")
-                print(f"    → 降低 mpc.horizon (当前推荐: {self.recommended.get('mpc', {}).get('horizon', 7)})")
-                print(f"    → 或降低 system.ctrl_freq")
+                self._log(f"  {Colors.RED}[CRITICAL]{Colors.NC} MPC求解时间过高!")
+                self._log(f"    → 降低 mpc.horizon (当前推荐: {self.recommended.get('mpc', {}).get('horizon', 7)})")
+                self._log(f"    → 或降低 system.ctrl_freq")
             elif controller['mpc_solve_time_avg_ms'] > ctrl_period_ms * 0.3:
-                print(f"  {Colors.YELLOW}[WARN]{Colors.NC} MPC求解时间较高")
-                print(f"    → 考虑降低 mpc.horizon")
+                self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} MPC求解时间较高")
+                self._log(f"    → 考虑降低 mpc.horizon")
             else:
-                print(f"  {Colors.GREEN}[OK]{Colors.NC} MPC求解时间良好 ({controller['mpc_solve_time_avg_ms']:.1f}ms < {ctrl_period_ms*0.3:.1f}ms)")
+                self._log(f"  {Colors.GREEN}[OK]{Colors.NC} MPC求解时间良好 ({controller['mpc_solve_time_avg_ms']:.1f}ms < {ctrl_period_ms*0.3:.1f}ms)")
             
             # MPC 成功率
             if controller['mpc_success_rate'] < 0.9:
-                print(f"  {Colors.RED}[CRITICAL]{Colors.NC} MPC成功率过低 ({controller['mpc_success_rate']*100:.0f}%)")
-                print(f"    → 检查轨迹质量")
-                print(f"    → 降低 mpc.horizon")
-                print(f"    → 增加 mpc.solver.nlp_max_iter")
+                self._log(f"  {Colors.RED}[CRITICAL]{Colors.NC} MPC成功率过低 ({controller['mpc_success_rate']*100:.0f}%)")
+                self._log(f"    → 检查轨迹质量")
+                self._log(f"    → 降低 mpc.horizon")
+                self._log(f"    → 增加 mpc.solver.nlp_max_iter")
             elif controller['mpc_success_rate'] < 0.98:
-                print(f"  {Colors.YELLOW}[WARN]{Colors.NC} MPC成功率可以更好")
+                self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} MPC成功率可以更好")
             else:
-                print(f"  {Colors.GREEN}[OK]{Colors.NC} MPC成功率良好 ({controller['mpc_success_rate']*100:.0f}%)")
+                self._log(f"  {Colors.GREEN}[OK]{Colors.NC} MPC成功率良好 ({controller['mpc_success_rate']*100:.0f}%)")
             
             # 备用控制器使用
             if controller['backup_active_ratio'] > 0.1:
-                print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 备用控制器使用频繁 ({controller['backup_active_ratio']*100:.0f}%)")
-                print(f"    → 检查MPC求解器健康")
-                print(f"    → 验证轨迹一致性")
+                self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 备用控制器使用频繁 ({controller['backup_active_ratio']*100:.0f}%)")
+                self._log(f"    → 检查MPC求解器健康")
+                self._log(f"    → 验证轨迹一致性")
             
             # 跟踪误差
             if controller['lateral_error_avg'] > 0.1:
-                print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 横向跟踪误差较大 ({controller['lateral_error_avg']*100:.1f}cm)")
-                print(f"    → 增加 mpc.weights.position (尝试 15-20)")
-                print(f"    → 减小 mpc.weights.control_accel (尝试 0.1)")
+                self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 横向跟踪误差较大 ({controller['lateral_error_avg']*100:.1f}cm)")
+                self._log(f"    → 增加 mpc.weights.position (尝试 15-20)")
+                self._log(f"    → 减小 mpc.weights.control_accel (尝试 0.1)")
             else:
-                print(f"  {Colors.GREEN}[OK]{Colors.NC} 横向跟踪误差可接受")
+                self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 横向跟踪误差可接受")
             
             if controller['heading_error_avg'] > 0.3:
-                print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 航向误差较大 ({np.degrees(controller['heading_error_avg']):.1f}°)")
-                print(f"    → 增加 mpc.weights.heading (尝试 8-10)")
+                self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 航向误差较大 ({np.degrees(controller['heading_error_avg']):.1f}°)")
+                self._log(f"    → 增加 mpc.weights.heading (尝试 8-10)")
             
             # Alpha (一致性)
             if controller['alpha_min'] < 0.3:
-                print(f"  {Colors.YELLOW}[WARN]{Colors.NC} 检测到低alpha值 (min: {controller['alpha_min']:.2f})")
-                print(f"    → 轨迹一致性较差")
-                print(f"    → 检查网络输出质量")
+                self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 检测到低alpha值 (min: {controller['alpha_min']:.2f})")
+                self._log(f"    → 轨迹一致性较差")
+                self._log(f"    → 检查网络输出质量")
     
     def _generate_config(self, output_file: str):
         """生成完整配置文件"""
-        print(f"\n{Colors.BLUE}生成配置文件: {output_file}{Colors.NC}")
+        self._log(f"\n{Colors.BLUE}生成配置文件: {output_file}{Colors.NC}")
         
         # 构建完整配置
         config = {
@@ -1934,9 +1934,9 @@ class UnifiedDiagnostics:
             f.write(header)
             yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         
-        print(f"  {Colors.GREEN}[OK]{Colors.NC} 配置已保存到: {output_file}")
-        print(f"\n{Colors.CYAN}使用方法:{Colors.NC}")
-        print(f"  roslaunch controller_ros controller.launch config:=$(pwd)/{output_file}")
+        self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 配置已保存到: {output_file}")
+        self._log(f"\n{Colors.CYAN}使用方法:{Colors.NC}")
+        self._log(f"  roslaunch controller_ros controller.launch config:=$(pwd)/{output_file}")
 
     # ==================== 运行入口 ====================
     
@@ -1990,31 +1990,37 @@ class UnifiedDiagnostics:
     def run_tuning(self):
         """运行系统调优模式"""
         self._init_ros_node('unified_diagnostics_tuning')
+        self._init_log()  # 初始化日志文件
         
-        print(f"\n{Colors.GREEN}{'='*70}")
-        print("  统一诊断工具 v2.1 - 系统调优模式")
-        print(f"{'='*70}{Colors.NC}\n")
-        
-        # 阶段1: 话题监控
-        self._run_topic_monitoring()
-        
-        # 阶段2: 底盘测试 (可选)
-        if self.args.test_chassis:
-            self._run_chassis_tests()
-        
-        # 阶段3: 控制器运行时诊断 (可选)
-        if self.args.runtime_tuning:
-            self._run_controller_diagnostics()
-        
-        # 阶段4: 计算推荐配置
-        self._calculate_recommendations()
-        
-        # 阶段5: 显示结果
-        self._show_tuning_results()
-        
-        # 阶段6: 生成配置文件
-        if self.args.output:
-            self._generate_config(self.args.output)
+        try:
+            self._log(f"\n{Colors.GREEN}{'='*70}")
+            self._log("  统一诊断工具 v2.1 - 系统调优模式")
+            self._log(f"{'='*70}{Colors.NC}\n")
+            
+            # 阶段1: 话题监控
+            self._run_topic_monitoring()
+            
+            # 阶段2: 底盘测试 (可选)
+            if self.args.test_chassis:
+                self._run_chassis_tests()
+            
+            # 阶段3: 控制器运行时诊断 (可选)
+            if self.args.runtime_tuning:
+                self._run_controller_diagnostics()
+            
+            # 阶段4: 计算推荐配置
+            self._calculate_recommendations()
+            
+            # 阶段5: 显示结果
+            self._show_tuning_results()
+            
+            # 阶段6: 生成配置文件
+            if self.args.output:
+                self._generate_config(self.args.output)
+        finally:
+            self._close_log()  # 确保日志文件被关闭
+            if self.log_file:
+                print(f"\n日志已保存到: {self.log_file}")
     
     def run_full(self):
         """运行完整模式 - 先调优后实时监控"""
