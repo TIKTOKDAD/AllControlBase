@@ -2709,15 +2709,15 @@ def main():
 """
     )
     
-    parser.add_argument('--mode', choices=['realtime', 'tuning', 'full'], default='realtime',
+    parser.add_argument('--mode', choices=['realtime', 'tuning', 'full'], default='full',
                         help='诊断模式: realtime/tuning/full (默认: realtime)')
     parser.add_argument('--odom-topic', default='/odom', help='里程计话题')
     parser.add_argument('--traj-topic', default='/nn/local_trajectory', help='轨迹话题')
     parser.add_argument('--imu-topic', default='/imu', help='IMU话题')
-    parser.add_argument('--cmd-vel-topic', default='/cmd_vel', help='速度命令话题')
+    parser.add_argument('--cmd-vel-topic', default='/mobile_base/commands/velocity', help='速度命令话题')
     parser.add_argument('--cmd-topic', default='/cmd_unified', help='UnifiedCmd话题')
     parser.add_argument('--diag-topic', default='/controller/diagnostics', help='诊断话题')
-    parser.add_argument('--duration', type=float, default=10.0, help='监控时长 (秒，默认: 10)')
+    parser.add_argument('--duration', type=float, default=60.0, help='监控时长 (秒，默认: 10)')
     parser.add_argument('--output', '-o', help='输出配置文件')
     parser.add_argument('--log-file', help='日志文件路径 (默认: /moshi/unified_diag.log)')
     parser.add_argument('--test-chassis', action='store_true', help='运行底盘测试 (机器人会移动!)')
