@@ -42,16 +42,28 @@ class MPCHealthMonitor:
     
     def update(self, solve_time_ms: float, kkt_residual: float, 
                condition_number: float) -> MPCHealthStatus:
+        """
+        更新 MPC 健康状态
+        
+        超时计数器衰减策略（三区间设计）:
+        - 警告区 (> warning_thresh): 累积超时计数，重置良好计数
+        - 恢复区 (< recovery_thresh): 累积良好计数，达到阈值后快速衰减超时计数
+        - 中间区 (recovery <= time <= warning): 重置良好计数，缓慢衰减超时计数
+        
+        这种设计提供了滞后效应，防止在阈值边界频繁切换状态。
+        """
         # 更新连续超时计数
         if solve_time_ms > self.time_warning_thresh:
+            # 警告区：累积超时，重置良好计数
             self.consecutive_near_timeout += 1
             self.consecutive_good = 0
         elif solve_time_ms < self.time_recovery_thresh:
+            # 恢复区：累积良好计数，达到阈值后快速衰减
             self.consecutive_good += 1
-            # 使用配置的衰减参数
             if self.consecutive_good >= self.consecutive_good_for_decay:
                 self.consecutive_near_timeout = max(0, self.consecutive_near_timeout - self.timeout_decay_rate)
         else:
+            # 中间区：重置良好计数，缓慢衰减超时计数
             self.consecutive_good = 0
             self.consecutive_near_timeout = max(0, self.consecutive_near_timeout - 1)
         
@@ -79,7 +91,7 @@ class MPCHealthMonitor:
         
         return MPCHealthStatus(
             healthy=not should_warn and solve_time_ms < self.time_critical_thresh,
-            warning=should_warn, can_recover=self._can_recover,
+            degradation_warning=should_warn, can_recover=self._can_recover,
             consecutive_near_timeout=self.consecutive_near_timeout,
             kkt_residual=kkt_residual, condition_number=condition_number
         )

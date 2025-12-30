@@ -61,18 +61,13 @@ topics:
   state: "/controller/state"              # 控制器状态输出
 
 # =============================================================================
-# TF 配置
+# TF 配置 (ROS TF2 特有参数)
+# 
+# 注意：坐标系名称（source_frame, target_frame）统一在 transform 配置中定义
 # =============================================================================
 tf:
-  source_frame: "base_footprint"  # TurtleBot1 机体坐标系 (TurtleBot 使用 base_footprint)
-  target_frame: "odom"            # 里程计坐标系
-  timeout_ms: 50                  # TF 查询超时 (适当放宽)
   buffer_warmup_timeout_sec: 5.0  # TF buffer 预热超时
   buffer_warmup_interval_sec: 0.2 # TF buffer 预热检查间隔
-  expected_source_frames:         # 预期的源坐标系列表
-    - "base_footprint"
-    - "base_link"
-    - ""
 
 # =============================================================================
 # 超时配置 (适应 TurtleBot1 较低传感器频率 + 2Hz 轨迹输出)
@@ -92,11 +87,12 @@ tf:
 # 总安全停止延迟 = traj_timeout_ms + traj_grace_ms = 1.5秒
 #
 # 注意: 0 或负数表示禁用该数据源的超时检测
+# [2025-12-30 调优] 诊断显示轨迹延迟 300-600ms，适当放宽
 # =============================================================================
 watchdog:
   odom_timeout_ms: 500            # 里程计超时 (ms) - 放宽
   traj_timeout_ms: 1000           # 轨迹超时 (ms) - 2倍轨迹周期(~500ms)
-  traj_grace_ms: 500              # 轨迹超时宽限期 (ms) - 超时后继续使用旧轨迹的时间
+  traj_grace_ms: 600              # 轨迹超时宽限期 (ms) - 500→600，适应实际延迟
   imu_timeout_ms: -1              # IMU 超时 (ms) - 禁用 (TurtleBot1 无 IMU)
   startup_grace_ms: 5000          # 启动宽限期 (ms) - 延长到5秒，等待首条轨迹
 
@@ -116,13 +112,16 @@ mpc:
   dt: 0.1                         # MPC 时间步长 (秒) - 必须匹配轨迹 dt_sec=0.1
   
   # 代价函数权重 (针对 TurtleBot1 调优)
+  # [2025-12-30 调优] 基于诊断结果优化:
+  #   - 纵向误差 0.82m → 增加 velocity 权重
+  #   - 横向误差 11.8cm → 增加 position 权重
   weights:
-    position: 10.0                # 位置跟踪权重
-    velocity: 1.0                 # 速度跟踪权重
-    heading: 5.0                  # 航向跟踪权重
+    position: 15.0                # 位置跟踪权重 (10→15, 减小横向误差)
+    velocity: 6.0                 # 速度跟踪权重 (1→6, 减小纵向误差)
+    heading: 8.0                  # 航向跟踪权重 (5→8, 改善转向跟踪)
     # 控制输入权重 - 惩罚加速度/角加速度，实现平滑控制
-    control_accel: 0.2            # 加速度控制权重 (稍高，减少抖动)
-    control_alpha: 0.2            # 角加速度控制权重
+    control_accel: 0.1            # 加速度控制权重 (0.2→0.1, 允许更激进控制)
+    control_alpha: 0.1            # 角加速度控制权重 (0.2→0.1)
   
   # ACADOS 高性能求解器配置 (必需)
   solver:
@@ -137,22 +136,41 @@ mpc:
     time_critical_thresh_ms: 40   # 求解时间临界阈值 (ms) - 放宽
     time_recovery_thresh_ms: 15   # 求解时间恢复阈值 (ms) - 放宽
     consecutive_warning_limit: 10 # 连续警告次数限制 - 更宽容
+    consecutive_recovery_limit: 5 # 连续恢复次数限制
+    # 数值稳定性监控 (新增)
+    condition_number_thresh: 1.0e+08  # 条件数警告阈值
+    condition_number_recovery: 1.0e+05  # 条件数恢复阈值
+    kkt_residual_thresh: 0.001    # KKT 残差阈值
+    recovery_multiplier: 2.0      # 备选恢复条件的倍数
   
   # Fallback 求解器参数 (ACADOS 失败时使用)
+  # 注意: max_curvature, min_distance_thresh, min_turn_speed, default_speed_ratio
+  # 统一从 backup 配置读取，确保与 Pure Pursuit 备份控制器行为一致
   fallback:
-    lookahead_steps: 3            # 前瞻步数
+    lookahead_steps: 3            # 前瞻步数 (MPC fallback 特有)
     heading_kp: 1.5               # 航向控制增益
-    default_speed_ratio: 0.5      # 默认速度比例
 
 # =============================================================================
 # 速度约束 (TurtleBot1 安全限制)
+# [2025-12-30 调优] 诊断发现 omega_max 被设为 0，导致无法转向
 # =============================================================================
 constraints:
   v_max: 0.5                      # 最大线速度 (m/s)
   v_min: -0.2                     # 最小线速度 (m/s) - 倒车限制
-  omega_max: 1.0                  # 最大角速度 (rad/s)
+  omega_max: 1.0                  # 最大角速度 (rad/s) - 确保不为0!
+  omega_max_low: 0.5              # 低速时最大角速度 (rad/s)
+  v_low_thresh: 0.1               # 低速阈值 (m/s)
   a_max: 0.5                      # 最大加速度 (m/s²)
-  alpha_max: 1.0                  # 最大角加速度 (rad/s²)
+  az_max: 1.0                     # 最大垂直加速度 (m/s²) - 差速车不用，但速度平滑器需要
+  alpha_max: 1.5                  # 最大角加速度 (rad/s²) - 1.0→1.5，允许更快转向
+
+# =============================================================================
+# 轨迹配置
+# [2025-12-30 调优] 诊断建议降低 low_speed_thresh
+# =============================================================================
+trajectory:
+  default_dt_sec: 0.1             # 默认时间步长 (秒) - 匹配网络输出
+  low_speed_thresh: 0.05          # 低速阈值 (m/s) - 0.1→0.05，诊断建议
 
 # =============================================================================
 # 一致性检查配置 (提升平滑性)
@@ -162,6 +180,9 @@ consistency:
   v_dir_thresh: 0.8               # 速度方向一致性阈值
   temporal_smooth_thresh: 0.5     # 时序平滑度阈值
   alpha_min: 0.1                  # α 最小值
+  max_curvature: 10.0             # 曲率计算最大值限制 (1/m)
+  temporal_window_size: 10        # 时序平滑度滑动窗口大小
+  invalid_data_confidence: 0.5    # 数据无效时的保守置信度
   weights:
     kappa: 0.3                    # 曲率权重 (原 curvature_weight)
     velocity: 0.3                 # 速度方向权重 (原 velocity_direction_weight)
@@ -169,11 +190,12 @@ consistency:
 
 # =============================================================================
 # 跟踪质量评估配置 (Dashboard 显示用)
+# [2025-12-30 调优] 根据实际误差调整阈值
 # =============================================================================
 tracking:
   # 误差阈值 (超过此值评分为 0)
-  lateral_thresh: 0.3             # 横向误差阈值 (m)
-  longitudinal_thresh: 0.5        # 纵向误差阈值 (m)
+  lateral_thresh: 0.25            # 横向误差阈值 (m) - 0.3→0.25，更早警告
+  longitudinal_thresh: 0.6        # 纵向误差阈值 (m) - 0.5→0.6，适应实际情况
   heading_thresh: 0.5             # 航向误差阈值 (rad, ~28.6°)
   prediction_thresh: 0.5          # 预测误差阈值 (m)
   
@@ -223,19 +245,138 @@ safety:
   # TurtleBot1 配置说明:
   # - 网络输出的轨迹可能不包含速度信息
   # - 因此禁用 α 检查，避免误触发降级
+  #
+  # MPC 失败检测说明:
+  # =================
+  # 使用滑动窗口检测 MPC 是否持续失败:
+  # - mpc_fail_window_size: 滑动窗口大小
+  # - mpc_fail_thresh: 窗口内失败次数阈值
+  # - mpc_fail_ratio_thresh: 失败率阈值
+  # 当失败次数 >= mpc_fail_thresh 或失败率 >= mpc_fail_ratio_thresh 时，
+  # 状态机会切换到 BACKUP_ACTIVE 状态
+  #
+  # MPC 恢复检测说明:
+  # =================
+  # 在 BACKUP_ACTIVE 状态下，检测 MPC 是否可以恢复:
+  # - mpc_recovery_thresh: 连续成功次数阈值 (用于 MPC_DEGRADED → NORMAL)
+  # - mpc_recovery_history_min: 最小历史记录数
+  # - mpc_recovery_recent_count: 最近检查次数
+  # - mpc_recovery_tolerance: 最近 N 次中允许的失败次数
+  # - mpc_recovery_success_ratio: 整体成功率要求
   state_machine:
     alpha_disable_thresh: 0.0     # α 禁用阈值 (0 = 禁用 α 检查)
     alpha_recovery_value: 0.0     # α 恢复值 (禁用时无意义)
     alpha_recovery_thresh: 1      # α 恢复计数阈值 (禁用时无意义)
+    
+    # MPC 失败检测参数
+    mpc_fail_window_size: 10      # MPC 失败检测滑动窗口大小
+    mpc_fail_thresh: 3            # 窗口内失败次数阈值
+    mpc_fail_ratio_thresh: 0.5    # 失败率阈值
+    
+    # MPC 恢复检测参数
+    mpc_recovery_thresh: 5        # MPC 恢复计数阈值 (MPC_DEGRADED → NORMAL)
+    mpc_recovery_history_min: 3   # 最小历史记录数
+    mpc_recovery_recent_count: 5  # 最近检查次数
+    mpc_recovery_tolerance: 1     # 最近 N 次中允许的失败次数
+    mpc_recovery_success_ratio: 0.8  # 整体成功率要求
+    
+    # 状态超时监控参数 (新增)
+    degraded_state_timeout: 30.0  # MPC_DEGRADED 状态超时 (秒)
+    backup_state_timeout: 60.0    # BACKUP_ACTIVE 状态超时 (秒)
+    enable_state_timeout_stop: false  # 是否启用状态超时自动停止 (默认仅告警)
 
 # =============================================================================
 # 备份控制器配置 (Pure Pursuit)
+# [2025-12-30 调优] 增加航向增益，改善转向响应
+# [2025-12-30 补充] 添加缺失的控制模式切换参数
+#
+# 控制模式切换逻辑说明:
+# =====================
+# Pure Pursuit 根据目标点相对于车辆的角度选择不同的控制策略:
+#
+#   目标点角度 (相对于车辆前进方向):
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │  0° ~ pure_pursuit_angle_thresh (60°)  → Pure Pursuit 曲率控制
+#   │  60° ~ heading_control_angle_thresh (90°) → 混合过渡区域
+#   │  90° ~ 180° → 航向误差控制 (先转向再前进)
+#   └─────────────────────────────────────────────────────────────┘
+#
+#   航向误差处理:
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │  heading_error < heading_error_thresh (60°) → 边走边转
+#   │  heading_error >= heading_error_thresh (60°) → 停止前进，原地转向
+#   └─────────────────────────────────────────────────────────────┘
+#
 # =============================================================================
 backup:
-  lookahead_dist: 0.5             # 前瞻距离 (m) (原 safety.backup_lookahead)
+  # 前瞻距离参数
+  lookahead_dist: 0.5             # 前瞻距离 (m)
   min_lookahead: 0.3              # 最小前瞻距离 (m)
   max_lookahead: 1.5              # 最大前瞻距离 (m)
-  kp_heading: 1.5                 # 航向增益
+  lookahead_ratio: 0.5            # 前瞻比例 (速度越快，前瞻越远)
+  
+  # 控制增益
+  kp_heading: 2.0                 # 航向增益 (1.5→2.0)
+  kp_z: 1.0                       # Z 方向增益 (3D 平台用)
+  
+  # 时间步长
+  dt: 0.05                        # 时间步长 (秒)
+  
+  # 速度参数
+  max_curvature: 5.0              # 最大曲率限制 (1/m)
+  min_turn_speed: 0.1             # 最小转向速度 (m/s)
+  default_speed_ratio: 0.5        # 无 soft 速度时的默认速度比例
+  min_distance_thresh: 0.1        # 最小距离阈值 (m)
+  
+  # 控制模式切换参数
+  heading_error_thresh: 1.047     # 航向误差阈值 (rad, ~60°) - 超过此值停止前进
+  pure_pursuit_angle_thresh: 1.047  # Pure Pursuit 模式角度阈值 (rad, ~60°)
+  heading_control_angle_thresh: 1.571  # 航向控制模式角度阈值 (rad, ~90°)
+  
+  # 低速过渡参数
+  low_speed_transition_factor: 0.5  # 低速过渡区域因子
+  curvature_speed_limit_thresh: 0.1 # 曲率速度限制阈值 (1/m)
+  
+  # 正后方处理参数 (防止目标点在正后方时的角速度跳变)
+  rear_angle_thresh: 2.827        # 正后方检测阈值 (rad, ~162°, 0.9*π)
+  rear_direction_min_thresh: 0.05 # 正后方转向判断最小阈值 (m)
+  default_turn_direction: "left"  # 正后方默认转向方向 ("left" 或 "right")
+  
+  # 航向模式
+  heading_mode: "follow_velocity" # 航向模式: follow_velocity, fixed, target_point, manual
+
+# =============================================================================
+# 坐标变换配置
+# 
+# 统一的坐标变换配置入口，包含：
+# - 坐标系名称（source_frame, target_frame）
+# - 算法层参数（降级、漂移估计等）
+# =============================================================================
+transform:
+  source_frame: base_footprint    # TurtleBot1 机体坐标系
+  target_frame: odom              # 里程计坐标系
+  timeout_ms: 50                  # TF2 查询超时 (ms)
+  fallback_duration_limit_ms: 500 # 降级持续限制 (ms)
+  fallback_critical_limit_ms: 1000  # 临界降级限制 (ms)
+  drift_estimation_enabled: false # 漂移估计开关
+  recovery_correction_enabled: true  # 恢复校正开关
+  expected_source_frames:         # 预期的源坐标系列表
+    - base_footprint
+    - base_link
+    - base_link_0
+    - ''
+    - odom
+  warn_unexpected_frame: true
+
+# =============================================================================
+# 平滑过渡配置
+# =============================================================================
+transition:
+  type: exponential               # 过渡类型
+  tau: 0.1                        # 指数过渡时间常数 (秒)
+  max_duration: 0.5               # 最大过渡时长 (秒)
+  completion_threshold: 0.95      # 过渡完成阈值
+  duration: 0.2                   # 线性过渡时长 (秒)
 
 # =============================================================================
 # EKF 状态估计配置
@@ -243,18 +384,47 @@ backup:
 ekf:
   use_odom_orientation_fallback: true   # 使用里程计航向作为备选
   imu_motion_compensation: false        # IMU 运动补偿 (TurtleBot1 无 IMU)
+  theta_covariance_fallback_thresh: 0.5 # 航向协方差回退阈值
+  max_tilt_angle: 1.047                 # 最大倾斜角 (rad, ~60°)
+  accel_freshness_thresh: 0.1           # 加速度新鲜度阈值 (秒)
+  min_velocity_for_jacobian: 0.01       # 雅可比计算最小速度 (m/s)
+  
+  # 自适应参数
+  adaptive:
+    base_slip_thresh: 2.0         # 基础打滑阈值 (m/s²) - 固定值，不随底盘特性变化
+    slip_velocity_factor: 0.5     # 打滑速度因子
+    slip_covariance_scale: 10.0   # 打滑协方差缩放
+    stationary_covariance_scale: 0.1  # 静止协方差缩放
+    stationary_thresh: 0.05       # 静止阈值 (m/s)
+    slip_probability_k_factor: 5.0    # 打滑概率 K 因子
+    slip_history_window: 20       # 打滑历史窗口大小
   
   # 过程噪声 (TurtleBot1 调优)
   process_noise:
-    position: 0.01                # 位置过程噪声
+    position: 0.001               # 位置过程噪声
     velocity: 0.1                 # 速度过程噪声
-    orientation: 0.05             # 航向过程噪声
+    orientation: 0.01             # 航向过程噪声
     angular_velocity: 0.1         # 角速度过程噪声
+    imu_bias: 0.0001              # IMU 偏置噪声
   
   # 测量噪声
   measurement_noise:
-    odom_position: 0.05           # 里程计位置噪声 (TurtleBot1 精度较低)
+    odom_position: 0.01           # 里程计位置噪声
     odom_velocity: 0.1            # 里程计速度噪声
+    imu_accel: 0.5                # IMU 加速度噪声
+    imu_gyro: 0.01                # IMU 陀螺仪噪声
+  
+  # 异常检测
+  anomaly_detection:
+    drift_thresh: 0.1             # 漂移阈值 (m)
+    jump_thresh: 0.5              # 跳变阈值 (m)
+    covariance_explosion_thresh: 1000.0  # 协方差爆炸阈值
+    innovation_anomaly_thresh: 10.0      # 新息异常阈值
+  
+  # 协方差配置
+  covariance:
+    min_eigenvalue: 1.0e-06       # 最小特征值
+    initial_value: 0.1            # 初始值
 
 # =============================================================================
 # 可视化配置说明

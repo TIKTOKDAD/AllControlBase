@@ -3,13 +3,18 @@
 
 配置来源: universal_controller/config/system_config.py -> WATCHDOG_CONFIG
 YAML 覆盖: controller_ros/config/turtlebot1.yaml -> watchdog 节
+
+显示：
+- Odom/Traj/IMU 超时状态
+- 宽限期状态
+- 超时配置
 """
 
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout
 from PyQt5.QtCore import Qt
 from ..widgets.progress_bar import ColorProgressBar
 from ..widgets.status_led import StatusLED
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 
 # 从统一配置模块导入默认值
 from ...config import WATCHDOG_CONFIG
@@ -45,7 +50,7 @@ class TimeoutPanel(QGroupBox):
         
         # 数据源超时状态标题
         title1 = QLabel('数据源超时状态')
-        title1.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        title1.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(title1)
         
         # Odom
@@ -62,7 +67,7 @@ class TimeoutPanel(QGroupBox):
         
         # 宽限期状态标题
         title2 = QLabel('宽限期状态')
-        title2.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        title2.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(title2)
         
         # 启动宽限期
@@ -77,7 +82,7 @@ class TimeoutPanel(QGroupBox):
         
         # 超时配置标题
         title3 = QLabel('超时配置')
-        title3.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        title3.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(title3)
         
         # 配置信息

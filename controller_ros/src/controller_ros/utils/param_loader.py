@@ -18,14 +18,16 @@
 - 新增配置项无需修改本模块
 - 配置结构由 universal_controller 统一定义
 
+配置分层设计:
+=============
+- transform.*: 坐标变换配置（坐标系名称 + 算法参数），定义在 DEFAULT_CONFIG
+- tf.*: ROS TF2 特有参数（buffer 预热、重试等），仅 ROS 层使用
+- topics.*: ROS 话题配置，仅 ROS 层使用
+- node.*: ROS 节点配置，仅 ROS 层使用
+
 配置映射规则:
 - YAML 中的 `group/key` 映射到 `config['group']['key']`
 - 支持任意深度的嵌套，如 `mpc/weights/position` -> `config['mpc']['weights']['position']`
-- TF 配置映射: `tf/*` -> `transform/*` (ROS 习惯用 tf，算法库用 transform)
-  - tf.source_frame -> transform.source_frame
-  - tf.target_frame -> transform.target_frame
-  - tf.timeout_ms -> transform.timeout_ms
-  - tf.expected_source_frames -> transform.expected_source_frames
 """
 from typing import Dict, Any, Optional, List
 from abc import ABC, abstractmethod
@@ -56,16 +58,19 @@ TOPICS_DEFAULTS = {
     'debug_path': '/controller/debug_path',
 }
 
-# TF 配置 (ROS 层使用，部分映射到 transform)
+# TF 配置 (仅 ROS TF2 特有参数，坐标系名称统一从 transform 读取)
+# 
+# 配置分层设计：
+# - transform.*: 坐标变换配置（坐标系名称 + 算法参数），定义在 DEFAULT_CONFIG
+# - tf.*: ROS TF2 特有参数（buffer 预热、重试等），仅 ROS 层使用
+#
+# 注意：source_frame, target_frame, timeout_ms, expected_source_frames
+# 统一在 transform 配置中定义，tf 配置不再包含这些字段
 TF_DEFAULTS = {
-    'source_frame': 'base_link',
-    'target_frame': 'odom',
-    'timeout_ms': 10,
-    'buffer_warmup_timeout_sec': 2.0,
-    'buffer_warmup_interval_sec': 0.1,
-    'retry_interval_sec': 1.0,  # 重试间隔（秒），与控制频率无关
-    'max_retries': -1,
-    'expected_source_frames': [],  # 预期的源坐标系列表 (空列表表示不检查)
+    'buffer_warmup_timeout_sec': 2.0,   # TF buffer 预热超时
+    'buffer_warmup_interval_sec': 0.1,  # TF buffer 预热检查间隔
+    'retry_interval_sec': 1.0,          # TF 注入重试间隔（秒）
+    'max_retries': -1,                  # 最大重试次数，-1 表示无限重试
 }
 
 # 节点配置 (仅 ROS 层使用)
@@ -236,7 +241,7 @@ class ParamLoader:
         Returns:
             合并后的配置字典，包含:
             - DEFAULT_CONFIG 中的所有配置（可能被 ROS 参数覆盖）
-            - 'tf' 配置（ROS 层特有，用于 TF2InjectionManager）
+            - 'tf' 配置（ROS TF2 特有参数）
         """
         # 1. 深拷贝默认配置
         config = copy.deepcopy(DEFAULT_CONFIG)
@@ -247,21 +252,19 @@ class ParamLoader:
         # 3. 递归加载 ROS 参数，覆盖默认值
         ParamLoader._load_recursive(config, '', strategy)
         
-        # 4. 加载 TF 配置并处理映射
+        # 4. 加载 TF 配置（仅 ROS TF2 特有参数）
         tf_config = ParamLoader.get_tf_config(node)
-        
-        # 4.1 将 TF 配置存储到 config 中（供 TF2InjectionManager 使用）
         config['tf'] = tf_config
-        
-        # 4.2 将部分 TF 配置映射到 transform 配置（供 CoordinateTransformer 使用）
-        ParamLoader._apply_tf_to_transform(config, tf_config)
         
         # 5. 日志
         platform = config.get('system', {}).get('platform', 'unknown')
         ctrl_freq = config.get('system', {}).get('ctrl_freq', 50)
         v_max = config.get('constraints', {}).get('v_max', 'N/A')
+        source_frame = config.get('transform', {}).get('source_frame', 'unknown')
+        target_frame = config.get('transform', {}).get('target_frame', 'unknown')
         logger.info(
-            f"Loaded config: platform={platform}, ctrl_freq={ctrl_freq}Hz, v_max={v_max}"
+            f"Loaded config: platform={platform}, ctrl_freq={ctrl_freq}Hz, "
+            f"v_max={v_max}, frames={source_frame}->{target_frame}"
         )
         
         return config
@@ -374,59 +377,6 @@ class ParamLoader:
         return ros_value
     
     @staticmethod
-    def _apply_tf_to_transform(config: Dict[str, Any], 
-                                tf_config: Dict[str, Any]) -> None:
-        """
-        将 TF 配置应用到 transform 配置
-        
-        ROS 习惯使用 'tf' 作为坐标变换配置的名称，
-        而 universal_controller 使用 'transform'。
-        
-        配置分层设计：
-        ================
-        
-        tf 配置 (ROS 层特有，用于 TF2InjectionManager):
-        - buffer_warmup_timeout_sec: TF buffer 预热超时
-        - buffer_warmup_interval_sec: TF buffer 预热检查间隔
-        - retry_interval_sec: TF 注入重试间隔
-        - max_retries: 最大重试次数
-        
-        transform 配置 (算法层，用于 RobustCoordinateTransformer):
-        - source_frame: 源坐标系
-        - target_frame: 目标坐标系
-        - timeout_ms: TF 查询超时
-        - expected_source_frames: 预期的源坐标系列表
-        - fallback_duration_limit_ms: 降级持续限制
-        - drift_estimation_enabled: 漂移估计开关
-        - 等等...
-        
-        映射规则 (tf -> transform):
-        - tf.source_frame -> transform.source_frame
-        - tf.target_frame -> transform.target_frame
-        - tf.timeout_ms -> transform.timeout_ms
-        - tf.expected_source_frames -> transform.expected_source_frames
-        
-        注意：buffer_warmup_* 和 retry_* 参数不映射到 transform，
-        因为它们是 ROS TF2 特有的，与算法层的坐标变换逻辑无关。
-        """
-        if 'transform' not in config:
-            config['transform'] = {}
-        
-        transform = config['transform']
-        
-        # 直接映射：这些参数在 ROS 层和算法层都需要
-        if 'source_frame' in tf_config:
-            transform['source_frame'] = tf_config['source_frame']
-        if 'target_frame' in tf_config:
-            transform['target_frame'] = tf_config['target_frame']
-        if 'expected_source_frames' in tf_config:
-            transform['expected_source_frames'] = tf_config['expected_source_frames']
-        
-        # 统一使用 timeout_ms 作为键名
-        if 'timeout_ms' in tf_config:
-            transform['timeout_ms'] = tf_config['timeout_ms']
-    
-    @staticmethod
     def get_topics(node=None) -> Dict[str, str]:
         """
         获取话题配置
@@ -447,7 +397,8 @@ class ParamLoader:
         """
         获取 TF 配置
         
-        TF 配置是 ROS 层特有的，部分映射到 transform 配置。
+        仅包含 ROS TF2 特有参数（buffer 预热、重试等）。
+        坐标系名称统一从 transform 配置读取。
         """
         strategy = ParamLoader._get_strategy(node)
         tf_config = {}

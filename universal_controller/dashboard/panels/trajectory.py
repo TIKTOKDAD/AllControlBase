@@ -1,11 +1,17 @@
 """
 轨迹信息面板
+
+显示：
+- Hard 轨迹信息
+- Soft 建议状态
+- 轨迹模式
+- 最近点信息
 """
 
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout
 from PyQt5.QtCore import Qt
 from ..widgets.status_led import StatusLED
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 
 
 class TrajectoryPanel(QGroupBox):
@@ -21,7 +27,7 @@ class TrajectoryPanel(QGroupBox):
         
         # Hard 轨迹
         hard_title = QLabel('Hard 轨迹 (必选)')
-        hard_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        hard_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(hard_title)
         
         hard_grid = QGridLayout()
@@ -49,7 +55,7 @@ class TrajectoryPanel(QGroupBox):
         
         # Soft 建议
         soft_title = QLabel('Soft 建议 (可选)')
-        soft_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        soft_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(soft_title)
         
         self.soft_enabled_led = StatusLED('启用状态')
@@ -76,7 +82,7 @@ class TrajectoryPanel(QGroupBox):
         
         # 轨迹模式
         mode_title = QLabel('轨迹模式')
-        mode_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        mode_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(mode_title)
         
         self.mode_labels = {}
@@ -106,7 +112,7 @@ class TrajectoryPanel(QGroupBox):
         
         # 最近点信息
         nearest_title = QLabel('最近点信息')
-        nearest_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        nearest_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(nearest_title)
         
         nearest_grid = QGridLayout()

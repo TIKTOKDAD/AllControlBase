@@ -162,7 +162,9 @@ def test_state_machine_mpc_fail_count_reset():
     
     new_state = sm.update(diagnostics)
     assert new_state == ControllerState.MPC_DEGRADED
-    assert len(sm._mpc_success_history) == 0, f"_mpc_success_history should be empty, got {len(sm._mpc_success_history)}"
+    # 状态转换时历史被清空（_transition_to 调用 _reset_all_counters）
+    # 虽然 update() 开始时追加了记录，但转换后被清空
+    assert len(sm._mpc_success_history) == 0, f"_mpc_success_history should be empty after transition, got {len(sm._mpc_success_history)}"
     
     # 测试 3: SOFT_DISABLED -> MPC_DEGRADED (tf2_critical)
     sm.reset()
@@ -186,7 +188,8 @@ def test_state_machine_mpc_fail_count_reset():
     
     new_state = sm.update(diagnostics)
     assert new_state == ControllerState.MPC_DEGRADED
-    assert len(sm._mpc_success_history) == 0, f"_mpc_success_history should be empty, got {len(sm._mpc_success_history)}"
+    # 状态转换时历史被清空（_transition_to 调用 _reset_all_counters）
+    assert len(sm._mpc_success_history) == 0, f"_mpc_success_history should be empty after transition, got {len(sm._mpc_success_history)}"
     
     # 测试 4: MPC_DEGRADED -> BACKUP_ACTIVE
     sm.reset()
@@ -210,7 +213,8 @@ def test_state_machine_mpc_fail_count_reset():
     
     new_state = sm.update(diagnostics)
     assert new_state == ControllerState.BACKUP_ACTIVE
-    assert len(sm._mpc_success_history) == 0, f"_mpc_success_history should be empty, got {len(sm._mpc_success_history)}"
+    # 状态转换时历史被清空（_transition_to 调用 _reset_all_counters）
+    assert len(sm._mpc_success_history) == 0, f"_mpc_success_history should be empty after transition, got {len(sm._mpc_success_history)}"
     
     # 测试 5: BACKUP_ACTIVE -> MPC_DEGRADED (需要多次成功才能恢复)
     sm.reset()
@@ -231,12 +235,20 @@ def test_state_machine_mpc_fail_count_reset():
     )
     
     # 需要多次成功才能从 BACKUP_ACTIVE 恢复
-    # 根据 _check_mpc_can_recover 的逻辑，需要最近 5 次中至少 4 次成功
-    for _ in range(5):
+    # 根据 _check_mpc_can_recover 的逻辑，需要 mpc_recovery_history_min (3) 条记录
+    # 第 3 次 update 时会触发恢复到 MPC_DEGRADED
+    transition_occurred = False
+    for i in range(5):
+        old_state = sm.state
         new_state = sm.update(diagnostics)
+        if old_state == ControllerState.BACKUP_ACTIVE and new_state == ControllerState.MPC_DEGRADED:
+            transition_occurred = True
+            # 状态转换时历史被清空（_transition_to 调用 _reset_all_counters）
+            assert len(sm._mpc_success_history) == 0, f"_mpc_success_history should be empty after transition, got {len(sm._mpc_success_history)}"
+            break
     
+    assert transition_occurred, "State should have transitioned from BACKUP_ACTIVE to MPC_DEGRADED"
     assert new_state == ControllerState.MPC_DEGRADED
-    assert len(sm._mpc_success_history) == 0, f"_mpc_success_history should be empty after transition, got {len(sm._mpc_success_history)}"
     
     print("✓ test_state_machine_mpc_fail_count_reset passed")
 
@@ -381,12 +393,12 @@ def test_mpc_health_monitor():
     # 正常情况
     status = monitor.update(5.0, 0.0001, 100.0)
     assert status.healthy == True
-    assert status.warning == False
+    assert status.degradation_warning == False
     
     # 连续超时
     for _ in range(5):
         status = monitor.update(10.0, 0.0001, 100.0)
-    assert status.warning == True
+    assert status.degradation_warning == True
     
     # 重置
     monitor.reset()

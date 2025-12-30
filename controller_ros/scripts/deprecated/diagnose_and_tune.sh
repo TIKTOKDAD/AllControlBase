@@ -533,17 +533,11 @@ topics:
   diagnostics: "/controller/diagnostics"
   state: "/controller/state"
 
-# TF configuration
+# TF configuration (ROS TF2 特有参数)
+# 注意：坐标系名称（source_frame, target_frame）统一在 transform 配置中定义
 tf:
-  source_frame: "base_link"
-  target_frame: "odom"
-  timeout_ms: ${tf_timeout}
   buffer_warmup_timeout_sec: 5.0
   buffer_warmup_interval_sec: 0.2
-  expected_source_frames:
-    - "base_link"
-    - "base_footprint"
-    - ""
 
 # Timeout configuration
 watchdog:
@@ -674,6 +668,12 @@ transform:
   fallback_critical_limit_ms: 1000
   drift_estimation_enabled: false
   recovery_correction_enabled: true
+  expected_source_frames:
+    - "base_link"
+    - "base_footprint"
+    - "base_link_0"
+    - ""
+  warn_unexpected_frame: true
 
 # Transition configuration
 transition:
@@ -882,14 +882,14 @@ Warning signs:
 This script generates ALL tunable parameters:
   ✓ System: ctrl_freq, platform
   ✓ Topics: odom, imu, trajectory, cmd_vel
-  ✓ TF: source_frame, target_frame, timeout_ms
+  ✓ Transform: source_frame, target_frame, timeout_ms, fallback limits
+  ✓ TF: buffer_warmup_*, retry_interval_sec, max_retries (ROS TF2 specific)
   ✓ Watchdog: all timeout values
   ✓ MPC: horizon, dt, weights, solver, health_monitor, fallback
   ✓ Constraints: v_max, omega_max, a_max, alpha_max, etc.
   ✓ Consistency: thresholds and weights
   ✓ Safety: thresholds, margins, state_machine, accel_filter
   ✓ EKF: noise parameters, adaptive, anomaly_detection
-  ✓ Transform: timeout, fallback limits
   ✓ Transition: tau, duration, thresholds
   ✓ Backup: lookahead, kp_heading, angle thresholds
   ✓ Tracking: error thresholds, weights, rating

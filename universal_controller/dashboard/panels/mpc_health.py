@@ -1,12 +1,19 @@
 """
 MPC 健康状态面板
+
+显示 MPC 控制器的健康状态和关键指标：
+- 求解时间
+- KKT 残差
+- 条件数
+- 降级警告
+- dt 匹配检查
 """
 
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout
 from PyQt5.QtCore import Qt
 from ..widgets.progress_bar import ColorProgressBar
 from ..widgets.status_led import StatusLED
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 
 
 class MPCHealthPanel(QGroupBox):
@@ -31,6 +38,11 @@ class MPCHealthPanel(QGroupBox):
         
         # 分隔线
         layout.addSpacing(5)
+        
+        # 计数器标题
+        counter_title = QLabel('计数器')
+        counter_title.setStyleSheet(PANEL_TITLE_STYLE)
+        layout.addWidget(counter_title)
         
         # 连续警告次数
         warn_row = QHBoxLayout()
@@ -58,7 +70,36 @@ class MPCHealthPanel(QGroupBox):
         
         layout.addSpacing(5)
         
-        # 状态指示
+        # 时间配置标题
+        time_title = QLabel('时间配置')
+        time_title.setStyleSheet(PANEL_TITLE_STYLE)
+        layout.addWidget(time_title)
+        
+        # MPC dt vs 控制周期
+        dt_grid = QGridLayout()
+        dt_grid.setSpacing(3)
+        
+        dt_grid.addWidget(QLabel('MPC dt:'), 0, 0)
+        self.mpc_dt_label = QLabel('20 ms')
+        dt_grid.addWidget(self.mpc_dt_label, 0, 1)
+        
+        dt_grid.addWidget(QLabel('控制周期:'), 1, 0)
+        self.ctrl_period_label = QLabel('20 ms')
+        dt_grid.addWidget(self.ctrl_period_label, 1, 1)
+        
+        layout.addLayout(dt_grid)
+        
+        # dt 匹配状态
+        self.dt_match_led = StatusLED('dt 匹配')
+        layout.addWidget(self.dt_match_led)
+        
+        layout.addSpacing(5)
+        
+        # 状态指示标题
+        status_title = QLabel('状态指示')
+        status_title.setStyleSheet(PANEL_TITLE_STYLE)
+        layout.addWidget(status_title)
+        
         status_layout = QGridLayout()
         
         self.health_led = StatusLED('健康状态')
@@ -125,11 +166,28 @@ class MPCHealthPanel(QGroupBox):
             self.warn_count_label.setStyleSheet('color: #FFFFFF;')
 
         # 连续良好次数
-        self.good_count_label.setText('0')
-        self.good_count_label.setStyleSheet('color: #FFFFFF;')
+        self.good_count_label.setText(str(mpc.consecutive_good))
+        if mpc.consecutive_good >= 5:
+            self.good_count_label.setStyleSheet(f'color: {COLORS["success"]};')
+        else:
+            self.good_count_label.setStyleSheet('color: #FFFFFF;')
 
         # Horizon
         self.horizon_label.setText(f'{platform.mpc_horizon} (正常) / {platform.mpc_horizon_degraded} (降级)')
+
+        # MPC dt vs 控制周期
+        self.mpc_dt_label.setText(f'{mpc.mpc_dt * 1000:.0f} ms')
+        self.ctrl_period_label.setText(f'{mpc.control_period * 1000:.0f} ms')
+        
+        # dt 匹配状态
+        if mpc.dt_mismatch:
+            self.dt_match_led.set_warning('⚠ 不匹配')
+            self.mpc_dt_label.setStyleSheet(f'color: {COLORS["warning"]};')
+            self.ctrl_period_label.setStyleSheet(f'color: {COLORS["warning"]};')
+        else:
+            self.dt_match_led.set_status(True, '✓ 匹配')
+            self.mpc_dt_label.setStyleSheet('')
+            self.ctrl_period_label.setStyleSheet('')
 
         # 状态指示
         self.health_led.set_status(mpc.healthy, '✓ 健康' if mpc.healthy else '✗ 异常')
@@ -152,6 +210,13 @@ class MPCHealthPanel(QGroupBox):
         self.good_count_label.setStyleSheet(unavailable_style)
         self.horizon_label.setText('无数据')
         self.horizon_label.setStyleSheet(unavailable_style)
+        
+        # dt 配置显示不可用
+        self.mpc_dt_label.setText('--')
+        self.mpc_dt_label.setStyleSheet(unavailable_style)
+        self.ctrl_period_label.setText('--')
+        self.ctrl_period_label.setStyleSheet(unavailable_style)
+        self.dt_match_led.set_status(None, '无数据')
         
         # LED 显示不可用
         self.health_led.set_status(None, '无数据')

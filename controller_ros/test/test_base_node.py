@@ -361,12 +361,15 @@ def test_tf2_injection_blocking_timeout():
     mock = MockControllerNode()
     # 使用较短的超时时间进行测试
     params = DEFAULT_CONFIG.copy()
+    # tf 配置：ROS TF2 特有参数
     params['tf'] = {
-        'source_frame': 'base_link',
-        'target_frame': 'odom',
         'buffer_warmup_timeout_sec': 0.2,  # 200ms 超时
         'buffer_warmup_interval_sec': 0.05,  # 50ms 间隔
     }
+    # transform 配置：坐标系名称
+    params['transform'] = params.get('transform', {}).copy()
+    params['transform']['source_frame'] = 'base_link'
+    params['transform']['target_frame'] = 'odom'
     mock.initialize(params)
     
     # 设置 TF bridge - can_transform 始终返回 False
@@ -474,11 +477,14 @@ def test_control_loop_tf2_retry():
     """测试控制循环中的 TF2 重试"""
     mock = MockControllerNode()
     params = DEFAULT_CONFIG.copy()
+    # tf 配置：ROS TF2 特有参数
     params['tf'] = {
-        'source_frame': 'base_link',
-        'target_frame': 'odom',
-        'retry_interval_cycles': 10,  # 每 10 个周期重试一次
+        'retry_interval_sec': 0.5,  # 每 0.5 秒重试一次
     }
+    # transform 配置：坐标系名称
+    params['transform'] = params.get('transform', {}).copy()
+    params['transform']['source_frame'] = 'base_link'
+    params['transform']['target_frame'] = 'odom'
     mock.initialize(params)
     
     # 设置 TF bridge

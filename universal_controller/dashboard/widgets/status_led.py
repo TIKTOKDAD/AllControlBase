@@ -1,5 +1,10 @@
 """
 状态指示灯控件
+
+提供多种状态指示：
+- 成功/失败/警告/不可用
+- 带文本标签
+- 支持动态更新
 """
 
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel
@@ -8,7 +13,14 @@ from ..styles import COLORS
 
 
 class StatusLED(QWidget):
-    """状态指示灯"""
+    """状态指示灯
+    
+    支持状态：
+    - True: 成功/正常（绿色）
+    - False: 失败/错误（红色）
+    - None: 不可用（灰色）
+    - warning: 警告（黄色）
+    """
     
     def __init__(self, text: str = '', parent=None):
         super().__init__(parent)
@@ -19,11 +31,12 @@ class StatusLED(QWidget):
     def _setup_ui(self):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
+        layout.setSpacing(6)
         
         # LED 指示灯
         self.led = QLabel()
-        self.led.setFixedSize(12, 12)
+        self.led.setFixedSize(14, 14)
+        self.led.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.led)
         
         # 文本标签
@@ -52,45 +65,60 @@ class StatusLED(QWidget):
             color = COLORS.get('unavailable', COLORS['disabled'])
             symbol = '?'
             self.label.setStyleSheet(f'color: {color};')
+            border_color = '#4D4D4D'
         elif status:
             color = COLORS['success']
             symbol = '✓'
             self.label.setStyleSheet('color: #FFFFFF;')
+            border_color = COLORS['success']
         else:
             color = COLORS['error']
             symbol = '✗'
             self.label.setStyleSheet('color: #FFFFFF;')
+            border_color = COLORS['error']
         
+        # 添加发光效果
         self.led.setStyleSheet(f"""
             QLabel {{
                 background-color: {color};
-                border-radius: 6px;
+                border: 2px solid {border_color};
+                border-radius: 7px;
                 color: white;
-                font-size: 10px;
+                font-size: 9px;
+                font-weight: bold;
             }}
         """)
         self.led.setText(symbol)
-        self.led.setAlignment(Qt.AlignCenter)
     
     def set_warning(self, text: str = None):
         """设置警告状态"""
         if text:
+            self._text = text
             self.label.setText(text)
+        
+        color = COLORS['warning']
+        self.label.setStyleSheet(f'color: {color};')
         
         self.led.setStyleSheet(f"""
             QLabel {{
-                background-color: {COLORS['warning']};
-                border-radius: 6px;
+                background-color: {color};
+                border: 2px solid {color};
+                border-radius: 7px;
                 color: black;
-                font-size: 10px;
+                font-size: 9px;
+                font-weight: bold;
             }}
         """)
         self.led.setText('!')
-        self.led.setAlignment(Qt.AlignCenter)
 
 
 class StatusIndicator(QWidget):
-    """状态指示器 (带值显示)"""
+    """状态指示器 (带值显示)
+    
+    用于显示带有数值的状态，如：
+    - 温度: 45°C (正常)
+    - 延迟: 12ms (警告)
+    """
     
     def __init__(self, label: str = '', parent=None):
         super().__init__(parent)
@@ -100,7 +128,7 @@ class StatusIndicator(QWidget):
     def _setup_ui(self):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
+        layout.setSpacing(6)
         
         # 标签
         self.name_label = QLabel(self._label)
@@ -109,7 +137,8 @@ class StatusIndicator(QWidget):
         
         # LED
         self.led = QLabel()
-        self.led.setFixedSize(14, 14)
+        self.led.setFixedSize(16, 16)
+        self.led.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.led)
         
         # 值
@@ -122,15 +151,19 @@ class StatusIndicator(QWidget):
         # 更新 LED
         if status is None:
             color = COLORS['disabled']
+            border_color = '#4D4D4D'
         elif status:
             color = COLORS['success']
+            border_color = COLORS['success']
         else:
             color = COLORS['error']
+            border_color = COLORS['error']
         
         self.led.setStyleSheet(f"""
             QLabel {{
                 background-color: {color};
-                border-radius: 7px;
+                border: 2px solid {border_color};
+                border-radius: 8px;
             }}
         """)
         

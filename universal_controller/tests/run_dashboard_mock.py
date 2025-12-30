@@ -248,7 +248,9 @@ class MockDashboardDataSource:
             soft_disable_count=0,
         )
         
-        data.version = 'v3.17.12 [测试模式]'
+        # 从 __version__ 获取版本号
+        from .. import __version__
+        data.version = f'v{__version__} [测试模式]'
         data.transition_progress = 1.0
         
         return data

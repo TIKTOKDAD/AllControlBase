@@ -330,9 +330,11 @@ class TestTF2InjectionManager:
             tf_bridge=tf_bridge,
             controller_manager=manager,
             config={
+                'retry_interval_sec': 2.0,
+            },
+            transform_config={
                 'source_frame': 'base_link',
                 'target_frame': 'odom',
-                'retry_interval_sec': 2.0,
             },
         )
         
@@ -355,12 +357,14 @@ class TestTF2InjectionManager:
             tf_bridge=tf_bridge,
             controller_manager=manager,
             config={
-                'source_frame': 'custom_base',
-                'target_frame': 'custom_odom',
                 'buffer_warmup_timeout_sec': 5.0,
                 'buffer_warmup_interval_sec': 0.2,
                 'retry_interval_sec': 2.0,
                 'max_retries': 10,
+            },
+            transform_config={
+                'source_frame': 'custom_base',
+                'target_frame': 'custom_odom',
             },
         )
         
@@ -370,29 +374,6 @@ class TestTF2InjectionManager:
         assert injection_manager._buffer_warmup_interval_sec == 0.2
         assert injection_manager._retry_interval_sec == 2.0
         assert injection_manager._max_retries == 10
-    
-    def test_deprecated_retry_interval_cycles(self):
-        """测试废弃的 retry_interval_cycles 参数向后兼容"""
-        tf_bridge = MockTFBridge()
-        manager = MockControllerManager()
-        
-        log_messages = []
-        
-        injection_manager = TF2InjectionManager(
-            tf_bridge=tf_bridge,
-            controller_manager=manager,
-            config={
-                'retry_interval_cycles': 100,  # 废弃参数
-            },
-            log_warn=lambda msg: log_messages.append(msg),
-        )
-        
-        # 应该转换为秒（假设 50Hz）
-        assert injection_manager._retry_interval_sec == 2.0  # 100 / 50 = 2.0
-        
-        # 应该有警告日志
-        assert len(log_messages) == 1
-        assert 'deprecated' in log_messages[0].lower()
 
 
 if __name__ == '__main__':

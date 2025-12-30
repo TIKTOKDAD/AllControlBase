@@ -133,33 +133,36 @@ class TestParamLoaderRecursive:
         assert config['mpc']['weights']['velocity'] == 1.0
 
 
-class TestParamLoaderTFMapping:
-    """测试 TF -> transform 映射"""
+class TestParamLoaderConfigSeparation:
+    """测试 tf 和 transform 配置分离"""
     
-    def test_tf_to_transform_mapping(self):
-        """测试 TF 配置映射到 transform"""
-        from controller_ros.utils.param_loader import ParamLoader
+    def test_tf_config_only_contains_ros_specific_params(self):
+        """测试 tf 配置仅包含 ROS TF2 特有参数"""
+        from controller_ros.utils.param_loader import TF_DEFAULTS
         
-        config = {
-            'transform': {
-                'source_frame': 'default_source',
-                'target_frame': 'default_target',
-                'timeout_ms': 10,
-            }
+        # tf 配置应该只包含 ROS TF2 特有参数
+        expected_keys = {
+            'buffer_warmup_timeout_sec',
+            'buffer_warmup_interval_sec',
+            'retry_interval_sec',
+            'max_retries',
         }
         
-        tf_config = {
-            'source_frame': 'base_link',
-            'target_frame': 'odom',
-            'timeout_ms': 50,
-        }
+        assert set(TF_DEFAULTS.keys()) == expected_keys
         
-        ParamLoader._apply_tf_to_transform(config, tf_config)
+        # 坐标系名称不应该在 tf 配置中
+        assert 'source_frame' not in TF_DEFAULTS
+        assert 'target_frame' not in TF_DEFAULTS
+        assert 'timeout_ms' not in TF_DEFAULTS
+    
+    def test_transform_config_contains_frame_names(self):
+        """测试 transform 配置包含坐标系名称"""
+        from universal_controller.config.modules_config import TRANSFORM_CONFIG
         
-        # 验证映射
-        assert config['transform']['source_frame'] == 'base_link'
-        assert config['transform']['target_frame'] == 'odom'
-        assert config['transform']['timeout_ms'] == 50
+        # transform 配置应该包含坐标系名称
+        assert 'source_frame' in TRANSFORM_CONFIG
+        assert 'target_frame' in TRANSFORM_CONFIG
+        assert 'timeout_ms' in TRANSFORM_CONFIG
 
 
 class TestParamLoaderTopics:
@@ -210,6 +213,10 @@ class TestParamLoaderIntegration:
         
         验证 TF 配置被正确加载到 config['tf'] 中，
         供 TF2InjectionManager 使用。
+        
+        配置分层设计：
+        - tf: ROS TF2 特有参数（buffer 预热、重试等）
+        - transform: 坐标变换配置（坐标系名称 + 算法参数）
         """
         from controller_ros.utils.param_loader import ParamLoader, TF_DEFAULTS
         
@@ -218,15 +225,19 @@ class TestParamLoaderIntegration:
         # 验证 tf 配置存在
         assert 'tf' in config, "config should contain 'tf' key"
         
-        # 验证 tf 配置包含所有默认键
+        # 验证 tf 配置包含所有默认键（仅 ROS TF2 特有参数）
         for key in TF_DEFAULTS.keys():
             assert key in config['tf'], f"Missing tf key: {key}"
         
-        # 验证 transform 配置也被正确映射
+        # 验证 transform 配置存在且包含坐标系名称
         assert 'transform' in config
-        assert config['transform']['source_frame'] == config['tf']['source_frame']
-        assert config['transform']['target_frame'] == config['tf']['target_frame']
-        assert config['transform']['timeout_ms'] == config['tf']['timeout_ms']
+        assert 'source_frame' in config['transform']
+        assert 'target_frame' in config['transform']
+        assert 'timeout_ms' in config['transform']
+        
+        # 验证 tf 配置不再包含坐标系名称（已移至 transform）
+        assert 'source_frame' not in config['tf']
+        assert 'target_frame' not in config['tf']
     
     def test_load_includes_diagnostics_publish_rate(self):
         """测试 load() 包含诊断发布率配置
@@ -270,7 +281,7 @@ class TestConfigKeyMatching:
         
         # 检查顶级键
         # ROS 层特有的键，不需要在 DEFAULT_CONFIG 中定义
-        ros_only_keys = {'node', 'topics', 'tf', 'visualizer'}
+        ros_only_keys = {'node', 'topics', 'tf', 'visualizer', 'cmd_vel_adapter'}
         
         for key in yaml_config.keys():
             if key not in ros_only_keys:

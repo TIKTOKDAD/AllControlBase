@@ -54,18 +54,61 @@ SAFETY_CONFIG = {
     'max_dt_for_accel': 1.0,         # 加速度计算的最大时间间隔 (秒)
     
     # 状态机配置
+    #
+    # Alpha (α) 说明:
+    # ===============
+    # α 是一致性检查器计算的轨迹可信度，范围 [0, 1]
+    # - α = 1.0: 完全信任 soft head 输出的速度
+    # - α = 0.0: 完全使用几何计算的速度
+    #
+    # 当轨迹不包含速度信息时 (如纯位置轨迹):
+    # - 一致性检查器无法计算有意义的 α 值
+    # - 应设置 alpha_disable_thresh = 0.0 禁用 α 检查
+    # - 此时控制器将完全使用几何计算的速度
+    #
+    # MPC 失败检测说明:
+    # =================
+    # 使用滑动窗口检测 MPC 是否持续失败:
+    # - mpc_fail_window_size: 滑动窗口大小
+    # - mpc_fail_thresh: 窗口内失败次数阈值
+    # - mpc_fail_ratio_thresh: 失败率阈值
+    # 当失败次数 >= mpc_fail_thresh 或失败率 >= mpc_fail_ratio_thresh 时，
+    # 状态机会切换到 BACKUP_ACTIVE 状态
+    #
+    # MPC 恢复检测说明:
+    # =================
+    # 在 BACKUP_ACTIVE 状态下，检测 MPC 是否可以恢复:
+    # - mpc_recovery_thresh: 连续成功次数阈值 (用于 MPC_DEGRADED → NORMAL)
+    # - mpc_recovery_history_min: 最小历史记录数
+    # - mpc_recovery_recent_count: 最近检查次数
+    # - mpc_recovery_tolerance: 最近 N 次中允许的失败次数
+    # - mpc_recovery_success_ratio: 整体成功率要求
+    #
     'state_machine': {
+        # Alpha 恢复参数
         'alpha_recovery_thresh': 5,        # α 恢复计数阈值
         'alpha_recovery_value': 0.3,       # α 恢复值
         'alpha_disable_thresh': 0.0,       # α 禁用阈值 (0 = 禁用此检查，适用于无速度信息的轨迹)
+        
+        # MPC 恢复参数
         'mpc_recovery_thresh': 5,          # MPC 恢复计数阈值
+        
+        # MPC 失败检测参数
         'mpc_fail_window_size': 10,        # MPC 失败检测滑动窗口大小
         'mpc_fail_thresh': 3,              # 窗口内失败次数阈值
         'mpc_fail_ratio_thresh': 0.5,      # 失败率阈值
+        
+        # MPC 恢复检测参数
         'mpc_recovery_history_min': 3,     # MPC 恢复检测最小历史记录数
         'mpc_recovery_recent_count': 5,    # MPC 恢复检测最近检查次数
         'mpc_recovery_tolerance': 0,       # MPC 恢复检测容错次数 (最近 N 次中允许的失败次数)
         'mpc_recovery_success_ratio': 0.8, # MPC 恢复检测成功率阈值 (整体成功率要求)
+        
+        # 状态超时监控参数
+        # 用于检测系统是否长时间处于降级状态
+        'degraded_state_timeout': 30.0,    # MPC_DEGRADED 状态超时 (秒)
+        'backup_state_timeout': 60.0,      # BACKUP_ACTIVE 状态超时 (秒)
+        'enable_state_timeout_stop': False,  # 是否启用状态超时自动停止 (默认仅告警)
     },
 }
 
@@ -85,5 +128,14 @@ SAFETY_VALIDATION_RULES = {
     'safety.accel_filter_alpha': (0.0, 1.0, '加速度滤波系数'),
     'safety.accel_filter_warmup_period': (1, 20, '滤波器预热期长度'),
     # 状态机配置
+    'safety.state_machine.alpha_recovery_thresh': (1, 100, 'α 恢复计数阈值'),
+    'safety.state_machine.alpha_recovery_value': (0.0, 1.0, 'α 恢复值'),
+    'safety.state_machine.alpha_disable_thresh': (0.0, 1.0, 'α 禁用阈值'),
+    'safety.state_machine.mpc_recovery_thresh': (1, 100, 'MPC 恢复计数阈值'),
+    'safety.state_machine.mpc_fail_window_size': (1, 100, 'MPC 失败检测滑动窗口大小'),
+    'safety.state_machine.mpc_fail_thresh': (1, 100, 'MPC 失败次数阈值'),
+    'safety.state_machine.mpc_fail_ratio_thresh': (0.0, 1.0, 'MPC 失败率阈值'),
     'safety.state_machine.mpc_recovery_success_ratio': (0.0, 1.0, 'MPC 恢复成功率阈值'),
+    'safety.state_machine.degraded_state_timeout': (0.0, 3600.0, 'MPC_DEGRADED 状态超时 (秒)'),
+    'safety.state_machine.backup_state_timeout': (0.0, 3600.0, 'BACKUP_ACTIVE 状态超时 (秒)'),
 }

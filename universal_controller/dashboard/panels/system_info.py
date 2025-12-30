@@ -1,9 +1,16 @@
 """
 系统信息面板 - 使用统一数据模型
+
+显示：
+- 运行环境 (ROS/TF2/ACADOS/IMU)
+- 控制策略
+- 平台配置
+- 功能开关
+- 坐标系配置
 """
 
 from PyQt5.QtWidgets import QWidget, QGroupBox, QVBoxLayout, QHBoxLayout, QLabel
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 from ..widgets.status_led import StatusLED
 from ..models import DisplayData
 
@@ -95,7 +102,7 @@ class SystemInfoPanel(QGroupBox):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(5)
         title_label = QLabel(title)
-        title_label.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        title_label.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(title_label)
         return widget
 

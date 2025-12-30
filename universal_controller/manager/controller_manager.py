@@ -133,6 +133,7 @@ class ControllerManager:
         # 状态
         self._last_state = ControllerState.INIT
         self._safety_failed = False
+        self._safety_check_passed = True  # 安全检查是否通过
         self._last_diagnostics: Optional[DiagnosticsInput] = None
         self._last_mpc_health = None
         self._last_consistency: Optional[ConsistencyResult] = None
@@ -143,13 +144,17 @@ class ControllerManager:
         self._last_attitude_cmd: Optional[AttitudeCommand] = None  # F14: 姿态命令
         self._last_update_time: Optional[float] = None  # 用于计算实际时间间隔
         
+        # 预测误差计算相关状态
+        # 存储上一次 MPC 预测的下一步状态，用于计算预测误差
+        self._last_mpc_predicted_state: Optional[np.ndarray] = None
+        
         # notify_xxx_received() 调用跟踪
         # 用于检测外部调用者是否正确调用了数据接收通知方法
         self._last_odom_notify_time: Optional[float] = None
         self._last_traj_notify_time: Optional[float] = None
-        self._notify_warning_logged: bool = False  # 避免重复警告
-        self._notify_check_interval: float = config.get('watchdog', {}).get(
-            'notify_check_interval', 2.0)  # 检查间隔（秒），从 5.0 减少到 2.0
+        self._notify_warning_logged: bool = False  # 检测完成标志
+        self._odom_notify_warned: bool = False  # odom notify 警告标志
+        self._traj_notify_warned: bool = False  # traj notify 警告标志
         self._update_count_without_notify: int = 0  # 无 notify 的 update 调用计数
         self._notify_update_count_thresh: int = config.get('watchdog', {}).get(
             'notify_update_count_thresh', 50)  # 触发警告的 update 次数阈值
@@ -476,58 +481,39 @@ class ControllerManager:
             这里只调用 check() 检查超时状态。
         """
         # 检查 notify_xxx_received() 是否被正确调用
-        # 使用两种检测机制：
-        # 1. 时间检测：启动后一段时间内未收到 notify 调用
-        # 2. 计数检测：连续多次 update 调用但未收到 notify 调用
+        # 使用计数检测：连续多次 update 调用但未收到 notify 调用
         current_time = get_monotonic_time()
         
-        if not self._notify_warning_logged:
-            # 计数检测：更快速地检测问题
-            self._update_count_without_notify += 1
+        # 分别检测 odom 和 trajectory 的 notify 调用
+        # 每个 notify 独立跟踪，避免相互干扰
+        self._update_count_without_notify += 1
+        
+        if self._update_count_without_notify >= self._notify_update_count_thresh:
+            # 检查 odom notify
+            if self._last_odom_notify_time is None and not self._odom_notify_warned:
+                logger.warning(
+                    "notify_odom_received() has not been called after %d update() calls. "
+                    "Timeout detection may not work correctly. "
+                    "Please ensure notify_odom_received() is called in your odom callback.",
+                    self._update_count_without_notify
+                )
+                self._odom_notify_warned = True
             
-            # 如果收到了 notify 调用，重置计数
-            if self._last_odom_notify_time is not None and self._last_traj_notify_time is not None:
-                self._update_count_without_notify = 0
-            elif self._update_count_without_notify >= self._notify_update_count_thresh:
-                # 连续多次 update 但未收到 notify，发出警告
-                if self._last_odom_notify_time is None:
-                    logger.warning(
-                        "notify_odom_received() has not been called after %d update() calls. "
-                        "Timeout detection may not work correctly. "
-                        "Please ensure notify_odom_received() is called in your odom callback.",
-                        self._update_count_without_notify
-                    )
-                    self._notify_warning_logged = True
-                elif self._last_traj_notify_time is None:
-                    logger.warning(
-                        "notify_trajectory_received() has not been called after %d update() calls. "
-                        "Timeout detection may not work correctly. "
-                        "Please ensure notify_trajectory_received() is called in your trajectory callback.",
-                        self._update_count_without_notify
-                    )
-                    self._notify_warning_logged = True
+            # 检查 trajectory notify
+            if self._last_traj_notify_time is None and not self._traj_notify_warned:
+                logger.warning(
+                    "notify_trajectory_received() has not been called after %d update() calls. "
+                    "Timeout detection may not work correctly. "
+                    "Please ensure notify_trajectory_received() is called in your trajectory callback.",
+                    self._update_count_without_notify
+                )
+                self._traj_notify_warned = True
             
-            # 时间检测：作为备用检测机制
-            # 只在启动后一段时间检查，避免启动期间的误报
-            if self._last_update_time is not None and not self._notify_warning_logged:
-                time_since_start = current_time - (self._last_update_time - self.dt)
-                if time_since_start > self._notify_check_interval:
-                    if self._last_odom_notify_time is None:
-                        logger.warning(
-                            "notify_odom_received() has not been called after %.1fs. "
-                            "Timeout detection may not work correctly. "
-                            "Please ensure notify_odom_received() is called in your odom callback.",
-                            time_since_start
-                        )
-                        self._notify_warning_logged = True
-                    elif self._last_traj_notify_time is None:
-                        logger.warning(
-                            "notify_trajectory_received() has not been called after %.1fs. "
-                            "Timeout detection may not work correctly. "
-                            "Please ensure notify_trajectory_received() is called in your trajectory callback.",
-                            time_since_start
-                        )
-                        self._notify_warning_logged = True
+            # 两个都已警告或已调用，停止计数累积
+            odom_ok = self._last_odom_notify_time is not None or self._odom_notify_warned
+            traj_ok = self._last_traj_notify_time is not None or self._traj_notify_warned
+            if odom_ok and traj_ok:
+                self._notify_warning_logged = True
         
         return self.timeout_monitor.check()
     
@@ -691,11 +677,15 @@ class ControllerManager:
             safety_decision = self.safety_monitor.check(state, cmd, diagnostics)
             if not safety_decision.safe:
                 self._safety_failed = True
+                self._safety_check_passed = False
                 if safety_decision.limited_cmd is not None:
                     cmd = safety_decision.limited_cmd
                 diagnostics.safety_failed = True
             else:
                 self._safety_failed = False
+                self._safety_check_passed = True
+        else:
+            self._safety_check_passed = True
         return cmd
     
     def _update_state_machine(self, diagnostics: DiagnosticsInput) -> None:
@@ -721,6 +711,9 @@ class ControllerManager:
         transform_status = self.coord_transformer.get_status() if self.coord_transformer else {
             'fallback_duration_ms': 0.0, 'accumulated_drift': 0.0
         }
+        # 检查是否有外部紧急停止请求
+        emergency_stop = self.state_machine.is_stop_requested() if self.state_machine else False
+        
         self._diagnostics_publisher.publish(
             current_time=wall_time,
             state=self._last_state,
@@ -732,17 +725,47 @@ class ControllerManager:
             transform_status=transform_status,
             tracking_error=self._last_tracking_error,
             transition_progress=self.smooth_transition.get_progress() if self.smooth_transition else 0.0,
-            tf2_critical=tf2_critical
+            tf2_critical=tf2_critical,
+            safety_check_passed=self._safety_check_passed,
+            emergency_stop=emergency_stop
         )
     
     def _compute_tracking_error(self, state: np.ndarray, trajectory: Trajectory) -> Dict[str, float]:
-        """计算跟踪误差"""
+        """
+        计算跟踪误差
+        
+        包括:
+        - lateral_error: 横向误差绝对值 (垂直于轨迹方向)
+        - longitudinal_error: 纵向误差绝对值 (沿轨迹方向)
+        - heading_error: 航向误差绝对值
+        - prediction_error: 预测误差 (上一次 MPC 预测状态与当前实际状态的差异)
+        
+        注意:
+        - 所有误差均为绝对值，用于诊断和质量评估
+        - prediction_error 为 NaN 表示无预测数据（如使用 fallback 求解器时）
+        """
         if len(trajectory.points) < 2:
+            self._last_mpc_predicted_state = None
             return {'lateral_error': 0.0, 'longitudinal_error': 0.0, 
-                    'heading_error': 0.0, 'prediction_error': 0.0}
+                    'heading_error': 0.0, 'prediction_error': float('nan')}
         
         px, py = state[0], state[1]
         theta = state[6]
+        
+        # 计算预测误差
+        # 比较上一次 MPC 预测的状态与当前实际状态
+        # 使用 NaN 表示无预测数据（fallback 求解器不提供预测）
+        prediction_error = float('nan')
+        if self._last_mpc_predicted_state is not None:
+            pred_px, pred_py = self._last_mpc_predicted_state[0], self._last_mpc_predicted_state[1]
+            # 位置预测误差 (欧几里得距离)
+            prediction_error = np.sqrt((px - pred_px)**2 + (py - pred_py)**2)
+        
+        # 更新预测状态：通过接口方法获取 MPC 预测的下一步状态
+        if self.mpc_tracker is not None:
+            self._last_mpc_predicted_state = self.mpc_tracker.get_predicted_next_state()
+        else:
+            self._last_mpc_predicted_state = None
         
         min_dist = float('inf')
         closest_idx = 0
@@ -760,7 +783,7 @@ class ControllerManager:
             p1 = trajectory.points[closest_idx]
         else:
             return {'lateral_error': min_dist, 'longitudinal_error': 0.0,
-                    'heading_error': 0.0, 'prediction_error': 0.0}
+                    'heading_error': 0.0, 'prediction_error': prediction_error}
         
         dx = p1.x - p0.x
         dy = p1.y - p0.y
@@ -768,24 +791,23 @@ class ControllerManager:
         
         if traj_length < 1e-6:
             return {'lateral_error': min_dist, 'longitudinal_error': 0.0,
-                    'heading_error': 0.0, 'prediction_error': 0.0}
+                    'heading_error': 0.0, 'prediction_error': prediction_error}
         
         tx, ty = dx / traj_length, dy / traj_length
         ex = px - p0.x
         ey = py - p0.y
         
-        longitudinal_error = ex * tx + ey * ty
-        lateral_error = -ex * ty + ey * tx
+        longitudinal_error = abs(ex * tx + ey * ty)
+        lateral_error = abs(-ex * ty + ey * tx)
         
         traj_heading = np.arctan2(dy, dx)
-        heading_error = theta - traj_heading
-        heading_error = normalize_angle(heading_error)
+        heading_error = abs(normalize_angle(theta - traj_heading))
         
         return {
             'lateral_error': lateral_error,
             'longitudinal_error': longitudinal_error,
             'heading_error': heading_error,
-            'prediction_error': 0.0
+            'prediction_error': prediction_error
         }
     
     def get_timeout_status(self) -> TimeoutStatus:
@@ -821,6 +843,7 @@ class ControllerManager:
         self.timeout_monitor.reset()
         self._last_state = ControllerState.INIT
         self._safety_failed = False
+        self._safety_check_passed = True
         self._last_mpc_cmd = None
         self._last_backup_cmd = None
         self._last_tracking_error = None
@@ -833,6 +856,7 @@ class ControllerManager:
         self._notify_warning_logged = False
         self._update_count_without_notify = 0  # 重置 notify 计数
         self._current_horizon = self.horizon_normal
+        self._last_mpc_predicted_state = None  # 重置预测状态
         if self.mpc_tracker:
             self.mpc_tracker.set_horizon(self.horizon_normal)
     

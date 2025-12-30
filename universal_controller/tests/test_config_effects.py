@@ -422,6 +422,10 @@ def test_state_machine_recovery_config():
         'mpc_recovery_recent_count': 3,
         'mpc_recovery_tolerance': 1,
         'mpc_recovery_success_ratio': 0.7,
+        # 状态超时监控参数
+        'degraded_state_timeout': 30.0,
+        'backup_state_timeout': 60.0,
+        'enable_state_timeout_stop': False,
     }
     
     sm = StateMachine(config)

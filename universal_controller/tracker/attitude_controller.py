@@ -633,6 +633,16 @@ class QuadrotorAttitudeController(IAttitudeController):
             'yaw_rate_max': self.yaw_rate_max
         }
 
+    @property
+    def is_hovering(self) -> bool:
+        """
+        检查是否处于悬停状态
+        
+        Returns:
+            True 如果当前处于悬停状态
+        """
+        return self._hover_start_time is not None
+
     def reset(self) -> None:
         """重置控制器状态"""
         self._last_attitude = None

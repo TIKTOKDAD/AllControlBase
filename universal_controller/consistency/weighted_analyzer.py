@@ -20,19 +20,17 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
     
     def __init__(self, config: Dict[str, Any]):
         consistency_config = config.get('consistency', config)
+        trajectory_config = config.get('trajectory', {})
         
         self.kappa_thresh = consistency_config.get('kappa_thresh', 0.5)
         self.v_dir_thresh = consistency_config.get('v_dir_thresh', 0.8)
         self.temporal_smooth_thresh = consistency_config.get('temporal_smooth_thresh', 0.5)
-        # 统一从 trajectory 配置读取 low_speed_thresh，确保与轨迹速度计算一致
-        # 如果 consistency 配置中有此值（向后兼容），优先使用
-        # 否则从 trajectory 配置读取
-        trajectory_config = config.get('trajectory', {})
-        self.low_speed_thresh = consistency_config.get(
-            'low_speed_thresh', 
-            trajectory_config.get('low_speed_thresh', 0.1)
-        )
-        self.max_curvature = consistency_config.get('max_curvature', 10.0)  # 从配置读取
+        
+        # low_speed_thresh 统一从 trajectory 配置读取
+        # 这确保了轨迹速度计算和一致性检查使用相同的阈值
+        self.low_speed_thresh = trajectory_config.get('low_speed_thresh', 0.1)
+        
+        self.max_curvature = consistency_config.get('max_curvature', 10.0)
         temporal_window_size = consistency_config.get('temporal_window_size', 10)
         self.temporal_window: deque = deque(maxlen=temporal_window_size)
         

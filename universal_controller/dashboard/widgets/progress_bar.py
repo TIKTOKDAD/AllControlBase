@@ -1,5 +1,5 @@
 """
-自定义进度条控件 - 支持动态颜色
+自定义进度条控件 - 支持动态颜色和多种显示模式
 """
 
 from PyQt5.QtWidgets import QProgressBar, QWidget, QHBoxLayout, QLabel
@@ -8,7 +8,14 @@ from ..styles import get_progress_color, COLORS
 
 
 class ColorProgressBar(QWidget):
-    """带颜色变化的进度条"""
+    """带颜色变化的进度条
+    
+    支持：
+    - 动态颜色（根据值自动变色）
+    - 阈值显示
+    - 单位显示
+    - 百分比显示
+    """
     
     def __init__(self, parent=None, show_text=True, show_percent=True):
         super().__init__(parent)
@@ -18,6 +25,7 @@ class ColorProgressBar(QWidget):
         self._max_value = 100
         self._threshold = None
         self._unit = ''
+        self._inverted = False  # 是否反转颜色（值越高越好）
         
         self._setup_ui()
     
@@ -29,7 +37,7 @@ class ColorProgressBar(QWidget):
         # 进度条
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(16)
+        self.progress.setFixedHeight(18)
         layout.addWidget(self.progress, 1)
         
         # 数值标签
@@ -38,6 +46,10 @@ class ColorProgressBar(QWidget):
             self.value_label.setMinimumWidth(140)
             self.value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             layout.addWidget(self.value_label)
+    
+    def set_inverted(self, inverted: bool):
+        """设置是否反转颜色（用于"值越高越好"的指标）"""
+        self._inverted = inverted
     
     def set_value(self, value: float, max_value: float = None, threshold: float = None):
         """设置值"""
@@ -58,16 +70,19 @@ class ColorProgressBar(QWidget):
         self.progress.setValue(int(ratio * 1000))
         
         # 更新颜色
-        color = get_progress_color(ratio)
+        color = get_progress_color(ratio, self._inverted)
+        
+        # 添加渐变效果
         self.progress.setStyleSheet(f"""
             QProgressBar {{
                 border: 1px solid #3D3D3D;
-                border-radius: 3px;
+                border-radius: 4px;
                 background-color: #1E1E1E;
             }}
             QProgressBar::chunk {{
-                background-color: {color};
-                border-radius: 2px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {color}, stop:1 {self._lighten_color(color)});
+                border-radius: 3px;
             }}
         """)
         
@@ -83,6 +98,16 @@ class ColorProgressBar(QWidget):
             
             self.value_label.setText(text)
     
+    def _lighten_color(self, color: str) -> str:
+        """将颜色变亮一点（用于渐变效果）"""
+        # 简单的颜色变亮处理
+        color_map = {
+            COLORS['success']: COLORS.get('success_light', '#81C784'),
+            COLORS['warning']: COLORS.get('warning_light', '#FFD54F'),
+            COLORS['error']: COLORS.get('error_light', '#E57373'),
+        }
+        return color_map.get(color, color)
+    
     def set_unit(self, unit: str):
         """设置单位"""
         self._unit = unit
@@ -94,7 +119,12 @@ class SimpleProgressBar(QProgressBar):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setTextVisible(True)
-        self.setFixedHeight(18)
+        self.setFixedHeight(20)
+        self._inverted = False
+    
+    def set_inverted(self, inverted: bool):
+        """设置是否反转颜色"""
+        self._inverted = inverted
     
     def set_value_with_color(self, value: float, max_value: float = 100):
         """设置值并更新颜色"""
@@ -104,18 +134,31 @@ class SimpleProgressBar(QProgressBar):
         self.setMaximum(int(max_value * 10))
         self.setValue(int(value * 10))
         
-        color = get_progress_color(ratio)
+        color = get_progress_color(ratio, self._inverted)
+        light_color = self._lighten_color(color)
+        
         self.setStyleSheet(f"""
             QProgressBar {{
                 border: 1px solid #3D3D3D;
-                border-radius: 3px;
+                border-radius: 4px;
                 background-color: #1E1E1E;
                 text-align: center;
                 color: white;
+                font-weight: 500;
             }}
             QProgressBar::chunk {{
-                background-color: {color};
-                border-radius: 2px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {color}, stop:1 {light_color});
+                border-radius: 3px;
             }}
         """)
         self.setFormat(f"{value:.1f} / {max_value:.1f}")
+    
+    def _lighten_color(self, color: str) -> str:
+        """将颜色变亮"""
+        color_map = {
+            COLORS['success']: COLORS.get('success_light', '#81C784'),
+            COLORS['warning']: COLORS.get('warning_light', '#FFD54F'),
+            COLORS['error']: COLORS.get('error_light', '#E57373'),
+        }
+        return color_map.get(color, color)

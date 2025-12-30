@@ -259,8 +259,8 @@ class ControllerNode(ControllerNodeBase, Node):
         is_hovering = False
         if self._controller_bridge and self._controller_bridge.manager:
             attitude_controller = self._controller_bridge.manager.attitude_controller
-            if attitude_controller and hasattr(attitude_controller, '_is_hovering'):
-                is_hovering = attitude_controller._is_hovering
+            if attitude_controller is not None:
+                is_hovering = attitude_controller.is_hovering
         
         self._publishers.publish_attitude_cmd(
             attitude_cmd,

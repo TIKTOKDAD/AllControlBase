@@ -79,8 +79,9 @@ def run_demo():
     from .config.default_config import DEFAULT_CONFIG
     from .manager.controller_manager import ControllerManager
     
+    from . import __version__
     print("=" * 60)
-    print("通用控制器 (Universal Controller) v3.18.0")
+    print(f"通用控制器 (Universal Controller) v{__version__}")
     print("=" * 60)
     print()
     print("[!] 注意: 这是演示模式，使用模拟数据")

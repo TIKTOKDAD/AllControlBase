@@ -1,10 +1,16 @@
 """
 运行统计面板
+
+显示：
+- 运行时长
+- 控制周期统计
+- 状态统计
+- 性能指标
 """
 
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout
 from PyQt5.QtCore import Qt
-from ..styles import COLORS, STATE_NAMES
+from ..styles import COLORS, STATE_NAMES, PANEL_TITLE_STYLE
 
 
 class StatisticsPanel(QGroupBox):
@@ -133,7 +139,7 @@ class StatisticsPanel(QGroupBox):
         layout.setSpacing(5)
         
         title_label = QLabel(title)
-        title_label.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        title_label.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(title_label)
         
         return widget

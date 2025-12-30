@@ -1,5 +1,11 @@
 """
 轨迹可视化面板 - 显示网络输出的轨迹和当前位置
+
+功能：
+- 2D/3D 轨迹可视化
+- Hard 轨迹和 Soft 速度向量显示
+- 历史轨迹追踪
+- 跟随机器人视图
 """
 
 import numpy as np
@@ -47,7 +53,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # 抑制字体警告 (当中文字体不可用时)
 warnings.filterwarnings('ignore', message='Glyph.*missing from current font')
 
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 
 
 class TrajectoryViewPanel(QGroupBox):
@@ -122,7 +128,7 @@ class TrajectoryViewPanel(QGroupBox):
 
         # 视图模式
         mode_label = QLabel('视图模式')
-        mode_label.setStyleSheet('color: #2196F3; font-weight: bold; border: none;')
+        mode_label.setStyleSheet(PANEL_TITLE_STYLE.replace('border-bottom: 1px solid #3D3D3D;', 'border: none;'))
         layout.addWidget(mode_label)
 
         self.view_combo = QComboBox()
@@ -134,7 +140,7 @@ class TrajectoryViewPanel(QGroupBox):
 
         # 显示选项
         opt_label = QLabel('显示选项')
-        opt_label.setStyleSheet('color: #2196F3; font-weight: bold; border: none;')
+        opt_label.setStyleSheet(PANEL_TITLE_STYLE.replace('border-bottom: 1px solid #3D3D3D;', 'border: none;'))
         layout.addWidget(opt_label)
 
         self.cb_hard = QCheckBox('Hard 轨迹')
@@ -171,7 +177,7 @@ class TrajectoryViewPanel(QGroupBox):
 
         # 缩放控制
         zoom_label = QLabel('视野范围')
-        zoom_label.setStyleSheet('color: #2196F3; font-weight: bold; border: none;')
+        zoom_label.setStyleSheet(PANEL_TITLE_STYLE.replace('border-bottom: 1px solid #3D3D3D;', 'border: none;'))
         layout.addWidget(zoom_label)
 
         self.zoom_slider = QSlider(Qt.Horizontal)

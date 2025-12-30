@@ -71,17 +71,13 @@ class TrajectoryPublisher:
         self.soft_enabled = rospy.get_param('~soft_enabled', False)  # 是否启用 Soft 约束
         
         # 坐标系配置 - 使用统一的参数加载器
-        # 优先级: 私有参数 > TF 配置 > 默认值
+        # 优先级: 私有参数 > transform 配置 > 默认值
         private_frame = rospy.get_param('~frame_id', None)
         if private_frame:
             self.frame_id = private_frame
         else:
-            try:
-                from controller_ros.utils import ParamLoader
-                tf_config = ParamLoader.get_tf_config(None)
-                self.frame_id = tf_config.get('source_frame', 'base_footprint')
-            except ImportError:
-                self.frame_id = rospy.get_param('tf/source_frame', 'base_footprint')
+            # 从 transform 配置读取 source_frame
+            self.frame_id = rospy.get_param('transform/source_frame', 'base_footprint')
         
         input_topic = rospy.get_param('~input_topic', '/waypoint')
         output_topic = rospy.get_param('~output_topic', '/nn/local_trajectory')
@@ -245,12 +241,8 @@ class StopTrajectoryPublisher:
         if private_frame:
             self.frame_id = private_frame
         else:
-            try:
-                from controller_ros.utils import ParamLoader
-                tf_config = ParamLoader.get_tf_config(None)
-                self.frame_id = tf_config.get('source_frame', 'base_footprint')
-            except ImportError:
-                self.frame_id = rospy.get_param('tf/source_frame', 'base_footprint')
+            # 从 transform 配置读取 source_frame
+            self.frame_id = rospy.get_param('transform/source_frame', 'base_footprint')
         
         self.pub = rospy.Publisher(output_topic, LocalTrajectoryV4, queue_size=1)
         rospy.sleep(0.5)  # 等待连接

@@ -40,42 +40,41 @@ class StateMachine:
         safety_config = config.get('safety', {})
         sm_config = safety_config.get('state_machine', {})
         
-        self.alpha_recovery_thresh = sm_config.get('alpha_recovery_thresh', 5)
-        self.alpha_recovery_value = sm_config.get('alpha_recovery_value', 0.3)
-        self.alpha_disable_thresh = sm_config.get('alpha_disable_thresh', 0.1)
-        self.mpc_recovery_thresh = sm_config.get('mpc_recovery_thresh', 5)
+        # Alpha 恢复参数
+        self.alpha_recovery_thresh = sm_config['alpha_recovery_thresh']
+        self.alpha_recovery_value = sm_config['alpha_recovery_value']
+        self.alpha_disable_thresh = sm_config['alpha_disable_thresh']
+        
+        # MPC 恢复参数
+        self.mpc_recovery_thresh = sm_config['mpc_recovery_thresh']
         
         # MPC 失败检测参数
-        self.mpc_fail_window_size = sm_config.get('mpc_fail_window_size', 10)
-        self.mpc_fail_thresh = sm_config.get('mpc_fail_thresh', 3)
-        self.mpc_fail_ratio_thresh = sm_config.get('mpc_fail_ratio_thresh', 0.5)
+        self.mpc_fail_window_size = sm_config['mpc_fail_window_size']
+        self.mpc_fail_thresh = sm_config['mpc_fail_thresh']
+        self.mpc_fail_ratio_thresh = sm_config['mpc_fail_ratio_thresh']
         self._mpc_success_history: deque = deque(maxlen=self.mpc_fail_window_size)
         
         # MPC 恢复检测参数
-        self.mpc_recovery_history_min = sm_config.get('mpc_recovery_history_min', 3)
-        self.mpc_recovery_recent_count = sm_config.get('mpc_recovery_recent_count', 5)
-        self.mpc_recovery_tolerance = sm_config.get('mpc_recovery_tolerance', 1)  # 恢复容错次数
-        self.mpc_recovery_success_ratio = sm_config.get('mpc_recovery_success_ratio', 0.8)  # 恢复所需成功率
+        self.mpc_recovery_history_min = sm_config['mpc_recovery_history_min']
+        self.mpc_recovery_recent_count = sm_config['mpc_recovery_recent_count']
+        self.mpc_recovery_tolerance = sm_config['mpc_recovery_tolerance']
+        self.mpc_recovery_success_ratio = sm_config['mpc_recovery_success_ratio']
         
+        # 安全参数
         self.v_stop_thresh = safety_config.get('v_stop_thresh', 0.05)
         self.vz_stop_thresh = safety_config.get('vz_stop_thresh', 0.1)
         self.stopping_timeout = safety_config.get('stopping_timeout', 5.0)
         self._stopping_start_time: Optional[float] = None
         
         # 外部停止请求 - 使用 threading.Event 确保线程安全
-        # Event 比布尔标志更安全：
-        # 1. set()/clear()/is_set() 都是原子操作
-        # 2. 提供内存屏障，确保跨线程可见性
-        # 3. 可以用于等待（虽然这里不需要）
         self._stop_event = threading.Event()
         
-        # 状态持续时间监控
-        # 用于检测系统是否长时间处于降级状态
-        self._state_entry_time: Optional[float] = None
-        self._degraded_state_timeout = sm_config.get('degraded_state_timeout', 30.0)  # 秒
-        self._backup_state_timeout = sm_config.get('backup_state_timeout', 60.0)  # 秒
-        # 是否启用状态超时自动停止（默认关闭，仅告警）
-        self._enable_state_timeout_stop = sm_config.get('enable_state_timeout_stop', False)
+        # 状态持续时间监控参数
+        self._state_entry_time: Optional[float] = get_monotonic_time()  # 初始化时设置进入时间
+        self._degraded_state_timeout = sm_config['degraded_state_timeout']
+        self._backup_state_timeout = sm_config['backup_state_timeout']
+        self._enable_state_timeout_stop = sm_config['enable_state_timeout_stop']
+        
         # 状态超时回调（可选，用于外部告警系统）
         self._state_timeout_callback: Optional[Callable[[ControllerState, float], None]] = None
         # 已触发超时告警的状态（避免重复告警）
@@ -241,10 +240,11 @@ class StateMachine:
             return 0.0
         return get_monotonic_time() - self._state_entry_time
     
-    def _check_mpc_should_switch_to_backup(self, mpc_success: bool) -> bool:
-        """检查是否应该切换到备用控制器"""
-        self._mpc_success_history.append(mpc_success)
+    def _check_mpc_should_switch_to_backup(self) -> bool:
+        """检查是否应该切换到备用控制器
         
+        注意: MPC 成功历史已在 update() 中统一追加
+        """
         if len(self._mpc_success_history) < self.mpc_fail_window_size:
             consecutive_failures = 0
             for success in reversed(self._mpc_success_history):
@@ -309,7 +309,18 @@ class StateMachine:
         return absolute_condition and ratio_condition
     
     def update(self, diagnostics: DiagnosticsInput) -> ControllerState:
-        """更新状态机"""
+        """更新状态机
+        
+        MPC 历史管理说明:
+        - 在 update() 开头追加当前帧的 MPC 结果，确保每次只追加一次
+        - 状态处理器使用包含当前帧的历史做决策
+        - 状态转换时清空历史，新状态从干净的监控周期开始
+        - 这意味着当前帧的 MPC 结果参与了转换决策，但不会影响新状态的历史
+        """
+        # 统一追加 MPC 成功历史
+        # 这确保每次 update 只追加一次，避免重复
+        self._mpc_success_history.append(diagnostics.mpc_success)
+        
         # 外部停止请求 - 最高优先级
         # 使用 is_set() 检查并在处理后 clear()
         if self._stop_event.is_set():
@@ -354,7 +365,7 @@ class StateMachine:
         if diag.safety_failed:
             return ControllerState.MPC_DEGRADED
         
-        if self._check_mpc_should_switch_to_backup(diag.mpc_success):
+        if self._check_mpc_should_switch_to_backup():
             return ControllerState.BACKUP_ACTIVE
         
         if not diag.mpc_success:
@@ -417,9 +428,10 @@ class StateMachine:
         return None
     
     def _handle_backup_active(self, diag: DiagnosticsInput) -> Optional[ControllerState]:
-        """处理 BACKUP_ACTIVE 状态"""
-        self._mpc_success_history.append(diag.mpc_success)
+        """处理 BACKUP_ACTIVE 状态
         
+        注意: MPC 成功历史已在 update() 中统一追加
+        """
         can_try_recover = (
             diag.mpc_success and 
             not diag.tf2_critical and 
@@ -480,18 +492,21 @@ class StateMachine:
     
     def _should_degrade_mpc(self, diag: DiagnosticsInput) -> bool:
         """检查是否应该降级 MPC"""
-        if diag.mpc_health is not None and diag.mpc_health.warning:
+        if diag.mpc_health is not None and diag.mpc_health.degradation_warning:
             return True
         if diag.tf2_critical:
             return True
         return False
     
     def reset(self) -> None:
-        """重置状态机"""
+        """重置状态机
+        
+        重置后状态机进入 INIT 状态，并开始新的状态持续时间监控周期。
+        """
         self.state = ControllerState.INIT
         self._reset_all_counters()  # 已包含 MPC 历史清空
         self._stopping_start_time = None
         self._stop_event.clear()  # 清除停止请求
-        # 重置状态持续时间监控
-        self._state_entry_time = None
+        # 重置状态持续时间监控，设置进入时间以启用超时检查
+        self._state_entry_time = get_monotonic_time()
         self._timeout_warned_states.clear()

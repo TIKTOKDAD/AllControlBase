@@ -1,12 +1,18 @@
 """
 状态估计面板
+
+显示 EKF 状态估计器的健康状态和关键指标：
+- 位置/航向/速度估计
+- 滤波器健康（协方差范数、新息范数）
+- 打滑检测
+- IMU 状态和 Bias 估计
 """
 
-from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout
+from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout, QFrame
 from PyQt5.QtCore import Qt
 from ..widgets.progress_bar import ColorProgressBar
 from ..widgets.status_led import StatusLED
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 
 
 class EstimatorPanel(QGroupBox):
@@ -22,7 +28,7 @@ class EstimatorPanel(QGroupBox):
         
         # 位置估计
         pos_title = QLabel('位置估计')
-        pos_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        pos_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(pos_title)
         
         pos_grid = QGridLayout()
@@ -46,7 +52,7 @@ class EstimatorPanel(QGroupBox):
         
         # 航向估计
         heading_title = QLabel('航向估计')
-        heading_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        heading_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(heading_title)
         
         heading_grid = QGridLayout()
@@ -71,7 +77,7 @@ class EstimatorPanel(QGroupBox):
         
         # 速度估计
         vel_title = QLabel('速度估计 (世界坐标系)')
-        vel_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        vel_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(vel_title)
         
         vel_grid = QGridLayout()
@@ -99,23 +105,49 @@ class EstimatorPanel(QGroupBox):
         
         # 滤波器健康
         health_title = QLabel('滤波器健康')
-        health_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        health_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(health_title)
         
-        health_grid = QGridLayout()
-        health_grid.setSpacing(3)
-        
-        health_grid.addWidget(QLabel('协方差范数:'), 0, 0)
+        # 协方差范数 - 带进度条
+        cov_row = QVBoxLayout()
+        cov_row.setSpacing(2)
+        cov_label_row = QHBoxLayout()
+        cov_label_row.addWidget(QLabel('协方差范数:'))
         self.cov_label = QLabel('0.000')
-        health_grid.addWidget(self.cov_label, 0, 1)
+        cov_label_row.addWidget(self.cov_label)
+        cov_label_row.addStretch()
+        cov_row.addLayout(cov_label_row)
+        self.cov_progress = ColorProgressBar(show_text=False)
+        cov_row.addWidget(self.cov_progress)
+        layout.addLayout(cov_row)
         
-        health_grid.addWidget(QLabel('新息范数:'), 1, 0)
+        # 新息范数 - 带进度条
+        innov_row = QVBoxLayout()
+        innov_row.setSpacing(2)
+        innov_label_row = QHBoxLayout()
+        innov_label_row.addWidget(QLabel('新息范数:'))
         self.innov_label = QLabel('0.000')
-        health_grid.addWidget(self.innov_label, 1, 1)
+        innov_label_row.addWidget(self.innov_label)
+        innov_label_row.addStretch()
+        innov_row.addLayout(innov_label_row)
+        self.innov_progress = ColorProgressBar(show_text=False)
+        innov_row.addWidget(self.innov_progress)
+        layout.addLayout(innov_row)
         
-        layout.addLayout(health_grid)
+        # 滤波器状态指示
+        self.cov_warning_led = StatusLED('协方差状态')
+        layout.addWidget(self.cov_warning_led)
         
-        # 打滑概率
+        self.innov_warning_led = StatusLED('新息状态')
+        layout.addWidget(self.innov_warning_led)
+        
+        layout.addSpacing(5)
+        
+        # 打滑检测
+        slip_title = QLabel('打滑检测')
+        slip_title.setStyleSheet(PANEL_TITLE_STYLE)
+        layout.addWidget(slip_title)
+        
         slip_row = QHBoxLayout()
         slip_row.addWidget(QLabel('打滑概率:'))
         self.slip_label = QLabel('0.0%')
@@ -126,18 +158,27 @@ class EstimatorPanel(QGroupBox):
         self.slip_progress = ColorProgressBar(show_text=False)
         layout.addWidget(self.slip_progress)
         
+        self.high_slip_led = StatusLED('高打滑警告')
+        layout.addWidget(self.high_slip_led)
+        
+        layout.addSpacing(5)
+        
         # IMU 状态
-        self.imu_drift_led = StatusLED('IMU 漂移')
-        layout.addWidget(self.imu_drift_led)
+        imu_title = QLabel('IMU 状态')
+        imu_title.setStyleSheet(PANEL_TITLE_STYLE)
+        layout.addWidget(imu_title)
         
         self.imu_avail_led = StatusLED('IMU 可用')
         layout.addWidget(self.imu_avail_led)
+        
+        self.imu_drift_led = StatusLED('IMU 漂移')
+        layout.addWidget(self.imu_drift_led)
         
         layout.addSpacing(5)
         
         # IMU Bias 估计
         bias_title = QLabel('IMU Bias 估计')
-        bias_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        bias_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(bias_title)
         
         bias_grid = QGridLayout()
@@ -204,20 +245,48 @@ class EstimatorPanel(QGroupBox):
         self.vz_label.setText('0.00 m/s')
         self.omega_label.setText('0.00 rad/s')
 
-        # 滤波器健康
-        self.cov_label.setText(f'{est.covariance_norm:.4f}')
-        self.innov_label.setText(f'{est.innovation_norm:.4f}')
+        # 滤波器健康 - 协方差范数
+        cov_norm = est.covariance_norm
+        self.cov_label.setText(f'{cov_norm:.4f}')
+        # 协方差范数阈值：1.0 为警告阈值
+        self.cov_progress.set_value(cov_norm, 1.0, 1.0)
+        if est.covariance_warning:
+            self.cov_label.setStyleSheet(f'color: {COLORS["warning"]}; font-weight: bold;')
+            self.cov_warning_led.set_warning('⚠ 偏高')
+        else:
+            self.cov_label.setStyleSheet('')
+            self.cov_warning_led.set_status(True, '✓ 正常')
+        
+        # 滤波器健康 - 新息范数
+        innov_norm = est.innovation_norm
+        self.innov_label.setText(f'{innov_norm:.4f}')
+        # 新息范数阈值：0.5 为警告阈值
+        self.innov_progress.set_value(innov_norm, 0.5, 0.5)
+        if est.innovation_warning:
+            self.innov_label.setStyleSheet(f'color: {COLORS["warning"]}; font-weight: bold;')
+            self.innov_warning_led.set_warning('⚠ 偏高')
+        else:
+            self.innov_label.setStyleSheet('')
+            self.innov_warning_led.set_status(True, '✓ 正常')
 
         # 打滑概率
         slip = est.slip_probability * 100
         self.slip_label.setText(f'{slip:.1f}%')
         self.slip_progress.set_value(slip, 100)
+        
+        # 高打滑警告（打滑概率 > 30%）
+        if slip > 30:
+            self.slip_label.setStyleSheet(f'color: {COLORS["warning"]}; font-weight: bold;')
+            self.high_slip_led.set_warning('⚠ 高打滑')
+        else:
+            self.slip_label.setStyleSheet('')
+            self.high_slip_led.set_status(True, '✓ 正常')
 
         # IMU 状态
-        self.imu_drift_led.set_status(not est.imu_drift_detected, 
-                                       '○ 未检测' if not est.imu_drift_detected else '⚠ 检测到')
         self.imu_avail_led.set_status(est.imu_available, 
                                        '✓ 是' if est.imu_available else '✗ 否')
+        self.imu_drift_led.set_status(not est.imu_drift_detected, 
+                                       '○ 未检测' if not est.imu_drift_detected else '⚠ 检测到')
 
         # IMU Bias
         bias = est.imu_bias
@@ -258,17 +327,23 @@ class EstimatorPanel(QGroupBox):
         # 滤波器健康显示不可用
         self.cov_label.setText('无数据')
         self.cov_label.setStyleSheet(unavailable_style)
+        self.cov_progress.set_value(0, 1.0)
+        self.cov_warning_led.set_status(None, '无数据')
+        
         self.innov_label.setText('无数据')
         self.innov_label.setStyleSheet(unavailable_style)
+        self.innov_progress.set_value(0, 0.5)
+        self.innov_warning_led.set_status(None, '无数据')
         
         # 打滑概率显示不可用
         self.slip_label.setText('无数据')
         self.slip_label.setStyleSheet(unavailable_style)
         self.slip_progress.set_value(0, 100)
+        self.high_slip_led.set_status(None, '无数据')
         
         # IMU 状态显示不可用
-        self.imu_drift_led.set_status(None, '无数据')
         self.imu_avail_led.set_status(None, '无数据')
+        self.imu_drift_led.set_status(None, '无数据')
         
         # IMU Bias 显示不可用
         self.bias_ax_label.setText('无数据')

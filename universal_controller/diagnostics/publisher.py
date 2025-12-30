@@ -116,7 +116,9 @@ class DiagnosticsPublisher:
                 transform_status: Dict[str, Any],
                 tracking_error: Optional[Dict[str, float]],
                 transition_progress: float,
-                tf2_critical: bool) -> None:
+                tf2_critical: bool,
+                safety_check_passed: bool = True,
+                emergency_stop: bool = False) -> None:
         """
         发布诊断数据
         
@@ -132,11 +134,14 @@ class DiagnosticsPublisher:
             tracking_error: 跟踪误差
             transition_progress: 过渡进度
             tf2_critical: TF2 是否临界
+            safety_check_passed: 安全检查是否通过
+            emergency_stop: 是否处于紧急停止状态
         """
         diag = self._build_diagnostics(
             current_time, state, cmd, state_output, consistency,
             mpc_health, timeout_status, transform_status,
-            tracking_error, transition_progress, tf2_critical
+            tracking_error, transition_progress, tf2_critical,
+            safety_check_passed, emergency_stop
         )
         
         diag_dict = diag.to_ros_msg()
@@ -195,7 +200,9 @@ class DiagnosticsPublisher:
                           transform_status: Dict[str, Any],
                           tracking_error: Optional[Dict[str, float]],
                           transition_progress: float,
-                          tf2_critical: bool) -> DiagnosticsV2:
+                          tf2_critical: bool,
+                          safety_check_passed: bool = True,
+                          emergency_stop: bool = False) -> DiagnosticsV2:
         """构建 DiagnosticsV2 消息"""
         return DiagnosticsV2(
             header=Header(stamp=current_time, frame_id=''),
@@ -208,7 +215,7 @@ class DiagnosticsPublisher:
             mpc_health_kkt_residual=mpc_health.kkt_residual if mpc_health else 0.0,
             mpc_health_condition_number=mpc_health.condition_number if mpc_health else 1.0,
             mpc_health_consecutive_near_timeout=mpc_health.consecutive_near_timeout if mpc_health else 0,
-            mpc_health_degradation_warning=mpc_health.warning if mpc_health else False,
+            mpc_health_degradation_warning=mpc_health.degradation_warning if mpc_health else False,
             mpc_health_can_recover=mpc_health.can_recover if mpc_health else False,
             
             # 一致性指标
@@ -256,5 +263,9 @@ class DiagnosticsPublisher:
             cmd_frame_id=cmd.frame_id if cmd else '',
             
             # 过渡进度
-            transition_progress=transition_progress
+            transition_progress=transition_progress,
+            
+            # 安全状态
+            safety_check_passed=safety_check_passed,
+            emergency_stop=emergency_stop
         )

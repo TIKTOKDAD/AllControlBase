@@ -170,7 +170,8 @@ class DashboardWindow(QMainWindow):
         self.status_freq_label = QLabel('[0.0 Hz]')
         self.status_freq_label.setStyleSheet('color: #4CAF50; font-weight: bold;')
         layout.addWidget(self.status_freq_label)
-        self.version_label = QLabel('v3.17.12')
+        # 版本号从 DisplayData 获取，初始显示空字符串
+        self.version_label = QLabel('')
         self.version_label.setStyleSheet('color: #606060;')
         layout.addWidget(self.version_label)
         return bar

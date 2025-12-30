@@ -205,13 +205,14 @@ class TrajectoryAdapter(IMsgConverter):
                             f"Velocity points ({num_vel_points}) < position points ({num_points}), "
                             f"padding with decaying velocity (magnitude={last_vel_magnitude:.2f} m/s)"
                         )
-                        # 线性衰减到零：最后一个填充点速度为 0
+                        # 线性衰减到零：确保速度连续性
+                        # 使用 (padding_count - i) / (padding_count + 1) 公式:
+                        # - i=0: decay = padding_count / (padding_count + 1) ≈ 1 (接近原速度)
+                        # - i=padding_count-1: decay = 1 / (padding_count + 1) (接近零但不为零)
+                        # 这确保了从 last_vel 到填充点的平滑过渡
                         padding = np.zeros((padding_count, VELOCITY_DIMENSION))
                         for i in range(padding_count):
-                            # decay_factor: 从接近1衰减到0
-                            # i=0 -> (padding_count-1)/padding_count
-                            # i=padding_count-1 -> 0
-                            decay_factor = (padding_count - 1 - i) / padding_count
+                            decay_factor = (padding_count - i) / (padding_count + 1)
                             padding[i, :] = last_vel * decay_factor
                     else:
                         # 速度很小，直接使用零填充

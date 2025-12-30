@@ -292,15 +292,16 @@ class ControllerNodeBase(LifecycleMixin, ABC):
             return
         
         # 创建 TF2 注入管理器
+        # tf 配置：ROS TF2 特有参数（buffer 预热、重试等）
+        # transform 配置：坐标变换配置（坐标系名称等）
         tf_config = self._params.get('tf', {})
-        # 将控制频率传入 TF 配置，用于向后兼容 retry_interval_cycles
-        tf_config_with_freq = tf_config.copy()
-        tf_config_with_freq['ctrl_freq'] = self._params.get('system', {}).get('ctrl_freq', 50)
+        transform_config = self._params.get('transform', {})
         
         self._tf2_injection_manager = TF2InjectionManager(
             tf_bridge=self._tf_bridge,
             controller_manager=self._controller_bridge.manager,
-            config=tf_config_with_freq,
+            config=tf_config,
+            transform_config=transform_config,
             log_info=self._log_info,
             log_warn=self._log_warn,
         )

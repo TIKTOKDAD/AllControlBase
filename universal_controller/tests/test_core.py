@@ -175,7 +175,8 @@ def test_get_config_value():
     assert get_config_value(config, 'mpc.horizon') == 30
     
     # 测试使用 fallback_config 获取默认值
-    assert get_config_value(config, 'mpc.dt', fallback_config=DEFAULT_CONFIG) == 0.02
+    # mpc.dt 默认值为 0.1，与 trajectory.default_dt_sec 一致
+    assert get_config_value(config, 'mpc.dt', fallback_config=DEFAULT_CONFIG) == 0.1
     
     # 测试不存在的路径
     assert get_config_value(config, 'nonexistent.path', 'default') == 'default'

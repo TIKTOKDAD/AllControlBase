@@ -1,11 +1,15 @@
 """
 降级状态面板
+
+显示：
+- 7级状态机
+- 恢复计数器
 """
 
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel
 from PyQt5.QtCore import Qt
 from ..widgets.state_indicator import StateMachineIndicator
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 
 
 class DegradationPanel(QGroupBox):
@@ -28,7 +32,7 @@ class DegradationPanel(QGroupBox):
         
         # 恢复计数器标题
         counter_title = QLabel('恢复计数器')
-        counter_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        counter_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(counter_title)
         
         # Alpha 恢复计数

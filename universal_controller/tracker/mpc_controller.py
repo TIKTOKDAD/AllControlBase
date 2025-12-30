@@ -94,13 +94,17 @@ class MPCController(ITrajectoryTracker):
             self.R_alpha = MIN_WEIGHT
         
         # Fallback 求解器参数
+        # MPC 特有参数从 mpc.fallback 读取
         fallback_config = mpc_config.get('fallback', {})
         self.fallback_lookahead_steps = fallback_config.get('lookahead_steps', 3)
         self.fallback_heading_kp = fallback_config.get('heading_kp', 1.5)
-        self.fallback_max_curvature = fallback_config.get('max_curvature', 5.0)
-        self.fallback_min_distance_thresh = fallback_config.get('min_distance_thresh', 0.1)
-        self.min_turn_speed = fallback_config.get('min_turn_speed', 0.1)
-        self.default_speed_ratio = fallback_config.get('default_speed_ratio', 0.5)
+        
+        # 共享参数从 backup 配置读取，确保与 Pure Pursuit 备份控制器一致
+        backup_config = config.get('backup', {})
+        self.fallback_max_curvature = backup_config.get('max_curvature', 5.0)
+        self.fallback_min_distance_thresh = backup_config.get('min_distance_thresh', 0.1)
+        self.min_turn_speed = backup_config.get('min_turn_speed', 0.1)
+        self.default_speed_ratio = backup_config.get('default_speed_ratio', 0.5)
         
         # ACADOS 求解器参数
         solver_config = mpc_config.get('solver', {})
@@ -123,6 +127,7 @@ class MPCController(ITrajectoryTracker):
         self._last_kkt_residual = 0.0
         self._last_condition_number = 1.0
         self._last_cmd: Optional[ControlOutput] = None
+        self._last_predicted_next_state: Optional[np.ndarray] = None  # 预测的下一步状态
         
         # 速度平滑器
         az_max = constraints.get('az_max', 1.0)
@@ -407,6 +412,9 @@ class MPCController(ITrajectoryTracker):
         u_opt = self._solver.get(0, 'u')
         x_next = self._solver.get(1, 'x')
         
+        # 保存预测的下一步状态，用于计算预测误差
+        self._last_predicted_next_state = x_next.copy()
+        
         if self.is_omni or self.is_3d:
             vx = x_next[3]
             vy = x_next[4]
@@ -626,6 +634,7 @@ class MPCController(ITrajectoryTracker):
         self._last_kkt_residual = 0.0
         self._last_condition_number = 1.0
         self._last_cmd = result
+        self._last_predicted_next_state = None  # fallback 求解器不提供预测状态
         
         return result
     
@@ -754,12 +763,23 @@ class MPCController(ITrajectoryTracker):
             'acados_available': self._is_initialized
         }
     
+    def get_predicted_next_state(self) -> Optional[np.ndarray]:
+        """
+        获取 MPC 预测的下一步状态
+        
+        Returns:
+            Optional[np.ndarray]: 预测的下一步状态向量 [8]，
+                                  如果 MPC 未成功求解则返回 None
+        """
+        return self._last_predicted_next_state
+    
     def reset(self) -> None:
         """重置控制器内部状态（不释放求解器资源）"""
         self._last_cmd = None
         self._last_solve_time_ms = 0.0
         self._last_kkt_residual = 0.0
         self._last_condition_number = 1.0
+        self._last_predicted_next_state = None
         # 注意：不重置 _solver 和 _is_initialized，保留求解器资源
     
     def shutdown(self) -> None:

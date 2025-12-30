@@ -65,9 +65,8 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         # 配置参数
         self.fallback_duration_limit = transform_config.get('fallback_duration_limit_ms', 500) / 1000.0
         self.fallback_critical_limit = transform_config.get('fallback_critical_limit_ms', 1000) / 1000.0
-        # 支持两种键名: timeout_ms (新) 和 tf2_timeout_ms (旧，向后兼容)
-        self.tf2_timeout = transform_config.get('timeout_ms', 
-                           transform_config.get('tf2_timeout_ms', 10)) / 1000.0
+        # TF2 查询超时 (统一使用 timeout_ms)
+        self.tf2_timeout = transform_config.get('timeout_ms', 10) / 1000.0
         self.drift_estimation_enabled = transform_config.get('drift_estimation_enabled', True)
         self.recovery_correction_enabled = transform_config.get('recovery_correction_enabled', True)
         self.drift_rate = transform_config.get('drift_rate', 0.01)
@@ -426,11 +425,24 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             
             if self.state_estimator is not None:
                 state = self.state_estimator.get_state()
-                self._fallback_start_estimator_position = state.state[:3].copy()
-                self._fallback_start_estimator_theta = state.state[6]
-                if self._last_tf2_position is not None:
-                    self._fallback_start_tf2_position = self._last_tf2_position.copy()
-                    self._fallback_start_tf2_yaw = self._last_tf2_yaw
+                initial_position = state.state[:3]
+                initial_theta = state.state[6]
+                
+                # 验证初始数据有效性
+                if np.all(np.isfinite(initial_position)) and np.isfinite(initial_theta):
+                    self._fallback_start_estimator_position = initial_position.copy()
+                    self._fallback_start_estimator_theta = initial_theta
+                    if self._last_tf2_position is not None:
+                        self._fallback_start_tf2_position = self._last_tf2_position.copy()
+                        self._fallback_start_tf2_yaw = self._last_tf2_yaw
+                else:
+                    logger.warning(
+                        "State estimator returned invalid initial data for TF2 fallback: "
+                        f"position={initial_position}, theta={initial_theta}. "
+                        "Fallback estimation will be disabled."
+                    )
+                    self._fallback_start_estimator_position = None
+                    self._fallback_start_estimator_theta = 0.0
         
         fallback_duration = current_time - self.fallback_start_time
         
@@ -454,10 +466,14 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             effective_drift_rate = self.drift_rate
             if self.state_estimator is not None:
                 state = self.state_estimator.get_state()
-                velocity = np.linalg.norm(state.state[3:6])
-                # 漂移率 = 基础漂移率 * (1 + 速度 * 速度因子)
-                # 速度因子默认 0.1，即每 1 m/s 增加 10% 的漂移率
-                effective_drift_rate = self.drift_rate * (1.0 + velocity * self.drift_velocity_factor)
+                velocity_vec = state.state[3:6]
+                # 验证速度数据有效性
+                if np.all(np.isfinite(velocity_vec)):
+                    velocity = np.linalg.norm(velocity_vec)
+                    # 漂移率 = 基础漂移率 * (1 + 速度 * 速度因子)
+                    # 速度因子默认 0.1，即每 1 m/s 增加 10% 的漂移率
+                    effective_drift_rate = self.drift_rate * (1.0 + velocity * self.drift_velocity_factor)
+                # 如果速度无效，使用基础漂移率
             
             # 累积漂移，但不超过上限
             # 超过上限后停止累积，并标记漂移估计为不可靠
@@ -508,6 +524,17 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             state = self.state_estimator.get_state()
             current_estimator_position = state.state[:3]
             current_estimator_theta = state.state[6]
+            
+            # 验证状态估计器数据有效性
+            # 如果数据包含 NaN 或 Inf，无法进行有效的变换估计
+            if not (np.all(np.isfinite(current_estimator_position)) and 
+                    np.isfinite(current_estimator_theta)):
+                logger.warning(
+                    "State estimator returned invalid data during TF2 fallback: "
+                    f"position={current_estimator_position}, theta={current_estimator_theta}. "
+                    "Returning original trajectory."
+                )
+                return traj, status
             
             # 计算相对位移（在状态估计器的坐标系下，通常是 odom）
             delta_position = current_estimator_position - self._fallback_start_estimator_position

@@ -330,9 +330,18 @@ class SafetyDecision:
 
 @dataclass
 class MPCHealthStatus:
-    """MPC 健康状态"""
+    """MPC 健康状态
+    
+    字段说明:
+    - healthy: 整体健康状态（无警告且求解时间正常）
+    - degradation_warning: 是否有降级警告（连续超时、条件数过高或 KKT 残差过大）
+    - can_recover: 是否可以从降级状态恢复
+    - consecutive_near_timeout: 连续接近超时的次数
+    - kkt_residual: KKT 残差（求解精度指标）
+    - condition_number: 条件数（数值稳定性指标）
+    """
     healthy: bool
-    warning: bool
+    degradation_warning: bool  # 统一命名，原 warning
     can_recover: bool
     consecutive_near_timeout: int
     kkt_residual: float
@@ -392,11 +401,11 @@ class DiagnosticsV2:
     estimator_imu_bias: np.ndarray
     estimator_imu_available: bool
     
-    # 跟踪误差
-    tracking_lateral_error: float
-    tracking_longitudinal_error: float
-    tracking_heading_error: float
-    tracking_prediction_error: float
+    # 跟踪误差 (所有误差均为绝对值，用于诊断和质量评估)
+    tracking_lateral_error: float      # 横向误差绝对值 (m)
+    tracking_longitudinal_error: float # 纵向误差绝对值 (m)
+    tracking_heading_error: float      # 航向误差绝对值 (rad)
+    tracking_prediction_error: float   # 预测误差 (m)，NaN 表示无数据
     
     # 坐标变换状态
     transform_tf2_available: bool
@@ -423,6 +432,10 @@ class DiagnosticsV2:
     
     # 过渡进度
     transition_progress: float
+    
+    # 安全状态
+    safety_check_passed: bool = True
+    emergency_stop: bool = False
     
     def to_ros_msg(self) -> Dict[str, Any]:
         """转换为 ROS 消息格式的字典"""
@@ -483,7 +496,9 @@ class DiagnosticsV2:
                 'omega': self.cmd_omega,
                 'frame_id': self.cmd_frame_id
             },
-            'transition_progress': self.transition_progress
+            'transition_progress': self.transition_progress,
+            'safety_check_passed': self.safety_check_passed,
+            'emergency_stop': self.emergency_stop
         }
 
 

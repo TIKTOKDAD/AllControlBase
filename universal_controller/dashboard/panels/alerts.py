@@ -188,3 +188,61 @@ class AlertsPanel(QGroupBox):
             self.add_alert('warning', f'α_soft 降至 {alpha:.2f}，低于阈值 0.1，禁用 Soft Head')
         elif alpha >= 0.1 and last_alpha < 0.1:
             self.add_alert('success', f'α_soft 恢复至 {alpha:.2f}，重新启用 Soft Head')
+
+        # 新增：EKF 新息范数警告
+        est = data.estimator
+        last_est = last_data.estimator
+        
+        if est.innovation_warning and not last_est.innovation_warning:
+            self.add_alert('warning', f'EKF 新息范数偏高 ({est.innovation_norm:.3f})，可能存在测量异常')
+        elif not est.innovation_warning and last_est.innovation_warning:
+            self.add_alert('success', 'EKF 新息范数恢复正常')
+        
+        # 新增：协方差范数警告
+        if est.covariance_warning and not last_est.covariance_warning:
+            self.add_alert('warning', f'EKF 协方差范数偏高 ({est.covariance_norm:.3f})，估计不确定性增加')
+        elif not est.covariance_warning and last_est.covariance_warning:
+            self.add_alert('success', 'EKF 协方差范数恢复正常')
+        
+        # 新增：高打滑率警告
+        slip = est.slip_probability * 100
+        last_slip = last_est.slip_probability * 100
+        
+        if slip > 30 and last_slip <= 30:
+            self.add_alert('warning', f'检测到高打滑概率 ({slip:.1f}%)，轮式里程计可能不可靠')
+        elif slip <= 30 and last_slip > 30:
+            self.add_alert('success', '打滑概率恢复正常')
+        
+        # 新增：IMU 漂移检测
+        if est.imu_drift_detected and not last_est.imu_drift_detected:
+            self.add_alert('warning', 'IMU 漂移检测触发，航向估计可能受影响')
+        elif not est.imu_drift_detected and last_est.imu_drift_detected:
+            self.add_alert('success', 'IMU 漂移已校正')
+        
+        # 新增：MPC dt 不匹配警告
+        mpc = data.mpc_health
+        last_mpc = last_data.mpc_health
+        
+        if mpc.dt_mismatch and not last_mpc.dt_mismatch:
+            self.add_alert('warning', f'MPC dt ({mpc.mpc_dt*1000:.0f}ms) 与控制周期 ({mpc.control_period*1000:.0f}ms) 不匹配')
+        
+        # 新增：MPC 降级警告
+        if mpc.degradation_warning and not last_mpc.degradation_warning:
+            self.add_alert('warning', 'MPC 性能下降，可能触发降级')
+        elif not mpc.degradation_warning and last_mpc.degradation_warning:
+            self.add_alert('success', 'MPC 性能恢复正常')
+        
+        # 新增：安全检查失败
+        safety = data.safety
+        last_safety = last_data.safety
+        
+        if not safety.safety_check_passed and last_safety.safety_check_passed:
+            self.add_alert('error', '安全检查失败，控制命令可能被限制')
+        elif safety.safety_check_passed and not last_safety.safety_check_passed:
+            self.add_alert('success', '安全检查恢复通过')
+        
+        # 新增：紧急停止
+        if safety.emergency_stop and not last_safety.emergency_stop:
+            self.add_alert('error', '紧急停止触发！')
+        elif not safety.emergency_stop and last_safety.emergency_stop:
+            self.add_alert('success', '紧急停止解除')

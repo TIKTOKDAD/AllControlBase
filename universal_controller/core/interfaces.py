@@ -195,6 +195,23 @@ class ITrajectoryTracker(ILifecycleComponent):
             bool: True 表示成功更新，False 表示被节流或无需更新
         """
         pass
+    
+    def get_predicted_next_state(self) -> Optional[np.ndarray]:
+        """
+        获取预测的下一步状态
+        
+        用于计算预测误差，比较上一次预测与当前实际状态的差异。
+        
+        Returns:
+            Optional[np.ndarray]: 预测的下一步状态向量 [8]，
+                                  如果无法获取则返回 None
+        
+        Note:
+            - 默认实现返回 None，表示不支持预测状态获取
+            - MPC 控制器应覆盖此方法返回求解器预测的下一步状态
+            - 备份控制器（如 Pure Pursuit）通常返回 None
+        """
+        return None
 
 
 class IConsistencyChecker(ILifecycleComponent):

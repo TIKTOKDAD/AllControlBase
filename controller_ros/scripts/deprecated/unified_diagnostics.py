@@ -119,6 +119,14 @@ except ImportError:
     ENHANCED_DIAGNOSTICS_AVAILABLE = False
     print("警告: enhanced_diagnostics 模块不可用，部分高级诊断功能将被禁用")
 
+# 配置加载器模块
+try:
+    from config_loader import ConfigLoader, DiagnosticsThresholdsFromConfig, load_config_for_diagnostics
+    CONFIG_LOADER_AVAILABLE = True
+except ImportError:
+    CONFIG_LOADER_AVAILABLE = False
+    print("警告: config_loader 模块不可用，将使用硬编码默认阈值")
+
 
 # 自定义消息
 try:
@@ -254,6 +262,9 @@ class DiagnosticsThresholds:
     - 跟踪误差: system_config.py -> TRACKING_CONFIG
     - 状态机: safety_config.py -> SAFETY_CONFIG['state_machine']
     - 状态估计: 基于工程经验的合理默认值
+    
+    注意: 这是默认阈值类，当无法加载配置文件时使用。
+    推荐使用 DiagnosticsThresholdsFromConfig (来自 config_loader.py) 从配置文件加载阈值。
     """
     
     # 警告阈值与错误阈值的比例 (警告 = 错误 * WARN_RATIO)
@@ -330,6 +341,31 @@ class DiagnosticsThresholds:
     MAX_ANGULAR_ACCEL_JITTER = 15.0      # 角加速度抖动阈值 (rad/s²)
 
 
+def get_thresholds_from_config(config_file: str = None):
+    """
+    从配置文件获取诊断阈值
+    
+    Args:
+        config_file: 配置文件路径（如 'turtlebot1.yaml'）
+                    如果为 None，返回默认的 DiagnosticsThresholds 类
+    
+    Returns:
+        DiagnosticsThresholdsFromConfig 实例（如果配置文件可用）
+        或 DiagnosticsThresholds 类（作为 fallback）
+    """
+    if config_file and CONFIG_LOADER_AVAILABLE:
+        try:
+            loader, thresholds = load_config_for_diagnostics(config_file)
+            if thresholds:
+                return thresholds
+        except Exception as e:
+            print(f"警告: 加载配置文件 {config_file} 失败: {e}")
+            print("      将使用默认阈值")
+    
+    # Fallback: 返回默认阈值类
+    return DiagnosticsThresholds()
+
+
 # ============================================================================
 # 工具函数
 # ============================================================================
@@ -382,9 +418,37 @@ def safe_print(text: str):
             # 移除ANSI颜色代码
             text_no_color = re.sub(r'\033\[[0-9;]+m', '', text)
             print(text_no_color.encode(sys.stdout.encoding, errors='replace').decode(sys.stdout.encoding))
-        except:
+        except Exception:
             # 最后的fallback：只打印ASCII字符
             print(text.encode('ascii', errors='replace').decode('ascii'))
+
+
+def convert_numpy_types(obj):
+    """
+    递归转换字典/列表中的 numpy 类型为 Python 原生类型
+    
+    这是为了确保 YAML 序列化时不会产生 !!python/object 标签
+    
+    Args:
+        obj: 要转换的对象（字典、列表或标量）
+    
+    Returns:
+        转换后的对象，所有 numpy 类型都被转换为 Python 原生类型
+    """
+    if isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.integer, np.int32, np.int64)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    else:
+        return obj
 
 
 # ============================================================================
@@ -703,6 +767,8 @@ class OdometryAnalyzer(TopicMonitor):
         self.accelerations = deque(maxlen=500)
         self.last_vel = None
         self.last_time = None
+        # 加速度计算的最小时间间隔，避免噪声放大
+        self.min_dt_for_accel = 0.01  # 10ms
         
     def _callback(self, msg):
         super()._callback(msg)
@@ -716,7 +782,8 @@ class OdometryAnalyzer(TopicMonitor):
             
             if self.last_vel is not None and self.last_time is not None:
                 dt = now - self.last_time
-                if dt > 0.001:
+                # 使用更大的最小时间间隔，避免噪声放大导致异常高的加速度
+                if dt > self.min_dt_for_accel:
                     ax = (vx - self.last_vel[0]) / dt
                     ay = (vy - self.last_vel[1]) / dt
                     alpha = (wz - self.last_vel[2]) / dt
@@ -739,9 +806,11 @@ class OdometryAnalyzer(TopicMonitor):
             }
             if len(self.accelerations) > 10:
                 accels = np.array([(a[1], a[2], a[3]) for a in self.accelerations])
-                stats['max_ax'] = float(np.max(np.abs(accels[:, 0])))
-                stats['max_ay'] = float(np.max(np.abs(accels[:, 1])))
-                stats['max_alpha'] = float(np.max(np.abs(accels[:, 2])))
+                # 使用 95 百分位数而不是最大值，减少噪声影响
+                # 这样可以过滤掉由于时间戳抖动导致的异常高加速度值
+                stats['max_ax'] = float(np.percentile(np.abs(accels[:, 0]), 95))
+                stats['max_ay'] = float(np.percentile(np.abs(accels[:, 1]), 95))
+                stats['max_alpha'] = float(np.percentile(np.abs(accels[:, 2]), 95))
                 stats['avg_ax'] = float(np.mean(np.abs(accels[:, 0])))
             return stats
 
@@ -815,7 +884,7 @@ class TrajectoryMonitor(TopicMonitor):
                 curvatures = compute_menger_curvature(points)
                 if curvatures:
                     self.traj_info['max_curvature'] = max(curvatures)
-        except:
+        except Exception:
             pass
     
     def get_trajectory_stats(self) -> Dict[str, Any]:
@@ -1022,12 +1091,33 @@ class ChassisTestRunner:
         if stats and 'max_ax' in stats:
             max_ax = max(max_ax, stats['max_ax'])
         
+        # 应用合理的加速度上限，避免测量噪声导致异常高的值
+        # 大多数差速车的实际加速度不会超过 3.0 m/s²
+        MAX_REASONABLE_ACCEL = 3.0
+        if max_ax > MAX_REASONABLE_ACCEL:
+            self._log(f"    {Colors.YELLOW}[WARN]{Colors.NC} 测量加速度 {max_ax:.2f} m/s² 异常高，限制为 {MAX_REASONABLE_ACCEL} m/s²")
+            max_ax = MAX_REASONABLE_ACCEL
+        
         self.results['max_acceleration'] = max_ax
         return max_ax
     
     def test_angular_velocity(self, target_w: float = 1.0, duration: float = 2.0) -> float:
-        """测试最大角速度"""
+        """
+        测试最大角速度
+        
+        Args:
+            target_w: 目标角速度 (rad/s)
+            duration: 测试持续时间 (秒)
+        
+        Returns:
+            测试到的最大角速度 (rad/s)
+        """
         self._log(f"  测试角速度 (目标: {target_w} rad/s)...")
+        
+        # 先停止机器人
+        self.cmd_pub.publish(Twist())
+        time.sleep(0.5)
+        
         # 清空历史数据，只统计本次测试（线程安全）
         with self.odom.lock:
             self.odom.velocities.clear()
@@ -1037,14 +1127,26 @@ class ChassisTestRunner:
         cmd.angular.z = target_w
         start = time.time()
         max_w = 0
+        sample_count = 0
+        
         while time.time() - start < duration:
             self.cmd_pub.publish(cmd)
             stats = self.odom.get_chassis_stats()
             if stats:
                 max_w = max(max_w, stats['max_wz'])
+                sample_count += 1
             time.sleep(0.05)
+        
         self.cmd_pub.publish(Twist())
         time.sleep(0.5)
+        
+        # 验证测试结果
+        MIN_EXPECTED_RATIO = 0.1  # 至少达到目标的 10%
+        if max_w < target_w * MIN_EXPECTED_RATIO:
+            self._log(f"    {Colors.YELLOW}[警告]{Colors.NC} 角速度测试结果异常低 ({max_w:.3f} rad/s < {target_w * MIN_EXPECTED_RATIO:.3f} rad/s)")
+            self._log(f"    {Colors.YELLOW}[提示]{Colors.NC} 可能原因: 底盘未响应旋转命令、里程计未正确报告角速度")
+            self._log(f"    {Colors.YELLOW}[提示]{Colors.NC} 收集了 {sample_count} 个样本")
+        
         self.results['max_angular_velocity'] = max_w
         return max_w
     
@@ -1088,6 +1190,7 @@ class UnifiedDiagnostics:
     - 单一类处理所有诊断模式，避免代码重复
     - 内部模块化：话题监控、实时诊断、配置生成
     - 通过 mode 参数控制执行流程
+    - 支持从配置文件加载阈值（推荐使用 --config 参数）
     
     配置生成覆盖 (15个配置模块，与 universal_controller/config/default_config.py 对应):
     核心模块:
@@ -1123,15 +1226,33 @@ class UnifiedDiagnostics:
         self.args = args
         self.mode = args.mode
         
-        # 话题配置
-        self.topics = {
-            'odom': args.odom_topic,
-            'imu': args.imu_topic,
-            'trajectory': args.traj_topic,
-            'cmd_vel': args.cmd_vel_topic,
-            'cmd_unified': args.cmd_topic,
-            'diagnostics': args.diag_topic,
-        }
+        # 加载配置文件中的阈值（如果指定了 --config）
+        config_file = getattr(args, 'config', None)
+        self.thresholds = get_thresholds_from_config(config_file)
+        self.config_file = config_file
+        
+        # 如果成功加载了配置文件，从配置中获取话题
+        if config_file and CONFIG_LOADER_AVAILABLE and hasattr(self.thresholds, 'get_topics'):
+            config_topics = self.thresholds.get_topics()
+            # 话题配置：优先使用命令行参数，其次使用配置文件
+            self.topics = {
+                'odom': args.odom_topic if args.odom_topic != '/odom' else config_topics.get('odom', '/odom'),
+                'imu': args.imu_topic if args.imu_topic != '/imu' else config_topics.get('imu', '/imu'),
+                'trajectory': args.traj_topic if args.traj_topic != '/nn/local_trajectory' else config_topics.get('trajectory', '/nn/local_trajectory'),
+                'cmd_vel': args.cmd_vel_topic if args.cmd_vel_topic != '/mobile_base/commands/velocity' else config_topics.get('cmd_vel', '/mobile_base/commands/velocity'),
+                'cmd_unified': args.cmd_topic if args.cmd_topic != '/cmd_unified' else config_topics.get('cmd_unified', '/cmd_unified'),
+                'diagnostics': args.diag_topic if args.diag_topic != '/controller/diagnostics' else config_topics.get('diagnostics', '/controller/diagnostics'),
+            }
+        else:
+            # 话题配置（使用命令行参数）
+            self.topics = {
+                'odom': args.odom_topic,
+                'imu': args.imu_topic,
+                'trajectory': args.traj_topic,
+                'cmd_vel': args.cmd_vel_topic,
+                'cmd_unified': args.cmd_topic,
+                'diagnostics': args.diag_topic,
+            }
         
         # 监控器
         self.monitors = {}
@@ -1142,8 +1263,11 @@ class UnifiedDiagnostics:
         self.results = {}
         self.recommended = {}
         
-        # 配置参数 - 从命令行或默认值
-        self.low_speed_thresh = getattr(args, 'low_speed_thresh', self.DEFAULT_LOW_SPEED_THRESH)
+        # 配置参数 - 优先使用配置文件中的值
+        if hasattr(self.thresholds, 'LOW_SPEED_THRESH'):
+            self.low_speed_thresh = self.thresholds.LOW_SPEED_THRESH
+        else:
+            self.low_speed_thresh = getattr(args, 'low_speed_thresh', self.DEFAULT_LOW_SPEED_THRESH)
         
         # 实时诊断状态
         self.last_traj: Optional[TrajectoryAnalysis] = None
@@ -1247,7 +1371,7 @@ class UnifiedDiagnostics:
                                    trans.transform.translation.z)
                 result.yaw = quaternion_to_yaw(trans.transform.rotation)
                 return result
-        except:
+        except Exception:
             pass
         return None
     
@@ -1459,12 +1583,14 @@ class UnifiedDiagnostics:
         # 降级状态警告（含持续时间检查）
         if ControllerState.is_degraded(state):
             self._log(f"  ⚠️ 系统处于降级状态!")
-            # 检查降级状态持续时间 - 使用 DiagnosticsThresholds 统一管理
+            # 检查降级状态持续时间 - 使用配置中的阈值
             if self._state_start_time is not None:
                 duration = time.time() - self._state_start_time
-                if duration > DiagnosticsThresholds.DEGRADED_STATE_TIMEOUT:
-                    self._log(f"  🔴 降级状态持续过长 ({format_duration(duration)} > {DiagnosticsThresholds.DEGRADED_STATE_TIMEOUT:.0f}s)!")
-                elif duration > DiagnosticsThresholds.DEGRADED_STATE_WARN:
+                degraded_timeout = getattr(self.thresholds, 'DEGRADED_STATE_TIMEOUT', 30.0)
+                degraded_warn = getattr(self.thresholds, 'DEGRADED_STATE_WARN', 10.0)
+                if duration > degraded_timeout:
+                    self._log(f"  🔴 降级状态持续过长 ({format_duration(duration)} > {degraded_timeout:.0f}s)!")
+                elif duration > degraded_warn:
                     self._log(f"  ⚠️ 降级状态已持续 {format_duration(duration)}")
         if ControllerState.is_stopped(state):
             self._log(f"  ⚠️ 系统已停止或正在停止")
@@ -1477,14 +1603,21 @@ class UnifiedDiagnostics:
         # MPC 健康监控器已经根据配置的阈值计算了 degradation_warning
         if d['degradation_warning']:
             self._log("  ⚠️ MPC降级警告 (求解时间/KKT残差/条件数超过配置阈值)")
-        # 仅在极端情况下额外警告（使用 DiagnosticsThresholds 统一管理）
-        if d['solve_time_ms'] > DiagnosticsThresholds.MPC_SOLVE_TIME_EXTREME_MS:
-            self._log(f"  🔴 求解时间过长 ({d['solve_time_ms']:.1f}ms > {DiagnosticsThresholds.MPC_SOLVE_TIME_EXTREME_MS}ms)")
-        if d['kkt_residual'] > DiagnosticsThresholds.MPC_KKT_RESIDUAL_THRESH:
-            self._log(f"  ⚠️ KKT残差较高 ({d['kkt_residual']:.6f} > {DiagnosticsThresholds.MPC_KKT_RESIDUAL_THRESH})")
-        if d['condition_number'] > DiagnosticsThresholds.MPC_CONDITION_NUMBER_THRESH:
-            self._log(f"  🔴 条件数过高 ({d['condition_number']:.2e} > {DiagnosticsThresholds.MPC_CONDITION_NUMBER_THRESH:.0e})，数值不稳定!")
-        if d['consecutive_near_timeout'] > DiagnosticsThresholds.MPC_CONSECUTIVE_TIMEOUT_WARN:
+        
+        # 使用配置中的阈值进行额外警告
+        mpc_extreme_ms = getattr(self.thresholds, 'MPC_SOLVE_TIME_EXTREME_MS', 
+                                 getattr(self.thresholds, 'MPC_SOLVE_TIME_CRITICAL_MS', 40) * 1.5)
+        mpc_kkt_thresh = getattr(self.thresholds, 'MPC_KKT_RESIDUAL_THRESH', 1e-3)
+        mpc_cond_thresh = getattr(self.thresholds, 'MPC_CONDITION_NUMBER_THRESH', 1e8)
+        mpc_timeout_warn = getattr(self.thresholds, 'MPC_CONSECUTIVE_TIMEOUT_WARN', 10)
+        
+        if d['solve_time_ms'] > mpc_extreme_ms:
+            self._log(f"  🔴 求解时间过长 ({d['solve_time_ms']:.1f}ms > {mpc_extreme_ms:.0f}ms)")
+        if d['kkt_residual'] > mpc_kkt_thresh:
+            self._log(f"  ⚠️ KKT残差较高 ({d['kkt_residual']:.6f} > {mpc_kkt_thresh})")
+        if d['condition_number'] > mpc_cond_thresh:
+            self._log(f"  🔴 条件数过高 ({d['condition_number']:.2e} > {mpc_cond_thresh:.0e})，数值不稳定!")
+        if d['consecutive_near_timeout'] > mpc_timeout_warn:
             self._log(f"  ⚠️ 连续接近超时 {d['consecutive_near_timeout']} 次")
         if not d['mpc_success']:
             self._log("  🔴 MPC求解失败，使用备用控制器")
@@ -1501,16 +1634,22 @@ class UnifiedDiagnostics:
         self._log(f"  Alpha (soft权重): {d['alpha']:.3f}")
         self._log(f"  曲率一致性: {d['curvature_consistency']:.3f}  |  速度方向一致性: {d['velocity_dir_consistency']:.3f}")
         self._log(f"  时序平滑度: {d['temporal_smooth']:.3f}  |  数据有效: {d['consistency_data_valid']}")
-        # 使用 DiagnosticsThresholds 统一管理阈值
-        if d['alpha'] < DiagnosticsThresholds.ALPHA_CRITICAL:
+        
+        # 使用配置中的阈值
+        alpha_critical = getattr(self.thresholds, 'ALPHA_CRITICAL', 0.3)
+        alpha_warn = getattr(self.thresholds, 'ALPHA_WARN', 0.5)
+        consistency_low = getattr(self.thresholds, 'CONSISTENCY_LOW_THRESH', 0.5)
+        temporal_low = getattr(self.thresholds, 'TEMPORAL_SMOOTH_LOW', 0.3)
+        
+        if d['alpha'] < alpha_critical:
             self._log(f"  🔴 Alpha过低({d['alpha']:.2f})，soft velocity几乎不生效!")
-        elif d['alpha'] < DiagnosticsThresholds.ALPHA_WARN:
+        elif d['alpha'] < alpha_warn:
             self._log(f"  ⚠️ Alpha较低({d['alpha']:.2f})，soft velocity权重小")
-        if d['curvature_consistency'] < DiagnosticsThresholds.CONSISTENCY_LOW_THRESH:
+        if d['curvature_consistency'] < consistency_low:
             self._log(f"  ⚠️ 曲率一致性低 ({d['curvature_consistency']:.2f})")
-        if d['velocity_dir_consistency'] < DiagnosticsThresholds.CONSISTENCY_LOW_THRESH:
+        if d['velocity_dir_consistency'] < consistency_low:
             self._log(f"  ⚠️ 速度方向一致性低 ({d['velocity_dir_consistency']:.2f})")
-        if d['temporal_smooth'] < DiagnosticsThresholds.TEMPORAL_SMOOTH_LOW:
+        if d['temporal_smooth'] < temporal_low:
             self._log(f"  ⚠️ 时序平滑度低 ({d['temporal_smooth']:.2f})，轨迹抖动")
         if not d['consistency_data_valid']:
             self._log("  🔴 一致性数据无效 (可能包含NaN/Inf)")
@@ -1526,12 +1665,17 @@ class UnifiedDiagnostics:
         self._log(f"  打滑概率: {d['slip_probability']:.2%}  |  IMU可用: {d['imu_available']}  |  IMU漂移: {d['imu_drift_detected']}")
         if d['imu_bias'] and any(abs(b) > 0.001 for b in d['imu_bias']):
             self._log(f"  IMU偏置: [{d['imu_bias'][0]:.4f}, {d['imu_bias'][1]:.4f}, {d['imu_bias'][2]:.4f}]")
-        # 使用 DiagnosticsThresholds 统一管理阈值
-        if d['covariance_norm'] > DiagnosticsThresholds.COVARIANCE_NORM_CRITICAL:
+        
+        # 使用配置中的阈值
+        cov_critical = getattr(self.thresholds, 'COVARIANCE_NORM_CRITICAL', 1.0)
+        innov_warn = getattr(self.thresholds, 'INNOVATION_NORM_WARN', 0.5)
+        slip_warn = getattr(self.thresholds, 'SLIP_PROBABILITY_WARN', 0.3)
+        
+        if d['covariance_norm'] > cov_critical:
             self._log(f"  🔴 协方差范数过高 ({d['covariance_norm']:.2f})，估计不确定性大!")
-        if d['innovation_norm'] > DiagnosticsThresholds.INNOVATION_NORM_WARN:
+        if d['innovation_norm'] > innov_warn:
             self._log(f"  ⚠️ 新息范数较高 ({d['innovation_norm']:.2f})，测量与预测偏差大")
-        if d['slip_probability'] > DiagnosticsThresholds.SLIP_PROBABILITY_WARN:
+        if d['slip_probability'] > slip_warn:
             self._log(f"  🔴 打滑概率高 ({d['slip_probability']:.0%})，可能打滑!")
         if d['imu_drift_detected']:
             self._log("  ⚠️ 检测到IMU漂移")
@@ -1548,25 +1692,33 @@ class UnifiedDiagnostics:
         self._log(f"  横向误差: {d['tracking_lateral_error']:.3f}m  |  纵向误差: {d['tracking_longitudinal_error']:.3f}m")
         self._log(f"  航向误差: {np.degrees(d['tracking_heading_error']):.1f}°  |  预测误差: {d['tracking_prediction_error']:.3f}m")
         
-        # 使用 DiagnosticsThresholds 统一管理阈值
-        # 警告阈值 = 错误阈值 * WARN_RATIO，保持一致的比例关系
-        if abs(d['tracking_lateral_error']) > DiagnosticsThresholds.TRACKING_LATERAL_THRESH:
-            self._log(f"  🔴 横向误差过大 ({d['tracking_lateral_error']:.2f}m > {DiagnosticsThresholds.TRACKING_LATERAL_THRESH}m)")
-        elif abs(d['tracking_lateral_error']) > DiagnosticsThresholds.TRACKING_LATERAL_WARN:
-            self._log(f"  ⚠️ 横向误差较大 ({d['tracking_lateral_error']:.2f}m > {DiagnosticsThresholds.TRACKING_LATERAL_WARN:.2f}m)")
-        if abs(d['tracking_longitudinal_error']) > DiagnosticsThresholds.TRACKING_LONGITUDINAL_THRESH:
-            self._log(f"  🔴 纵向误差过大 ({d['tracking_longitudinal_error']:.2f}m > {DiagnosticsThresholds.TRACKING_LONGITUDINAL_THRESH}m)")
-        elif abs(d['tracking_longitudinal_error']) > DiagnosticsThresholds.TRACKING_LONGITUDINAL_WARN:
-            self._log(f"  ⚠️ 纵向误差较大 ({d['tracking_longitudinal_error']:.2f}m > {DiagnosticsThresholds.TRACKING_LONGITUDINAL_WARN:.2f}m)")
+        # 使用配置中的阈值
+        lat_thresh = getattr(self.thresholds, 'TRACKING_LATERAL_THRESH', 0.3)
+        lat_warn = getattr(self.thresholds, 'TRACKING_LATERAL_WARN', lat_thresh * 0.67)
+        long_thresh = getattr(self.thresholds, 'TRACKING_LONGITUDINAL_THRESH', 0.5)
+        long_warn = getattr(self.thresholds, 'TRACKING_LONGITUDINAL_WARN', long_thresh * 0.67)
+        head_thresh = getattr(self.thresholds, 'TRACKING_HEADING_THRESH', 0.5)
+        head_warn = getattr(self.thresholds, 'TRACKING_HEADING_WARN_RAD', head_thresh * 0.67)
+        pred_thresh = getattr(self.thresholds, 'TRACKING_PREDICTION_THRESH', 0.5)
+        
+        if abs(d['tracking_lateral_error']) > lat_thresh:
+            self._log(f"  🔴 横向误差过大 ({d['tracking_lateral_error']:.2f}m > {lat_thresh}m)")
+        elif abs(d['tracking_lateral_error']) > lat_warn:
+            self._log(f"  ⚠️ 横向误差较大 ({d['tracking_lateral_error']:.2f}m > {lat_warn:.2f}m)")
+        if abs(d['tracking_longitudinal_error']) > long_thresh:
+            self._log(f"  🔴 纵向误差过大 ({d['tracking_longitudinal_error']:.2f}m > {long_thresh}m)")
+        elif abs(d['tracking_longitudinal_error']) > long_warn:
+            self._log(f"  ⚠️ 纵向误差较大 ({d['tracking_longitudinal_error']:.2f}m > {long_warn:.2f}m)")
+        
         # 航向误差使用弧度比较，显示时转换为度
-        heading_warn_deg = np.degrees(DiagnosticsThresholds.TRACKING_HEADING_WARN_RAD)
-        heading_error_deg = np.degrees(DiagnosticsThresholds.TRACKING_HEADING_THRESH)
-        if abs(d['tracking_heading_error']) > DiagnosticsThresholds.TRACKING_HEADING_THRESH:
+        heading_warn_deg = np.degrees(head_warn)
+        heading_error_deg = np.degrees(head_thresh)
+        if abs(d['tracking_heading_error']) > head_thresh:
             self._log(f"  🔴 航向误差过大 ({np.degrees(d['tracking_heading_error']):.1f}° > {heading_error_deg:.1f}°)")
-        elif abs(d['tracking_heading_error']) > DiagnosticsThresholds.TRACKING_HEADING_WARN_RAD:
+        elif abs(d['tracking_heading_error']) > head_warn:
             self._log(f"  ⚠️ 航向误差较大 ({np.degrees(d['tracking_heading_error']):.1f}° > {heading_warn_deg:.1f}°)")
-        if d['tracking_prediction_error'] > DiagnosticsThresholds.TRACKING_PREDICTION_THRESH:
-            self._log(f"  ⚠️ 预测误差较大 ({d['tracking_prediction_error']:.2f}m > {DiagnosticsThresholds.TRACKING_PREDICTION_THRESH}m)")
+        if d['tracking_prediction_error'] > pred_thresh:
+            self._log(f"  ⚠️ 预测误差较大 ({d['tracking_prediction_error']:.2f}m > {pred_thresh}m)")
     
     def _print_timeout_section(self):
         """【7. 超时状态】"""
@@ -1578,15 +1730,19 @@ class UnifiedDiagnostics:
         self._log(f"  里程计: 超时={d['timeout_odom']}  年龄={d['last_odom_age_ms']:.1f}ms")
         self._log(f"  轨迹: 超时={d['timeout_traj']}  宽限期超={d['timeout_traj_grace_exceeded']}  年龄={d['last_traj_age_ms']:.1f}ms")
         self._log(f"  IMU: 超时={d['timeout_imu']}  年龄={d['last_imu_age_ms']:.1f}ms  |  启动宽限期: {d['in_startup_grace']}")
-        # 使用 DiagnosticsThresholds 统一管理阈值
+        
+        # 使用配置中的阈值
+        odom_warn = getattr(self.thresholds, 'ODOM_AGE_WARN_MS', 100.0)
+        traj_warn = getattr(self.thresholds, 'TRAJ_AGE_WARN_MS', 200.0)
+        
         if d['timeout_odom']:
             self._log("  🔴 里程计超时!")
-        elif d['last_odom_age_ms'] > DiagnosticsThresholds.ODOM_AGE_WARN_MS:
-            self._log(f"  ⚠️ 里程计数据较旧 ({d['last_odom_age_ms']:.0f}ms > {DiagnosticsThresholds.ODOM_AGE_WARN_MS:.0f}ms)")
+        elif d['last_odom_age_ms'] > odom_warn:
+            self._log(f"  ⚠️ 里程计数据较旧 ({d['last_odom_age_ms']:.0f}ms > {odom_warn:.0f}ms)")
         if d['timeout_traj']:
             self._log("  🔴 轨迹超时!")
-        elif d['last_traj_age_ms'] > DiagnosticsThresholds.TRAJ_AGE_WARN_MS:
-            self._log(f"  ⚠️ 轨迹数据较旧 ({d['last_traj_age_ms']:.0f}ms > {DiagnosticsThresholds.TRAJ_AGE_WARN_MS:.0f}ms)")
+        elif d['last_traj_age_ms'] > traj_warn:
+            self._log(f"  ⚠️ 轨迹数据较旧 ({d['last_traj_age_ms']:.0f}ms > {traj_warn:.0f}ms)")
         if d['timeout_traj_grace_exceeded']:
             self._log("  🔴 轨迹超时宽限期已过!")
         if d['timeout_imu'] and d['imu_available']:
@@ -1624,17 +1780,22 @@ class UnifiedDiagnostics:
         d = self.last_diag
         self._log(f"  TF2可用: {d['tf2_available']}  |  已注入: {d['tf2_injected']}")
         self._log(f"  降级持续时间: {d['fallback_duration_ms']:.1f}ms  |  累积漂移: {d['accumulated_drift']:.4f}m")
-        # 使用 DiagnosticsThresholds 统一管理阈值
+        
+        # 使用配置中的阈值
+        tf_warn = getattr(self.thresholds, 'TF2_FALLBACK_WARN_MS', 100.0)
+        tf_critical = getattr(self.thresholds, 'TF2_FALLBACK_CRITICAL_MS', 500.0)
+        drift_warn = getattr(self.thresholds, 'ACCUMULATED_DRIFT_WARN', 0.1)
+        
         if not d['tf2_available']:
             self._log("  🔴 TF2不可用，使用fallback模式!")
         if not d['tf2_injected']:
             self._log("  ⚠️ TF2未注入到控制器")
-        if d['fallback_duration_ms'] > DiagnosticsThresholds.TF2_FALLBACK_CRITICAL_MS:
-            self._log(f"  🔴 TF2降级时间过长 ({d['fallback_duration_ms']:.0f}ms > {DiagnosticsThresholds.TF2_FALLBACK_CRITICAL_MS:.0f}ms)")
-        elif d['fallback_duration_ms'] > DiagnosticsThresholds.TF2_FALLBACK_WARN_MS:
-            self._log(f"  ⚠️ TF2降级中 ({d['fallback_duration_ms']:.0f}ms > {DiagnosticsThresholds.TF2_FALLBACK_WARN_MS:.0f}ms)")
-        if d['accumulated_drift'] > DiagnosticsThresholds.ACCUMULATED_DRIFT_WARN:
-            self._log(f"  ⚠️ 累积漂移较大 ({d['accumulated_drift']:.3f}m > {DiagnosticsThresholds.ACCUMULATED_DRIFT_WARN}m)")
+        if d['fallback_duration_ms'] > tf_critical:
+            self._log(f"  🔴 TF2降级时间过长 ({d['fallback_duration_ms']:.0f}ms > {tf_critical:.0f}ms)")
+        elif d['fallback_duration_ms'] > tf_warn:
+            self._log(f"  ⚠️ TF2降级中 ({d['fallback_duration_ms']:.0f}ms > {tf_warn:.0f}ms)")
+        if d['accumulated_drift'] > drift_warn:
+            self._log(f"  ⚠️ 累积漂移较大 ({d['accumulated_drift']:.3f}m > {drift_warn}m)")
         # 检查轨迹坐标系
         if self.last_traj:
             frame = self.last_traj.frame_id
@@ -1662,29 +1823,39 @@ class UnifiedDiagnostics:
                 if max_omega < 0.1:
                     issues.append(f"🔴 核心问题: 轨迹转向{self.last_traj.total_turn_deg:.1f}°但输出omega最大仅{max_omega:.4f}rad/s")
         
-        # 诊断问题 - 使用 DiagnosticsThresholds 统一管理阈值
+        # 获取配置中的阈值
+        mpc_cond_thresh = getattr(self.thresholds, 'MPC_CONDITION_NUMBER_THRESH', 1e8)
+        cov_critical = getattr(self.thresholds, 'COVARIANCE_NORM_CRITICAL', 1.0)
+        slip_critical = getattr(self.thresholds, 'SLIP_PROBABILITY_CRITICAL', 0.5)
+        lat_thresh = getattr(self.thresholds, 'TRACKING_LATERAL_THRESH', 0.3)
+        tf_critical = getattr(self.thresholds, 'TF2_FALLBACK_CRITICAL_MS', 500.0)
+        alpha_critical = getattr(self.thresholds, 'ALPHA_CRITICAL', 0.3)
+        mpc_critical_ms = getattr(self.thresholds, 'MPC_SOLVE_TIME_CRITICAL_MS', 15.0)
+        mpc_timeout_warn = getattr(self.thresholds, 'MPC_CONSECUTIVE_TIMEOUT_WARN', 10)
+        
+        # 诊断问题
         if self.last_diag:
             d = self.last_diag
             if d['emergency_stop']: issues.append("🔴 紧急停止已触发!")
             if not d['mpc_success'] and d['backup_active']: issues.append("🔴 MPC求解失败，备用控制器激活")
-            if d['condition_number'] > DiagnosticsThresholds.MPC_CONDITION_NUMBER_THRESH: 
+            if d['condition_number'] > mpc_cond_thresh: 
                 issues.append(f"🔴 MPC条件数过高 ({d['condition_number']:.2e})")
             if d['timeout_odom']: issues.append("🔴 里程计超时!")
             if d['timeout_traj_grace_exceeded']: issues.append("🔴 轨迹超时宽限期已过!")
-            if d['covariance_norm'] > DiagnosticsThresholds.COVARIANCE_NORM_CRITICAL: 
+            if d['covariance_norm'] > cov_critical: 
                 issues.append(f"🔴 状态估计不确定性过高 (协方差范数={d['covariance_norm']:.2f})")
-            if d['slip_probability'] > DiagnosticsThresholds.SLIP_PROBABILITY_CRITICAL: 
+            if d['slip_probability'] > slip_critical: 
                 issues.append(f"🔴 高打滑概率 ({d['slip_probability']:.0%})")
             # 横向误差使用更严格的阈值（1.5倍配置阈值）作为严重问题判断
-            if abs(d['tracking_lateral_error']) > DiagnosticsThresholds.TRACKING_LATERAL_THRESH * 1.5: 
+            if abs(d['tracking_lateral_error']) > lat_thresh * 1.5: 
                 issues.append(f"🔴 横向跟踪误差过大 ({d['tracking_lateral_error']:.2f}m)")
-            if not d['tf2_available'] and d['fallback_duration_ms'] > DiagnosticsThresholds.TF2_FALLBACK_CRITICAL_MS * 2: 
+            if not d['tf2_available'] and d['fallback_duration_ms'] > tf_critical * 2: 
                 issues.append(f"🔴 TF2长时间不可用")
-            if d['alpha'] < DiagnosticsThresholds.ALPHA_CRITICAL: 
+            if d['alpha'] < alpha_critical: 
                 warnings.append(f"⚠️ Alpha过低({d['alpha']:.2f})，soft velocity几乎不生效")
-            if d['solve_time_ms'] > DiagnosticsThresholds.MPC_SOLVE_TIME_CRITICAL_MS: 
+            if d['solve_time_ms'] > mpc_critical_ms: 
                 warnings.append(f"⚠️ MPC求解时间较长 ({d['solve_time_ms']:.1f}ms)")
-            if d['consecutive_near_timeout'] > DiagnosticsThresholds.MPC_CONSECUTIVE_TIMEOUT_WARN: 
+            if d['consecutive_near_timeout'] > mpc_timeout_warn: 
                 warnings.append(f"⚠️ 连续接近超时 {d['consecutive_near_timeout']} 次")
             if d['imu_drift_detected']: warnings.append("⚠️ 检测到IMU漂移")
             if d['consecutive_errors'] > 0: warnings.append(f"⚠️ 连续错误 {d['consecutive_errors']} 次")
@@ -1702,8 +1873,8 @@ class UnifiedDiagnostics:
         suggestions = []
         all_issues = issues + warnings
         if any('低速' in str(i) or 'wz' in str(i) or 'omega' in str(i) for i in all_issues):
-            suggestions.append("检查轨迹速度是否过低 (< 0.1 m/s)")
-            suggestions.append("尝试降低 trajectory.low_speed_thresh 配置 (如改为0.01)")
+            suggestions.append(f"检查轨迹速度是否过低 (< {self.low_speed_thresh} m/s)")
+            suggestions.append(f"尝试降低 trajectory.low_speed_thresh 配置 (当前: {self.low_speed_thresh})")
             suggestions.append("检查轨迹消息中 velocities_flat 是否包含有效的wz数据")
         if any('MPC' in str(i) or '条件数' in str(i) for i in all_issues):
             suggestions.append("检查 MPC 权重配置是否合理")
@@ -1996,7 +2167,7 @@ class UnifiedDiagnostics:
             self._log(f"         请确认控制器正在运行并发布诊断消息")
     
     def _calculate_recommendations(self):
-        """阶段4: 计算完整推荐配置（14个配置模块）"""
+        """阶段4: 计算完整推荐配置（与 turtlebot1.yaml 格式完全一致）"""
         self._log(f"\n{Colors.BLUE}{'─'*70}")
         self._log(f"  阶段4/6: 计算推荐配置")
         self._log(f"{'─'*70}{Colors.NC}")
@@ -2060,15 +2231,30 @@ class UnifiedDiagnostics:
         safety_margin = 0.8
         
         # 验证底盘参数的合理性
-        if max_v <= 0:
-            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未检测到有效速度数据，使用默认值 0.5 m/s")
+        # 注意：使用合理的最小阈值，而不是简单的 <= 0 检查
+        # 因为测试失败时可能返回很小的噪声值（如 0.01）
+        MIN_VALID_VELOCITY = 0.1      # 最小有效速度 (m/s)
+        MIN_VALID_ACCEL = 0.1         # 最小有效加速度 (m/s²)
+        MIN_VALID_OMEGA = 0.1         # 最小有效角速度 (rad/s)
+        
+        if max_v < MIN_VALID_VELOCITY:
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未检测到有效速度数据 ({max_v:.3f} m/s < {MIN_VALID_VELOCITY})，使用默认值 0.5 m/s")
             max_v = 0.5
-        if max_a <= 0:
-            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未检测到有效加速度数据，使用默认值 0.5 m/s^2")
+        if max_a < MIN_VALID_ACCEL:
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未检测到有效加速度数据 ({max_a:.3f} m/s² < {MIN_VALID_ACCEL})，使用默认值 0.5 m/s²")
             max_a = 0.5
-        if max_w <= 0:
-            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未检测到有效角速度数据，使用默认值 1.0 rad/s")
+        if max_w < MIN_VALID_OMEGA:
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 未检测到有效角速度数据 ({max_w:.3f} rad/s < {MIN_VALID_OMEGA})，使用默认值 1.0 rad/s")
+            self._log(f"  {Colors.YELLOW}[提示]{Colors.NC} 角速度测试可能失败，请检查底盘是否正常响应旋转命令")
             max_w = 1.0
+        
+        # 额外检查：加速度异常高可能是测量误差
+        # 与底盘测试中的 MAX_REASONABLE_ACCEL 保持一致
+        MAX_REASONABLE_ACCEL = 3.0  # 大多数差速车加速度不会超过 3 m/s²
+        if max_a > MAX_REASONABLE_ACCEL:
+            self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 检测到异常高的加速度 ({max_a:.2f} m/s²)，可能是测量误差")
+            self._log(f"  {Colors.YELLOW}[提示]{Colors.NC} 使用保守值 {MAX_REASONABLE_ACCEL} m/s²")
+            max_a = MAX_REASONABLE_ACCEL
         
         # 轨迹参数
         num_points = traj_info.get('num_points', 8)
@@ -2194,15 +2380,19 @@ class UnifiedDiagnostics:
             'state_machine': {
                 'alpha_disable_thresh': 0.1 if traj_info.get('has_velocities') else 0.0,
                 'alpha_recovery_value': 0.3 if traj_info.get('has_velocities') else 0.0,
-                'alpha_recovery_thresh': 5,
+                'alpha_recovery_thresh': 5 if traj_info.get('has_velocities') else 1,
                 'mpc_recovery_thresh': 5,
                 'mpc_fail_window_size': 10,
                 'mpc_fail_thresh': 3,
                 'mpc_fail_ratio_thresh': 0.5,
                 'mpc_recovery_history_min': 3,
                 'mpc_recovery_recent_count': 5,
-                'mpc_recovery_tolerance': 0,
+                'mpc_recovery_tolerance': 1,  # 与 turtlebot1.yaml 一致
                 'mpc_recovery_success_ratio': 0.8,
+                # turtlebot1.yaml 中的额外参数
+                'degraded_state_timeout': 30.0,
+                'backup_state_timeout': 60.0,
+                'enable_state_timeout_stop': False,
             },
         }
         
@@ -2213,9 +2403,12 @@ class UnifiedDiagnostics:
             'imu_motion_compensation': imu_rate > 0,
             'theta_covariance_fallback_thresh': 0.5,
             
-            # 自适应参数 - 根据底盘特性调整
+            # 自适应参数
+            # 注意: base_slip_thresh 是打滑检测的加速度差异阈值 (IMU vs odom)
+            # 它不应该基于底盘最大加速度，而应该使用固定的合理值
+            # 正常情况下 IMU 和 odom 的加速度差异不应超过 2.0 m/s²
             'adaptive': {
-                'base_slip_thresh': max(2.0, max_a * 1.5) if max_a > 0 else 2.0,  # 基于最大加速度
+                'base_slip_thresh': 2.0,  # 固定值，不随底盘特性变化
                 'slip_velocity_factor': 0.5,
                 'slip_covariance_scale': 10.0,
                 'stationary_covariance_scale': 0.1,
@@ -2272,9 +2465,9 @@ class UnifiedDiagnostics:
             'max_curvature': 10.0,
             'temporal_window_size': 10,
             'weights': {
-                'kappa': 1.0,      # 与 universal_controller 默认值一致
-                'velocity': 1.5,   # 与 universal_controller 默认值一致
-                'temporal': 0.8,   # 与 universal_controller 默认值一致
+                'kappa': 0.3,      # 与 turtlebot1.yaml 一致
+                'velocity': 0.3,   # 与 turtlebot1.yaml 一致
+                'temporal': 0.4,   # 与 turtlebot1.yaml 一致
             },
         }
         
@@ -2297,13 +2490,42 @@ class UnifiedDiagnostics:
             'low_speed_transition_factor': 0.5,
             'curvature_speed_limit_thresh': 0.1,
             'min_distance_thresh': 0.1,
-            'omega_rate_limit': None,
+            # turtlebot1.yaml 中的额外参数
+            'rear_angle_thresh': 2.827,           # 正后方检测阈值 (rad, ~162°)
+            'rear_direction_min_thresh': 0.05,    # 正后方转向判断最小阈值 (m)
+            'default_turn_direction': 'left',     # 正后方默认转向方向
         }
         
-        # ===== 9. Transform =====
-        self.recommended['transform'] = {
+        # ===== 9. Transition =====
+        self.recommended['transition'] = {
+            'type': 'exponential',
+            'tau': round(1.0 / ctrl_freq * 2, 3),
+            'max_duration': 0.5,
+            'completion_threshold': 0.95,
+            'duration': 0.2,
+        }
+        
+        # 提前计算 source_frame，供 tf 和 transform 配置使用
+        source_frame = traj_info.get('frame_id', 'base_link') or 'base_link'
+        
+        # ===== 10. TF (ROS TF2 特有参数) =====
+        # 注意: source_frame 和 target_frame 与 transform 配置保持一致
+        self.recommended['tf'] = {
+            'source_frame': source_frame,
             'target_frame': 'odom',
-            'source_frame': traj_info.get('frame_id', 'base_link') or 'base_link',
+            'timeout_ms': max(50, int(odom_latency * 2 + 20)),
+            'buffer_warmup_timeout_sec': 5.0,
+            'buffer_warmup_interval_sec': 0.2,
+            # expected_source_frames 不应包含 target_frame (odom)
+            'expected_source_frames': ['base_link', 'base_footprint', ''],
+        }
+        
+        # ===== 11. Transform (坐标变换配置) =====
+        # expected_source_frames 不应包含 target_frame (odom)
+        # 只包含可能作为轨迹坐标系的 frame
+        self.recommended['transform'] = {
+            'source_frame': source_frame,
+            'target_frame': 'odom',
             'timeout_ms': max(50, int(odom_latency * 2 + 20)),
             'fallback_duration_limit_ms': 500,
             'fallback_critical_limit_ms': 1000,
@@ -2313,27 +2535,9 @@ class UnifiedDiagnostics:
             'drift_velocity_factor': 0.1,
             'max_drift_dt': 0.5,
             'drift_correction_thresh': 0.01,
-            'expected_source_frames': ['base_link', 'base_footprint', 'base_link_0', '', 'odom'],
+            # 注意: 不包含 'odom'，因为 odom 是 target_frame
+            'expected_source_frames': ['base_link', 'base_footprint', 'base_link_0', ''],
             'warn_unexpected_frame': True,
-        }
-        
-        # ===== 10. Transition =====
-        self.recommended['transition'] = {
-            'type': 'exponential',
-            'tau': round(1.0 / ctrl_freq * 2, 3),
-            'max_duration': 0.5,
-            'completion_threshold': 0.95,
-            'duration': 0.2,
-        }
-        
-        # ===== 11. TF =====
-        self.recommended['tf'] = {
-            'source_frame': traj_info.get('frame_id', 'base_link') or 'base_link',
-            'target_frame': 'odom',
-            'timeout_ms': max(50, int(odom_latency * 2 + 20)),
-            'buffer_warmup_timeout_sec': 5.0,
-            'buffer_warmup_interval_sec': 0.2,
-            'expected_source_frames': ['base_link', 'base_footprint', ''],
         }
         
         # ===== 12. Tracking =====
@@ -2461,6 +2665,14 @@ class UnifiedDiagnostics:
         lateral_error_max = controller.get('lateral_error_max', 0)
         heading_error_avg = controller.get('heading_error_avg', 0)
         
+        # 获取配置中的阈值
+        lat_error_high = getattr(self.thresholds, 'TUNING_LATERAL_ERROR_HIGH', 0.15)
+        lat_error_med = getattr(self.thresholds, 'TUNING_LATERAL_ERROR_MED', 0.10)
+        head_error_high = getattr(self.thresholds, 'TUNING_HEADING_ERROR_HIGH', 0.3)
+        head_error_med = getattr(self.thresholds, 'TUNING_HEADING_ERROR_MED', 0.2)
+        max_accel_jitter = getattr(self.thresholds, 'MAX_ACCEL_JITTER', 8.0)
+        max_angular_jitter = getattr(self.thresholds, 'MAX_ANGULAR_ACCEL_JITTER', 15.0)
+        
         # 获取增强诊断结果
         enhanced = self.results.get('enhanced_diagnostics', {})
         mpc_analysis = enhanced.get('mpc_weights', {})
@@ -2469,33 +2681,33 @@ class UnifiedDiagnostics:
             metrics = mpc_analysis.get('metrics', {})
             suggestions = mpc_analysis.get('suggestions', [])
             
-            # 根据建议调整权重 - 使用 DiagnosticsThresholds 统一管理
+            # 根据建议调整权重
             for sug in suggestions:
                 if sug.get('priority') in ['critical', 'high']:
                     param = sug.get('parameter', '')
                     
                     if 'position' in param:
                         # 横向误差大，增加 position 权重
-                        if lateral_error_avg > DiagnosticsThresholds.TUNING_LATERAL_ERROR_HIGH:
+                        if lateral_error_avg > lat_error_high:
                             self.recommended['mpc']['weights']['position'] = 15.0
                             self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 横向误差较大 ({lateral_error_avg:.3f}m)，"
                                      f"增加 position 权重到 15.0")
-                        elif lateral_error_avg > DiagnosticsThresholds.TUNING_LATERAL_ERROR_MED:
+                        elif lateral_error_avg > lat_error_med:
                             self.recommended['mpc']['weights']['position'] = 12.0
                     
                     elif 'heading' in param:
                         # 航向误差大，增加 heading 权重
-                        if heading_error_avg > DiagnosticsThresholds.TUNING_HEADING_ERROR_HIGH:
+                        if heading_error_avg > head_error_high:
                             self.recommended['mpc']['weights']['heading'] = 8.0
                             self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 航向误差较大 ({np.degrees(heading_error_avg):.1f}°)，"
                                      f"增加 heading 权重到 8.0")
-                        elif heading_error_avg > DiagnosticsThresholds.TUNING_HEADING_ERROR_MED:
+                        elif heading_error_avg > head_error_med:
                             self.recommended['mpc']['weights']['heading'] = 6.0
                     
                     elif 'control_accel' in param:
                         # 加速度抖动大，增加 control_accel 权重
                         max_accel = metrics.get('max_accel', 0)
-                        if max_accel > DiagnosticsThresholds.MAX_ACCEL_JITTER:
+                        if max_accel > max_accel_jitter:
                             self.recommended['mpc']['weights']['control_accel'] = 0.5
                             self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 加速度抖动大 ({max_accel:.2f} m/s²)，"
                                      f"增加 control_accel 权重到 0.5")
@@ -2503,18 +2715,18 @@ class UnifiedDiagnostics:
                     elif 'control_alpha' in param:
                         # 角加速度抖动大，增加 control_alpha 权重
                         max_angular_accel = metrics.get('max_angular_accel', 0)
-                        if max_angular_accel > DiagnosticsThresholds.MAX_ANGULAR_ACCEL_JITTER:
+                        if max_angular_accel > max_angular_jitter:
                             self.recommended['mpc']['weights']['control_alpha'] = 0.5
                             self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 角加速度抖动大 ({max_angular_accel:.2f} rad/s²)，"
                                      f"增加 control_alpha 权重到 0.5")
         
         # 即使没有增强诊断，也根据基本指标调整
-        elif lateral_error_avg > DiagnosticsThresholds.TUNING_LATERAL_ERROR_HIGH:
+        elif lateral_error_avg > lat_error_high:
             self.recommended['mpc']['weights']['position'] = 15.0
             self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 横向误差较大 ({lateral_error_avg:.3f}m)，"
                      f"增加 position 权重到 15.0")
         
-        if heading_error_avg > DiagnosticsThresholds.TUNING_HEADING_ERROR_HIGH:
+        if heading_error_avg > head_error_high:
             self.recommended['mpc']['weights']['heading'] = 8.0
             self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 航向误差较大 ({np.degrees(heading_error_avg):.1f}°)，"
                      f"增加 heading 权重到 8.0")
@@ -2532,6 +2744,11 @@ class UnifiedDiagnostics:
         alpha_avg = controller.get('alpha_avg', 1.0)
         alpha_min = controller.get('alpha_min', 1.0)
         
+        # 获取配置中的阈值
+        rejection_high = getattr(self.thresholds, 'CONSISTENCY_REJECTION_HIGH', 0.1)
+        rejection_med = getattr(self.thresholds, 'CONSISTENCY_REJECTION_MED', 0.05)
+        alpha_very_low = getattr(self.thresholds, 'ALPHA_VERY_LOW', 0.2)
+        
         # 获取增强诊断结果
         enhanced = self.results.get('enhanced_diagnostics', {})
         consistency_analysis = enhanced.get('consistency_check', {})
@@ -2540,18 +2757,18 @@ class UnifiedDiagnostics:
             metrics = consistency_analysis.get('metrics', {})
             rejection_rate = metrics.get('rejection_rate', 0)
             
-            # 如果拒绝率过高，放宽阈值 - 使用 DiagnosticsThresholds 统一管理
-            if rejection_rate > DiagnosticsThresholds.CONSISTENCY_REJECTION_HIGH:
+            # 如果拒绝率过高，放宽阈值
+            if rejection_rate > rejection_high:
                 self.recommended['consistency']['kappa_thresh'] = 0.7
                 self.recommended['consistency']['v_dir_thresh'] = 0.9
                 self._log(f"  {Colors.YELLOW}[调优]{Colors.NC} 一致性拒绝率过高 ({rejection_rate*100:.1f}%)，"
                          f"放宽阈值 (kappa: 0.7, v_dir: 0.9)")
-            elif rejection_rate > DiagnosticsThresholds.CONSISTENCY_REJECTION_MED:
+            elif rejection_rate > rejection_med:
                 self.recommended['consistency']['kappa_thresh'] = 0.6
                 self.recommended['consistency']['v_dir_thresh'] = 0.85
         
-        # 如果 alpha 经常很低，可能需要调整 - 使用 DiagnosticsThresholds 统一管理
-        if alpha_min < DiagnosticsThresholds.ALPHA_VERY_LOW:
+        # 如果 alpha 经常很低，可能需要调整
+        if alpha_min < alpha_very_low:
             self._log(f"  {Colors.YELLOW}[警告]{Colors.NC} Alpha 最小值很低 ({alpha_min:.2f})，"
                      f"检查轨迹质量或放宽一致性阈值")
 
@@ -2678,37 +2895,43 @@ class UnifiedDiagnostics:
             else:
                 self._log(f"  {Colors.GREEN}[OK]{Colors.NC} MPC求解时间良好 ({controller['mpc_solve_time_avg_ms']:.1f}ms < {ctrl_period_ms*0.3:.1f}ms)")
             
-            # MPC 成功率 - 使用 DiagnosticsThresholds 统一管理
-            if controller['mpc_success_rate'] < DiagnosticsThresholds.MPC_SUCCESS_RATE_CRITICAL:
+            # MPC 成功率 - 使用配置中的阈值
+            mpc_success_critical = getattr(self.thresholds, 'MPC_SUCCESS_RATE_CRITICAL', 0.9)
+            mpc_success_warn = getattr(self.thresholds, 'MPC_SUCCESS_RATE_WARN', 0.98)
+            if controller['mpc_success_rate'] < mpc_success_critical:
                 self._log(f"  {Colors.RED}[CRITICAL]{Colors.NC} MPC成功率过低 ({controller['mpc_success_rate']*100:.0f}%)")
                 self._log(f"    → 检查轨迹质量")
                 self._log(f"    → 降低 mpc.horizon")
                 self._log(f"    → 增加 mpc.solver.nlp_max_iter")
-            elif controller['mpc_success_rate'] < DiagnosticsThresholds.MPC_SUCCESS_RATE_WARN:
+            elif controller['mpc_success_rate'] < mpc_success_warn:
                 self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} MPC成功率可以更好")
             else:
                 self._log(f"  {Colors.GREEN}[OK]{Colors.NC} MPC成功率良好 ({controller['mpc_success_rate']*100:.0f}%)")
             
-            # 备用控制器使用 - 使用 DiagnosticsThresholds 统一管理
-            if controller['backup_active_ratio'] > DiagnosticsThresholds.BACKUP_ACTIVE_RATIO_WARN:
+            # 备用控制器使用 - 使用配置中的阈值
+            backup_warn = getattr(self.thresholds, 'BACKUP_ACTIVE_RATIO_WARN', 0.1)
+            if controller['backup_active_ratio'] > backup_warn:
                 self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 备用控制器使用频繁 ({controller['backup_active_ratio']*100:.0f}%)")
                 self._log(f"    → 检查MPC求解器健康")
                 self._log(f"    → 验证轨迹一致性")
             
-            # 跟踪误差 - 使用 DiagnosticsThresholds 统一管理
-            if controller['lateral_error_avg'] > DiagnosticsThresholds.TUNING_LATERAL_ERROR_MED:
+            # 跟踪误差 - 使用配置中的阈值
+            lat_error_med = getattr(self.thresholds, 'TUNING_LATERAL_ERROR_MED', 0.10)
+            head_error_high = getattr(self.thresholds, 'TUNING_HEADING_ERROR_HIGH', 0.3)
+            if controller['lateral_error_avg'] > lat_error_med:
                 self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 横向跟踪误差较大 ({controller['lateral_error_avg']*100:.1f}cm)")
                 self._log(f"    → 增加 mpc.weights.position (尝试 15-20)")
                 self._log(f"    → 减小 mpc.weights.control_accel (尝试 0.1)")
             else:
                 self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 横向跟踪误差可接受")
             
-            if controller['heading_error_avg'] > DiagnosticsThresholds.TUNING_HEADING_ERROR_HIGH:
+            if controller['heading_error_avg'] > head_error_high:
                 self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 航向误差较大 ({np.degrees(controller['heading_error_avg']):.1f}°)")
                 self._log(f"    → 增加 mpc.weights.heading (尝试 8-10)")
             
-            # Alpha (一致性) - 使用 DiagnosticsThresholds 统一管理
-            if controller['alpha_min'] < DiagnosticsThresholds.ALPHA_CRITICAL:
+            # Alpha (一致性) - 使用配置中的阈值
+            alpha_critical = getattr(self.thresholds, 'ALPHA_CRITICAL', 0.3)
+            if controller['alpha_min'] < alpha_critical:
                 self._log(f"  {Colors.YELLOW}[WARN]{Colors.NC} 检测到低alpha值 (min: {controller['alpha_min']:.2f})")
                 self._log(f"    → 轨迹一致性较差")
                 self._log(f"    → 检查网络输出质量")
@@ -2734,7 +2957,28 @@ class UnifiedDiagnostics:
                     self._log(f"     建议: {sug['suggestion']}")
     
     def _generate_config(self, output_file: str):
-        """生成完整配置文件（15个配置模块，与 universal_controller 完全对应）"""
+        """
+        生成完整配置文件（与 turtlebot1.yaml 格式完全一致）
+        
+        配置结构严格按照 turtlebot1.yaml 的顺序和格式生成:
+        1. system - 系统配置
+        2. node - ROS 节点配置
+        3. topics - 话题配置
+        4. tf - TF 配置
+        5. watchdog - 超时配置
+        6. diagnostics - 诊断配置
+        7. mpc - MPC 配置
+        8. constraints - 约束配置
+        9. trajectory - 轨迹配置
+        10. consistency - 一致性配置
+        11. tracking - 跟踪配置
+        12. safety - 安全配置
+        13. backup - 备份控制器配置
+        14. transform - 坐标变换配置
+        15. transition - 过渡配置
+        16. ekf - EKF 配置
+        17. cmd_vel_adapter - 速度适配器配置
+        """
         self._log(f"\n{Colors.BLUE}{'─'*70}")
         self._log(f"  阶段6/6: 生成配置文件")
         self._log(f"{'─'*70}{Colors.NC}")
@@ -2742,89 +2986,221 @@ class UnifiedDiagnostics:
         # 显示前提条件并等待确认
         prerequisites = [
             f"输出文件: {output_file}",
-            "将生成包含 15 个配置模块的 YAML 文件",
-            "配置基于前面阶段收集的数据"
+            "将生成与 turtlebot1.yaml 格式完全一致的配置文件",
+            "配置基于前面阶段收集的真实诊断数据"
         ]
         if not self._wait_for_confirmation("阶段6: 生成配置文件", prerequisites):
             return
         
         self._log(f"\n  {Colors.CYAN}[进度]{Colors.NC} 生成配置文件: {output_file}")
         
-        # 构建完整配置 (15个配置模块，与 universal_controller/config/default_config.py 对应)
-        # 注意: attitude 和 mock 模块不包含在自动调优中
-        config = {
-            # 核心模块
-            'system': self.recommended['system'],
-            'watchdog': self.recommended['watchdog'],
-            'mpc': self.recommended['mpc'],
-            'constraints': self.recommended['constraints'],
-            'safety': self.recommended['safety'],
-            'ekf': self.recommended['ekf'],
-            
-            # 功能模块
-            'consistency': self.recommended['consistency'],
-            'transform': self.recommended['transform'],
-            'transition': self.recommended['transition'],
-            'backup': self.recommended['backup'],
-            'trajectory': self.recommended['trajectory'],
-            'tracking': self.recommended['tracking'],
-            
-            # ROS 适配模块
-            'topics': {
-                'odom': self.topics['odom'],
-                'imu': self.topics['imu'] if self.results.get('imu', {}).get('rate', 0) > 0 else '',
-                'trajectory': self.topics['trajectory'],
-                'emergency_stop': '/controller/emergency_stop',
-                'cmd_unified': '/cmd_unified',
-                'diagnostics': '/controller/diagnostics',
-                'state': '/controller/state',
-            },
-            'tf': self.recommended['tf'],
-            'cmd_vel_adapter': self.recommended['cmd_vel_adapter'],
-            'diagnostics': self.recommended['diagnostics'],
-        }
-        
-        # 生成文件头
+        # 获取诊断结果数据
         odom = self.results.get('odom', {})
         traj = self.results.get('trajectory', {})
         traj_info = self.results.get('trajectory_info', {})
+        imu = self.results.get('imu', {})
         chassis = self.results.get('chassis', {})
         tests = self.results.get('chassis_tests', {})
+        controller = self.results.get('controller', {})
         
-        header = f"""# ============================================================================
-# 自动生成的优化配置
-# 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-# ============================================================================
-#
-# 检测结果:
-#   里程计: {odom.get('rate', 0):.1f} Hz, 延迟 {odom.get('latency_ms', 0):.1f}ms, 抖动 {odom.get('jitter_ms', 0):.1f}ms
-#   轨迹: {traj.get('rate', 0):.1f} Hz, {traj_info.get('num_points', 0)} 点, dt={traj_info.get('dt_sec', 0.1)}s
-#   IMU: {self.results.get('imu', {}).get('rate', 0):.1f} Hz
-#   包含速度信息: {traj_info.get('has_velocities', False)}
-#
-# 底盘特性:
-#   最大速度: {chassis.get('max_speed', 0):.2f} m/s
-#   最大角速度: {chassis.get('max_wz', 0):.2f} rad/s
-#   最大加速度: {chassis.get('max_ax', 0):.2f} m/s^2
-"""
+        # 提取关键诊断数据
+        odom_rate = odom.get('rate', 0)
+        traj_rate = traj.get('rate', 0)
+        imu_rate = imu.get('rate', 0)
         
-        if tests:
-            header += f"""#
-# 底盘测试结果:
-#   实测最大速度: {tests.get('max_velocity_achieved', 0):.2f} m/s
-#   实测最大加速度: {tests.get('max_acceleration', 0):.2f} m/s^2
-#   响应时间: {tests.get('response_time', 0):.3f} sec
-"""
+        # 构建完整配置（严格按照 turtlebot1.yaml 的顺序和格式）
+        config = {}
         
-        header += """#
-# ============================================================================
-
-"""
+        # ===== 1. system =====
+        config['system'] = {
+            'ctrl_freq': self.recommended['system']['ctrl_freq'],
+            'platform': self.recommended['system']['platform'],
+        }
+        
+        # ===== 2. node =====
+        config['node'] = {
+            'use_sim_time': False,
+        }
+        
+        # ===== 3. topics =====
+        config['topics'] = {
+            'odom': self.topics['odom'],
+            'imu': self.topics['imu'] if imu_rate > 0 else '',
+            'trajectory': self.topics['trajectory'],
+            'emergency_stop': '/controller/emergency_stop',
+            'cmd_unified': '/cmd_unified',
+            'diagnostics': '/controller/diagnostics',
+            'state': '/controller/state',
+        }
+        
+        # ===== 4. tf =====
+        config['tf'] = {
+            'buffer_warmup_timeout_sec': self.recommended['tf']['buffer_warmup_timeout_sec'],
+            'buffer_warmup_interval_sec': self.recommended['tf']['buffer_warmup_interval_sec'],
+        }
+        
+        # ===== 5. watchdog =====
+        config['watchdog'] = {
+            'odom_timeout_ms': self.recommended['watchdog']['odom_timeout_ms'],
+            'traj_timeout_ms': self.recommended['watchdog']['traj_timeout_ms'],
+            'traj_grace_ms': self.recommended['watchdog']['traj_grace_ms'],
+            'imu_timeout_ms': self.recommended['watchdog']['imu_timeout_ms'],
+            'startup_grace_ms': self.recommended['watchdog']['startup_grace_ms'],
+        }
+        
+        # ===== 6. diagnostics =====
+        config['diagnostics'] = {
+            'publish_rate': self.recommended['diagnostics']['publish_rate'],
+        }
+        
+        # ===== 7. mpc =====
+        config['mpc'] = {
+            'horizon': self.recommended['mpc']['horizon'],
+            'horizon_degraded': self.recommended['mpc']['horizon_degraded'],
+            'dt': self.recommended['mpc']['dt'],
+            'weights': self.recommended['mpc']['weights'],
+            'solver': self.recommended['mpc']['solver'],
+            'health_monitor': self.recommended['mpc']['health_monitor'],
+            'fallback': self.recommended['mpc']['fallback'],
+        }
+        
+        # ===== 8. constraints =====
+        config['constraints'] = {
+            'v_max': self.recommended['constraints']['v_max'],
+            'v_min': self.recommended['constraints']['v_min'],
+            'omega_max': self.recommended['constraints']['omega_max'],
+            'omega_max_low': self.recommended['constraints']['omega_max_low'],
+            'v_low_thresh': self.recommended['constraints']['v_low_thresh'],
+            'a_max': self.recommended['constraints']['a_max'],
+            'alpha_max': self.recommended['constraints']['alpha_max'],
+        }
+        
+        # ===== 9. trajectory =====
+        config['trajectory'] = {
+            'default_dt_sec': self.recommended['trajectory']['default_dt_sec'],
+            'low_speed_thresh': self.recommended['trajectory']['low_speed_thresh'],
+        }
+        
+        # ===== 10. consistency =====
+        config['consistency'] = {
+            'kappa_thresh': self.recommended['consistency']['kappa_thresh'],
+            'v_dir_thresh': self.recommended['consistency']['v_dir_thresh'],
+            'temporal_smooth_thresh': self.recommended['consistency']['temporal_smooth_thresh'],
+            'alpha_min': self.recommended['consistency']['alpha_min'],
+            'max_curvature': self.recommended['consistency']['max_curvature'],
+            'temporal_window_size': self.recommended['consistency']['temporal_window_size'],
+            'weights': {
+                'kappa': self.recommended['consistency']['weights']['kappa'],
+                'velocity': self.recommended['consistency']['weights']['velocity'],
+                'temporal': self.recommended['consistency']['weights']['temporal'],
+            },
+        }
+        
+        # ===== 11. tracking =====
+        config['tracking'] = {
+            'lateral_thresh': self.recommended['tracking']['lateral_thresh'],
+            'longitudinal_thresh': self.recommended['tracking']['longitudinal_thresh'],
+            'heading_thresh': self.recommended['tracking']['heading_thresh'],
+            'prediction_thresh': self.recommended['tracking']['prediction_thresh'],
+            'weights': self.recommended['tracking']['weights'],
+            'rating': self.recommended['tracking']['rating'],
+        }
+        
+        # ===== 12. safety =====
+        config['safety'] = {
+            'v_stop_thresh': self.recommended['safety']['v_stop_thresh'],
+            'stopping_timeout': self.recommended['safety']['stopping_timeout'],
+            'emergency_decel': self.recommended['safety']['emergency_decel'],
+            'low_speed': self.recommended['safety']['low_speed'],
+            'margins': self.recommended['safety']['margins'],
+            'state_machine': self.recommended['safety']['state_machine'],
+        }
+        
+        # ===== 13. backup =====
+        config['backup'] = {
+            'lookahead_dist': self.recommended['backup']['lookahead_dist'],
+            'min_lookahead': self.recommended['backup']['min_lookahead'],
+            'max_lookahead': self.recommended['backup']['max_lookahead'],
+            'lookahead_ratio': self.recommended['backup']['lookahead_ratio'],
+            'kp_heading': self.recommended['backup']['kp_heading'],
+            'kp_z': self.recommended['backup']['kp_z'],
+            'dt': self.recommended['backup']['dt'],
+            'max_curvature': self.recommended['backup']['max_curvature'],
+            'min_turn_speed': self.recommended['backup']['min_turn_speed'],
+            'default_speed_ratio': self.recommended['backup']['default_speed_ratio'],
+            'min_distance_thresh': self.recommended['backup']['min_distance_thresh'],
+            'heading_error_thresh': self.recommended['backup']['heading_error_thresh'],
+            'pure_pursuit_angle_thresh': self.recommended['backup']['pure_pursuit_angle_thresh'],
+            'heading_control_angle_thresh': self.recommended['backup']['heading_control_angle_thresh'],
+            'low_speed_transition_factor': self.recommended['backup']['low_speed_transition_factor'],
+            'curvature_speed_limit_thresh': self.recommended['backup']['curvature_speed_limit_thresh'],
+            'rear_angle_thresh': self.recommended['backup']['rear_angle_thresh'],
+            'rear_direction_min_thresh': self.recommended['backup']['rear_direction_min_thresh'],
+            'default_turn_direction': self.recommended['backup']['default_turn_direction'],
+            'heading_mode': self.recommended['backup']['heading_mode'],
+        }
+        
+        # ===== 14. transform =====
+        config['transform'] = {
+            'source_frame': self.recommended['transform']['source_frame'],
+            'target_frame': self.recommended['transform']['target_frame'],
+            'timeout_ms': self.recommended['transform']['timeout_ms'],
+            'fallback_duration_limit_ms': self.recommended['transform']['fallback_duration_limit_ms'],
+            'fallback_critical_limit_ms': self.recommended['transform']['fallback_critical_limit_ms'],
+            'drift_estimation_enabled': self.recommended['transform']['drift_estimation_enabled'],
+            'recovery_correction_enabled': self.recommended['transform']['recovery_correction_enabled'],
+            'expected_source_frames': self.recommended['transform']['expected_source_frames'],
+            'warn_unexpected_frame': self.recommended['transform']['warn_unexpected_frame'],
+        }
+        
+        # ===== 15. transition =====
+        config['transition'] = {
+            'type': self.recommended['transition']['type'],
+            'tau': self.recommended['transition']['tau'],
+            'max_duration': self.recommended['transition']['max_duration'],
+            'completion_threshold': self.recommended['transition']['completion_threshold'],
+            'duration': self.recommended['transition']['duration'],
+        }
+        
+        # ===== 16. ekf =====
+        config['ekf'] = {
+            'use_odom_orientation_fallback': self.recommended['ekf']['use_odom_orientation_fallback'],
+            'imu_motion_compensation': self.recommended['ekf']['imu_motion_compensation'],
+            'theta_covariance_fallback_thresh': self.recommended['ekf']['theta_covariance_fallback_thresh'],
+            'max_tilt_angle': self.recommended['ekf']['max_tilt_angle'],
+            'accel_freshness_thresh': self.recommended['ekf']['accel_freshness_thresh'],
+            'min_velocity_for_jacobian': self.recommended['ekf']['min_velocity_for_jacobian'],
+            'adaptive': self.recommended['ekf']['adaptive'],
+            'process_noise': self.recommended['ekf']['process_noise'],
+            'measurement_noise': self.recommended['ekf']['measurement_noise'],
+            'anomaly_detection': self.recommended['ekf']['anomaly_detection'],
+            'covariance': self.recommended['ekf']['covariance'],
+        }
+        
+        # ===== 17. cmd_vel_adapter =====
+        config['cmd_vel_adapter'] = {
+            'publish_rate': self.recommended['cmd_vel_adapter']['publish_rate'],
+            'joy_timeout': self.recommended['cmd_vel_adapter']['joy_timeout'],
+            'max_linear': self.recommended['cmd_vel_adapter']['max_linear'],
+            'max_angular': self.recommended['cmd_vel_adapter']['max_angular'],
+            'max_linear_accel': self.recommended['cmd_vel_adapter']['max_linear_accel'],
+            'max_angular_accel': self.recommended['cmd_vel_adapter']['max_angular_accel'],
+            'input_topic': self.recommended['cmd_vel_adapter']['input_topic'],
+            'joy_topic': self.recommended['cmd_vel_adapter']['joy_topic'],
+            'mode_topic': self.recommended['cmd_vel_adapter']['mode_topic'],
+            'output_topic': self.recommended['cmd_vel_adapter']['output_topic'],
+        }
+        
+        # 生成文件头（包含诊断结果摘要）
+        header = self._generate_config_header(odom, traj, traj_info, imu, chassis, tests, controller)
         
         try:
+            # 转换所有 numpy 类型为 Python 原生类型，避免 YAML 序列化问题
+            config_clean = convert_numpy_types(config)
+            
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(header)
-                yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+                yaml.dump(config_clean, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
             self._log(f"  {Colors.GREEN}[OK]{Colors.NC} 配置已保存到: {output_file}")
         except Exception as e:
             self._log(f"  {Colors.RED}[ERROR]{Colors.NC} 保存配置文件失败: {e}")
@@ -2832,6 +3208,63 @@ class UnifiedDiagnostics:
         
         self._log(f"\n{Colors.CYAN}使用方法:{Colors.NC}")
         self._log(f"  roslaunch controller_ros controller.launch config:=$(pwd)/{output_file}")
+    
+    def _generate_config_header(self, odom, traj, traj_info, imu, chassis, tests, controller) -> str:
+        """
+        生成配置文件头部注释
+        
+        包含诊断结果摘要，便于追溯配置来源
+        """
+        header = f"""# ============================================================================
+# 自动生成的优化配置 (与 turtlebot1.yaml 格式一致)
+# 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# 生成工具: unified_diagnostics.py v2.7
+# ============================================================================
+#
+# 诊断结果摘要:
+# -------------
+#   里程计: {odom.get('rate', 0):.1f} Hz, 延迟 {odom.get('latency_ms', 0):.1f}ms, 抖动 {odom.get('jitter_ms', 0):.1f}ms
+#   轨迹: {traj.get('rate', 0):.1f} Hz, {traj_info.get('num_points', 0)} 点, dt={traj_info.get('dt_sec', 0.1)}s
+#   IMU: {imu.get('rate', 0):.1f} Hz {'(已启用)' if imu.get('rate', 0) > 0 else '(未检测到)'}
+#   包含速度信息: {'是' if traj_info.get('has_velocities') else '否'}
+#
+# 底盘特性 (被动监听):
+# -------------------
+#   最大速度: {chassis.get('max_speed', 0):.2f} m/s
+#   最大角速度: {chassis.get('max_wz', 0):.2f} rad/s
+#   最大加速度: {chassis.get('max_ax', 0):.2f} m/s²
+"""
+        
+        if tests:
+            header += f"""#
+# 底盘测试结果 (主动测试):
+# -----------------------
+#   实测最大速度: {tests.get('max_velocity_achieved', 0):.2f} m/s
+#   实测最大加速度: {tests.get('max_acceleration', 0):.2f} m/s²
+#   实测最大角速度: {tests.get('max_angular_velocity', 0):.2f} rad/s
+#   响应时间: {tests.get('response_time', 0):.3f} sec
+"""
+        
+        if controller:
+            header += f"""#
+# 控制器运行时统计:
+# -----------------
+#   MPC 求解时间: {controller.get('mpc_solve_time_avg_ms', 0):.2f}ms avg, {controller.get('mpc_solve_time_max_ms', 0):.2f}ms max
+#   MPC 成功率: {controller.get('mpc_success_rate', 0)*100:.1f}%
+#   备用控制器使用率: {controller.get('backup_active_ratio', 0)*100:.1f}%
+#   横向误差: {controller.get('lateral_error_avg', 0)*100:.1f}cm avg
+#   航向误差: {np.degrees(controller.get('heading_error_avg', 0)):.1f}° avg
+#   Alpha (一致性): {controller.get('alpha_avg', 0):.2f} avg
+"""
+        
+        header += """#
+# 使用方法:
+#   roslaunch controller_ros controller.launch config:=<此文件路径>
+#
+# ============================================================================
+
+"""
+        return header
 
     # ==================== 运行入口 ====================
     
@@ -2848,6 +3281,21 @@ class UnifiedDiagnostics:
         self._log(f"{'='*80}{Colors.NC}")
         if self.log_file:
             self._log(f"\n日志文件: {self.log_file}")
+        
+        # 显示配置文件信息
+        if self.config_file:
+            self._log(f"配置文件: {self.config_file}")
+            if hasattr(self.thresholds, 'summary'):
+                self._log(f"\n{Colors.CYAN}已加载配置阈值:{Colors.NC}")
+                # 显示关键阈值
+                self._log(f"  控制频率: {getattr(self.thresholds, 'ctrl_freq', 'N/A')} Hz")
+                self._log(f"  低速阈值: {self.low_speed_thresh} m/s")
+                self._log(f"  横向误差阈值: {getattr(self.thresholds, 'TRACKING_LATERAL_THRESH', 'N/A')} m")
+                self._log(f"  MPC 求解时间临界: {getattr(self.thresholds, 'MPC_SOLVE_TIME_CRITICAL_MS', 'N/A')} ms")
+        else:
+            self._log(f"\n{Colors.YELLOW}[提示]{Colors.NC} 未指定配置文件，使用默认阈值")
+            self._log(f"       建议使用 --config turtlebot1.yaml 加载配置")
+        
         if sub_phase:
             self._log(f"\n{Colors.MAGENTA}=== {sub_phase} ==={Colors.NC}\n")
     
@@ -3124,7 +3572,7 @@ def main():
             # 尝试设置控制台代码页为UTF-8
             import subprocess
             subprocess.call('chcp 65001', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except:
+        except Exception:
             pass
     
     parser = argparse.ArgumentParser(
@@ -3132,23 +3580,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 实时监控模式 (需要控制器运行)
-  rosrun controller_ros unified_diagnostics.py --mode realtime
+  # 实时监控模式 (需要控制器运行，使用配置文件阈值)
+  rosrun controller_ros unified_diagnostics.py --mode realtime --config turtlebot1.yaml
   
   # 系统调优模式 (不需要控制器)
-  rosrun controller_ros unified_diagnostics.py --mode tuning --output config.yaml
+  rosrun controller_ros unified_diagnostics.py --mode tuning --config turtlebot1.yaml --output config.yaml
   
   # 底盘测试 (机器人会移动!)
   rosrun controller_ros unified_diagnostics.py --mode tuning --test-chassis --output config.yaml
   
   # 运行时调优 (需要控制器运行)
-  rosrun controller_ros unified_diagnostics.py --mode tuning --runtime-tuning --duration 30
+  rosrun controller_ros unified_diagnostics.py --mode tuning --runtime-tuning --duration 30 --config turtlebot1.yaml
   
   # 完整诊断 (先调优后实时监控)
-  rosrun controller_ros unified_diagnostics.py --mode full --duration 10
+  rosrun controller_ros unified_diagnostics.py --mode full --duration 10 --config turtlebot1.yaml
   
   # 完整诊断 + 底盘测试 + 运行时调优 (推荐)
-  rosrun controller_ros unified_diagnostics.py --mode full --test-chassis --runtime-tuning --output tuned.yaml
+  rosrun controller_ros unified_diagnostics.py --mode full --test-chassis --runtime-tuning --output tuned.yaml --config turtlebot1.yaml
 
 ================================================================================
 完整模式 (--mode full) 执行流程:
@@ -3207,6 +3655,8 @@ def main():
     
     parser.add_argument('--mode', choices=['realtime', 'tuning', 'full'], default='full',
                         help='诊断模式: realtime/tuning/full (默认: realtime)')
+    parser.add_argument('--config', '-c', default=None,
+                        help='配置文件路径 (如 turtlebot1.yaml)，用于加载诊断阈值')
     parser.add_argument('--odom-topic', default='/odom', help='里程计话题')
     parser.add_argument('--traj-topic', default='/nn/local_trajectory', help='轨迹话题')
     parser.add_argument('--imu-topic', default='/imu', help='IMU话题')

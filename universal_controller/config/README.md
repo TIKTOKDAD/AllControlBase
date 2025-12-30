@@ -34,14 +34,30 @@ universal_controller/config/
 
 ## 配置键名约定
 
-### YAML 与 Python 的映射
+### 配置分层设计
 
-| YAML 路径 | Python 路径 | 说明 |
-|-----------|-------------|------|
-| `tf/source_frame` | `transform.source_frame` | TF 配置映射到 transform |
-| `tf/target_frame` | `transform.target_frame` | |
-| `tf/timeout_ms` | `transform.timeout_ms` | 统一使用 timeout_ms |
-| `tf/expected_source_frames` | `transform.expected_source_frames` | |
+| 配置块 | 用途 | 说明 |
+|--------|------|------|
+| `transform` | 坐标变换配置 | 坐标系名称 + 算法参数，定义在 DEFAULT_CONFIG |
+| `tf` | ROS TF2 特有参数 | buffer 预热、重试等，仅 ROS 层使用 |
+
+### YAML 配置示例
+
+```yaml
+# 坐标变换配置（统一入口）
+transform:
+  source_frame: "base_link"       # 源坐标系
+  target_frame: "odom"            # 目标坐标系
+  timeout_ms: 10                  # TF 查询超时
+  expected_source_frames: [...]   # 预期的源坐标系列表
+
+# ROS TF2 特有参数
+tf:
+  buffer_warmup_timeout_sec: 2.0  # TF buffer 预热超时
+  buffer_warmup_interval_sec: 0.1 # TF buffer 预热检查间隔
+  retry_interval_sec: 1.0         # TF2 重试间隔
+  max_retries: -1                 # 最大重试次数
+```
 
 ### 配置访问方式
 

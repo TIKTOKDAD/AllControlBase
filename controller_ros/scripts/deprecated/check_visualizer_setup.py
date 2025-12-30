@@ -59,7 +59,7 @@ def main():
         try:
             value = rospy.get_param(param)
             print(f"    {param}: {value}")
-        except:
+        except Exception:
             print(f"    {param}: (未设置)")
     
     # 检查标定文件
@@ -78,7 +78,7 @@ def main():
         rospack = rospkg.RosPack()
         pkg_path = rospack.get_path('controller_ros')
         possible_paths.insert(0, os.path.join(pkg_path, 'config', 'homography_calib.yaml'))
-    except:
+    except Exception:
         pass
     
     found_files = []

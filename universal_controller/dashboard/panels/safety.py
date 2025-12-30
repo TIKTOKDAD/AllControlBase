@@ -4,13 +4,19 @@
 配置来源: 
 - universal_controller/config/safety_config.py -> CONSTRAINTS_CONFIG, SAFETY_CONFIG
 YAML 覆盖: controller_ros/config/turtlebot1.yaml -> constraints, safety 节
+
+显示：
+- 速度/加速度约束
+- 低速保护
+- 安全裕度
+- 安全检查状态
 """
 
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout
 from PyQt5.QtCore import Qt
 from ..widgets.progress_bar import ColorProgressBar
 from ..widgets.status_led import StatusLED
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 
 # 从统一配置模块导入默认值
 from ...config import CONSTRAINTS_CONFIG, SAFETY_CONFIG
@@ -63,7 +69,7 @@ class SafetyPanel(QGroupBox):
         
         # 速度约束
         vel_title = QLabel('速度约束')
-        vel_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        vel_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(vel_title)
         
         self.v_max_progress = self._add_constraint_row(layout, 'v_max', self._v_max, 'm/s')
@@ -73,7 +79,7 @@ class SafetyPanel(QGroupBox):
         
         # 加速度约束
         accel_title = QLabel('加速度约束')
-        accel_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        accel_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(accel_title)
         
         self.a_max_progress = self._add_constraint_row(layout, 'a_max', self._a_max, 'm/s²')
@@ -84,7 +90,7 @@ class SafetyPanel(QGroupBox):
         
         # 低速保护
         low_title = QLabel('低速保护')
-        low_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        low_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(low_title)
         
         low_grid = QGridLayout()
@@ -109,7 +115,7 @@ class SafetyPanel(QGroupBox):
         
         # 安全裕度
         margin_title = QLabel('安全裕度')
-        margin_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        margin_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(margin_title)
         
         margin_grid = QGridLayout()

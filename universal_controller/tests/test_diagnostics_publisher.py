@@ -193,7 +193,7 @@ def test_diagnostics_publisher_with_full_data():
     
     mpc_health = MPCHealthStatus(
         healthy=True,
-        warning=False,
+        degradation_warning=False,
         can_recover=True,
         consecutive_near_timeout=0,
         kkt_residual=0.001,

@@ -130,6 +130,11 @@ class ROSDashboardDataSource:
         self._safety_limit_count = 0
         self._tf2_fallback_count = 0
         self._soft_disable_count = 0
+        
+        # 状态变化跟踪（用于统计计数）
+        self._last_state: int = 0  # 上一次的控制器状态
+        self._last_safety_check_passed: bool = True  # 上一次安全检查是否通过
+        self._last_tf2_fallback_active: bool = False  # 上一次 TF2 是否处于降级状态
 
         # 历史数据
         self._history_size = 500
@@ -323,6 +328,7 @@ class ROSDashboardDataSource:
             'transition_progress': msg.transition_progress,
             'error_message': msg.error_message,
             'consecutive_errors': msg.consecutive_errors,
+            'safety_check_passed': msg.safety_check_passed,
             'emergency_stop': msg.emergency_stop,
         }
 
@@ -379,10 +385,10 @@ class ROSDashboardDataSource:
                 ros_value = rospy.get_param(param_path, default_value)
                 set_nested(self._config, param_path, ros_value)
             
-            # TF 配置映射
+            # transform 配置（坐标系名称统一从 transform 读取）
             self._config.setdefault('transform', {})
-            self._config['transform']['target_frame'] = rospy.get_param('tf/target_frame', 'odom')
-            self._config['transform']['source_frame'] = rospy.get_param('tf/source_frame', 'base_link')
+            self._config['transform']['target_frame'] = rospy.get_param('transform/target_frame', 'odom')
+            self._config['transform']['source_frame'] = rospy.get_param('transform/source_frame', 'base_link')
             
             rospy.loginfo(f"[ROSDashboardDataSource] Loaded config: platform={self._config['system']['platform']}")
         except Exception as e:
@@ -466,7 +472,14 @@ class ROSDashboardDataSource:
         )
 
     def _update_statistics(self, diagnostics: Dict[str, Any]):
-        """更新统计数据"""
+        """更新统计数据
+        
+        统计计数器说明:
+        - backup_switch_count: 切换到 BACKUP_ACTIVE 状态的次数
+        - safety_limit_count: 安全检查失败的次数（从通过变为失败）
+        - tf2_fallback_count: TF2 降级激活的次数（从正常变为降级）
+        - soft_disable_count: 切换到 SOFT_DISABLED 状态的次数
+        """
         current_time = time.time()
         cycle_time = current_time - self._last_update_time
         self._cycle_times.append(cycle_time * 1000)
@@ -477,6 +490,37 @@ class ROSDashboardDataSource:
             state = diagnostics.get('state', 0)
             if 0 <= state < 7:
                 self._state_counts[state] += 1
+            
+            # 状态变化检测：backup_switch_count
+            # 当状态从非 BACKUP_ACTIVE 变为 BACKUP_ACTIVE (state=4) 时计数
+            if state == 4 and self._last_state != 4:
+                self._backup_switch_count += 1
+            
+            # 状态变化检测：soft_disable_count
+            # 当状态从非 SOFT_DISABLED 变为 SOFT_DISABLED (state=2) 时计数
+            if state == 2 and self._last_state != 2:
+                self._soft_disable_count += 1
+            
+            # 更新上一次状态
+            self._last_state = state
+            
+            # 安全检查失败计数
+            # 当安全检查从通过变为失败时计数
+            safety_check_passed = diagnostics.get('safety_check_passed', True)
+            if not safety_check_passed and self._last_safety_check_passed:
+                self._safety_limit_count += 1
+            self._last_safety_check_passed = safety_check_passed
+            
+            # TF2 降级计数
+            # 当 TF2 从正常变为降级时计数
+            transform = diagnostics.get('transform', {})
+            if isinstance(transform, dict):
+                fallback_ms = transform.get('fallback_duration_ms', 0)
+                tf2_fallback_active = fallback_ms > 0
+                if tf2_fallback_active and not self._last_tf2_fallback_active:
+                    self._tf2_fallback_count += 1
+                self._last_tf2_fallback_active = tf2_fallback_active
+            
             if diagnostics.get('mpc_success', False):
                 self._mpc_success_count += 1
             self._solve_time_history.append(diagnostics.get('mpc_solve_time_ms', 0))
@@ -586,19 +630,34 @@ class ROSDashboardDataSource:
         )
 
     def _build_tracking_status(self, diag: Dict) -> TrackingStatus:
-        """构建跟踪状态"""
+        """构建跟踪状态
+        
+        注意: prediction_error 可能为 NaN（表示无预测数据，如使用 fallback 求解器时）
+        Dashboard 显示时应检查 NaN 并显示 "N/A" 或类似提示
+        """
         tracking = diag.get('tracking', {})
         if not isinstance(tracking, dict):
             tracking = {}
+        
+        # 获取预测误差，保留 NaN 值（表示无数据）
+        prediction_error = tracking.get('prediction_error', float('nan'))
+        
         return TrackingStatus(
             lateral_error=tracking.get('lateral_error', 0),
             longitudinal_error=tracking.get('longitudinal_error', 0),
             heading_error=tracking.get('heading_error', 0),
-            prediction_error=tracking.get('prediction_error', 0),
+            prediction_error=prediction_error,
         )
 
     def _build_estimator_status(self, diag: Dict) -> EstimatorStatus:
-        """构建状态估计器状态"""
+        """构建状态估计器状态
+        
+        功能开关说明 (与 DashboardDataSource 保持一致):
+        - ekf_enabled: EKF 始终启用（核心组件）
+        - slip_detection_enabled: 打滑检测是否启用，基于 adaptive.base_slip_thresh > 0
+        - drift_correction_enabled: 漂移校正是否启用，从 transform 配置读取
+        - heading_fallback_enabled: 航向备选是否启用，从 ekf 配置读取
+        """
         est = diag.get('estimator_health', {})
         if not isinstance(est, dict):
             est = {}
@@ -608,6 +667,19 @@ class ROSDashboardDataSource:
 
         ekf_config = self._config.get('ekf', {})
         transform_config = self._config.get('transform', {})
+        adaptive_config = ekf_config.get('adaptive', {})
+        
+        # EKF 始终启用（核心组件）
+        ekf_enabled = True
+        
+        # 打滑检测：检查打滑检测阈值是否配置且大于 0
+        slip_detection_enabled = adaptive_config.get('base_slip_thresh', 0) > 0
+        
+        # 漂移校正：从 transform 配置读取
+        drift_correction_enabled = transform_config.get('recovery_correction_enabled', True)
+        
+        # 航向备选：从 ekf 配置读取
+        heading_fallback_enabled = ekf_config.get('use_odom_orientation_fallback', True)
         
         return EstimatorStatus(
             covariance_norm=est.get('covariance_norm', 0),
@@ -616,10 +688,10 @@ class ROSDashboardDataSource:
             imu_drift_detected=est.get('imu_drift_detected', False),
             imu_bias=(bias[0], bias[1], bias[2]),
             imu_available=est.get('imu_available', False),
-            ekf_enabled=ekf_config.get('use_odom_orientation_fallback', True),
-            slip_detection_enabled=ekf_config.get('imu_motion_compensation', False),
-            drift_correction_enabled=transform_config.get('recovery_correction_enabled', True),
-            heading_fallback_enabled=ekf_config.get('use_odom_orientation_fallback', True),
+            ekf_enabled=ekf_enabled,
+            slip_detection_enabled=slip_detection_enabled,
+            drift_correction_enabled=drift_correction_enabled,
+            heading_fallback_enabled=heading_fallback_enabled,
         )
 
     def _build_transform_status(self, diag: Dict) -> TransformStatus:
@@ -655,7 +727,7 @@ class ROSDashboardDataSource:
             current_v=current_v,
             current_omega=abs(cmd.get('omega', 0)),
             low_speed_protection_active=current_v < 0.1,
-            safety_check_passed=True,
+            safety_check_passed=diag.get('safety_check_passed', True),
             emergency_stop=diag.get('emergency_stop', False),
         )
 

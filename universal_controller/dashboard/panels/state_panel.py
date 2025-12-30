@@ -1,12 +1,17 @@
 """
 系统状态面板 - 使用统一数据模型
+
+显示：
+- 当前状态指示器
+- 状态持续时间
+- 状态变化历史
 """
 
 import time
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QLabel, QHBoxLayout
 from PyQt5.QtCore import Qt
 from ..widgets.state_indicator import StateIndicator
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 from ..models import DisplayData
 
 

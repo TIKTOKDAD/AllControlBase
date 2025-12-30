@@ -39,7 +39,8 @@ class TF2InjectionManager:
         manager = TF2InjectionManager(
             tf_bridge=tf_bridge,
             controller_manager=controller_manager,
-            config=tf_config,
+            config=tf_config,           # ROS TF2 特有参数
+            transform_config=transform_config,  # 坐标变换配置
             log_info=node.log_info,
             log_warn=node.log_warn,
         )
@@ -59,6 +60,7 @@ class TF2InjectionManager:
         tf_bridge: Any,
         controller_manager: Any,
         config: Optional[Dict[str, Any]] = None,
+        transform_config: Optional[Dict[str, Any]] = None,
         log_info: Optional[Callable[[str], None]] = None,
         log_warn: Optional[Callable[[str], None]] = None,
         get_time_func: Optional[Callable[[], float]] = None,
@@ -69,14 +71,14 @@ class TF2InjectionManager:
         Args:
             tf_bridge: TF2 桥接对象，需要有 is_initialized, can_transform, lookup_transform 属性/方法
             controller_manager: ControllerManager 实例，需要有 coord_transformer 属性
-            config: TF2 配置字典，包含以下可选键:
-                - source_frame: 源坐标系 (默认 'base_link')
-                - target_frame: 目标坐标系 (默认 'odom')
+            config: TF2 配置字典（ROS TF2 特有参数），包含以下可选键:
                 - buffer_warmup_timeout_sec: 阻塞等待超时 (默认 2.0)
                 - buffer_warmup_interval_sec: 等待间隔 (默认 0.1)
-                - retry_interval_sec: 重试间隔（秒）(默认 1.0) [推荐使用]
-                - retry_interval_cycles: [已废弃] 重试间隔周期数，仅为向后兼容保留
+                - retry_interval_sec: 重试间隔（秒）(默认 1.0)
                 - max_retries: 最大重试次数，-1 表示无限 (默认 -1)
+            transform_config: 坐标变换配置字典，包含以下可选键:
+                - source_frame: 源坐标系 (默认 'base_link')
+                - target_frame: 目标坐标系 (默认 'odom')
             log_info: 信息日志函数
             log_warn: 警告日志函数
             get_time_func: 获取当前时间的函数（秒），默认使用 time.monotonic()
@@ -84,6 +86,7 @@ class TF2InjectionManager:
         self._tf_bridge = tf_bridge
         self._controller_manager = controller_manager
         self._config = config or {}
+        self._transform_config = transform_config or {}
         
         # 日志函数
         self._log_info = log_info or (lambda msg: logger.info(msg))
@@ -92,31 +95,17 @@ class TF2InjectionManager:
         # 时间函数（使用单调时钟，不受系统时间调整影响）
         self._get_time = get_time_func or time.monotonic
         
-        # 配置参数
-        self._source_frame = self._config.get('source_frame', 'base_link')
-        self._target_frame = self._config.get('target_frame', 'odom')
+        # 坐标系配置（从 transform_config 读取）
+        self._source_frame = self._transform_config.get('source_frame', 'base_link')
+        self._target_frame = self._transform_config.get('target_frame', 'odom')
+        
+        # TF2 特有配置（从 config 读取）
         self._buffer_warmup_timeout_sec = self._config.get('buffer_warmup_timeout_sec', 2.0)
         self._buffer_warmup_interval_sec = self._config.get('buffer_warmup_interval_sec', 0.1)
         self._max_retries = self._config.get('max_retries', -1)  # -1 = 无限
         
-        # 重试间隔配置（优先使用 retry_interval_sec，向后兼容 retry_interval_cycles）
-        if 'retry_interval_sec' in self._config:
-            self._retry_interval_sec = self._config['retry_interval_sec']
-        elif 'retry_interval_cycles' in self._config:
-            # 向后兼容：将周期数转换为秒
-            # 优先从 system.ctrl_freq 获取控制频率，否则使用默认值 50Hz
-            # 注意：config 可能是 tf 配置的子集，需要从外部传入 ctrl_freq
-            ctrl_freq = self._config.get('ctrl_freq', 50)
-            cycles = self._config['retry_interval_cycles']
-            self._retry_interval_sec = cycles / ctrl_freq
-            self._log_warn(
-                f"'retry_interval_cycles' is deprecated, use 'retry_interval_sec' instead. "
-                f"Converting {cycles} cycles to {self._retry_interval_sec:.2f}s "
-                f"(using ctrl_freq={ctrl_freq}Hz). "
-                f"To avoid this warning, set 'retry_interval_sec' directly in tf config."
-            )
-        else:
-            self._retry_interval_sec = self.DEFAULT_RETRY_INTERVAL_SEC
+        # 重试间隔配置
+        self._retry_interval_sec = self._config.get('retry_interval_sec', self.DEFAULT_RETRY_INTERVAL_SEC)
         
         # 状态 - 使用 threading.Event 确保线程安全
         # Event 比布尔标志更安全：

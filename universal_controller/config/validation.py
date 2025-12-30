@@ -214,6 +214,15 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str]
             errors.append(('trajectory.default_dt_sec', 
                           f'默认时间步长 ({default_dt}) 应在 [{min_dt}, {max_dt}] 范围内'))
     
+    # MPC dt 与轨迹 dt 一致性检查
+    # MPC 的时间步长应该与轨迹的时间步长匹配，否则预测会不准确
+    mpc_dt = get_config_value(config, 'mpc.dt')
+    if _is_numeric(mpc_dt) and _is_numeric(default_dt):
+        if abs(mpc_dt - default_dt) > 1e-6:
+            errors.append(('mpc.dt', 
+                          f'MPC 时间步长 ({mpc_dt}) 与轨迹时间步长 ({default_dt}) 不一致，'
+                          f'这可能导致轨迹跟踪不准确'))
+    
     min_points = get_config_value(config, 'trajectory.min_points')
     max_points = get_config_value(config, 'trajectory.max_points')
     default_points = get_config_value(config, 'trajectory.default_num_points')
@@ -228,17 +237,13 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str]
     
     # low_speed_thresh 一致性检查
     # 设计说明: low_speed_thresh 的唯一定义点是 trajectory.low_speed_thresh
-    # consistency 模块会自动从 trajectory 配置读取此值
-    # 如果用户在 consistency 配置中显式设置了值，这是向后兼容的支持
-    # 但如果两个值不一致，发出警告提示用户统一配置
-    traj_low_speed = get_config_value(config, 'trajectory.low_speed_thresh')
+    # consistency 模块直接从 trajectory 配置读取此值
+    # 如果用户在 consistency 配置中设置了此值，发出警告提示用户移除
     consistency_low_speed = get_config_value(config, 'consistency.low_speed_thresh')
-    # 只有当 consistency 中显式设置了值时才检查一致性
-    if consistency_low_speed is not None and _is_numeric(traj_low_speed) and _is_numeric(consistency_low_speed):
-        if abs(traj_low_speed - consistency_low_speed) > 1e-6:
-            errors.append(('consistency.low_speed_thresh', 
-                          f'一致性检查低速阈值 ({consistency_low_speed}) 与轨迹低速阈值 ({traj_low_speed}) 不一致。'
-                          f'建议移除 consistency.low_speed_thresh 配置，统一使用 trajectory.low_speed_thresh'))
+    if consistency_low_speed is not None:
+        errors.append(('consistency.low_speed_thresh', 
+                      f'consistency.low_speed_thresh 已废弃，请移除此配置。'
+                      f'统一使用 trajectory.low_speed_thresh'))
     
     # Transform 配置一致性检查
     fallback_duration = get_config_value(config, 'transform.fallback_duration_limit_ms')

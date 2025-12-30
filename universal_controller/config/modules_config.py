@@ -24,16 +24,19 @@
 """
 
 # 一致性检查配置
+#
+# 注意: low_speed_thresh 统一定义在 trajectory_config.py 中
+# 一致性检查器通过 trajectory.low_speed_thresh 获取此值
+# 这确保了轨迹速度计算和一致性检查使用相同的阈值
+#
 CONSISTENCY_CONFIG = {
     'kappa_thresh': 0.5,              # 曲率一致性阈值
     'v_dir_thresh': 0.8,              # 速度方向一致性阈值
     'temporal_smooth_thresh': 0.5,    # 时序平滑度阈值
-    # 注意: low_speed_thresh 统一使用 trajectory.low_speed_thresh
-    # 一致性检查器会从 trajectory 配置中读取此值
-    # 这样可以确保轨迹速度计算和一致性检查使用相同的阈值
     'alpha_min': 0.1,                 # α 最小值
     'max_curvature': 10.0,            # 曲率计算的最大值限制 (1/m)
     'temporal_window_size': 10,       # 时序平滑度计算的滑动窗口大小
+    'invalid_data_confidence': 0.5,   # 数据无效时的保守置信度
     'weights': {
         'kappa': 1.0,                 # 曲率权重
         'velocity': 1.5,              # 速度方向权重
@@ -84,35 +87,78 @@ TRANSITION_CONFIG = {
 }
 
 # 备份控制器配置 (Pure Pursuit)
+#
+# 控制模式切换逻辑说明:
+# =====================
+# Pure Pursuit 根据目标点相对于车辆的角度选择不同的控制策略:
+#
+#   目标点角度 (相对于车辆前进方向):
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │  0° ~ pure_pursuit_angle_thresh (60°)  → Pure Pursuit 曲率控制
+#   │  60° ~ heading_control_angle_thresh (90°) → 混合过渡区域
+#   │  90° ~ 180° → 航向误差控制 (先转向再前进)
+#   └─────────────────────────────────────────────────────────────┘
+#
+#   航向误差处理:
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │  heading_error < heading_error_thresh (60°) → 边走边转
+#   │  heading_error >= heading_error_thresh (60°) → 停止前进，原地转向
+#   └─────────────────────────────────────────────────────────────┘
+#
+# 共享参数说明:
+# =============
+# 以下参数同时被 Pure Pursuit 备份控制器和 MPC Fallback 求解器使用:
+# - max_curvature: 最大曲率限制
+# - min_distance_thresh: 最小距离阈值
+# - min_turn_speed: 阿克曼车辆最小转向速度
+# - default_speed_ratio: 无 soft 速度时的默认速度比例
+# 这确保了两种备份模式的行为一致性。
+#
 BACKUP_CONFIG = {
+    # 前瞻距离参数
     'lookahead_dist': 1.0,            # 前瞻距离 (m)
     'min_lookahead': 0.5,             # 最小前瞻距离 (m)
     'max_lookahead': 3.0,             # 最大前瞻距离 (m)
-    'lookahead_ratio': 0.5,           # 前瞻比例
-    'kp_z': 1.0,                      # Z 方向增益
+    'lookahead_ratio': 0.5,           # 前瞻比例 (速度越快，前瞻越远)
+    
+    # 控制增益
+    'kp_z': 1.0,                      # Z 方向增益 (3D 平台用)
     'kp_heading': 1.5,                # 航向增益
-    'heading_mode': 'follow_velocity',  # 航向模式
-    'dt': 0.02,                       # 时间步长 (秒)
+    
+    # 时间步长
+    # 注意: 这是 Pure Pursuit 的控制周期，通常与系统控制频率相关
+    # 而不是与轨迹时间步长相关
+    'dt': 0.02,                       # 时间步长 (秒) - 对应 50Hz 控制频率
+    
+    # 航向模式
+    'heading_mode': 'follow_velocity',  # 航向模式: follow_velocity, fixed, target_point, manual
     
     # Pure Pursuit 控制参数
-    'heading_error_thresh': 1.047,    # 航向误差阈值 (rad, ~60°)
-    'pure_pursuit_angle_thresh': 1.047,  # Pure Pursuit 模式角度阈值
-    'heading_control_angle_thresh': 1.571,  # 航向控制模式角度阈值 (~90°)
+    'heading_error_thresh': 1.047,    # 航向误差阈值 (rad, ~60°) - 超过此值停止前进
+    'pure_pursuit_angle_thresh': 1.047,  # Pure Pursuit 模式角度阈值 (rad, ~60°)
+    'heading_control_angle_thresh': 1.571,  # 航向控制模式角度阈值 (rad, ~90°)
     'max_curvature': 5.0,             # 最大曲率限制 (1/m)
     'min_turn_speed': 0.1,            # 阿克曼车辆最小转向速度 (m/s)
     'default_speed_ratio': 0.5,       # 无 soft 速度时的默认速度比例
     
     # 低速过渡参数
     'low_speed_transition_factor': 0.5,  # 低速过渡区域因子
-    
-    # 曲率速度限制阈值
-    'curvature_speed_limit_thresh': 0.1,  # 曲率阈值 (1/m)
+    'curvature_speed_limit_thresh': 0.1,  # 曲率速度限制阈值 (1/m)
     
     # 距离阈值
     'min_distance_thresh': 0.1,       # 最小距离阈值 (m)
     
     # 角速度变化率限制
-    'omega_rate_limit': None,         # None 表示使用 alpha_max * dt
+    # null/None: 自动计算为 alpha_max * dt，确保与角加速度限制一致
+    # 正数: 使用指定值 (rad/s per step)
+    'omega_rate_limit': None,
+    
+    # 正后方处理参数 (防止目标点在正后方时的角速度跳变)
+    # 当 heading_error 接近 ±π 时，arctan2 可能在 +π 和 -π 之间跳变
+    # 这些参数用于检测和处理这种情况
+    'rear_angle_thresh': 2.827,       # 正后方检测阈值 (rad, ~162°, 0.9*π)
+    'rear_direction_min_thresh': 0.05,  # 正后方转向判断最小阈值 (m)
+    'default_turn_direction': 'left',   # 正后方默认转向方向 ("left" 或 "right")
 }
 
 # 模块配置验证规则
@@ -124,6 +170,7 @@ MODULES_VALIDATION_RULES = {
     'consistency.temporal_smooth_thresh': (0.0, 10.0, '时序平滑度阈值'),
     'consistency.max_curvature': (0.1, 100.0, '曲率计算最大值限制 (1/m)'),
     'consistency.temporal_window_size': (2, 100, '时序平滑度滑动窗口大小'),
+    'consistency.invalid_data_confidence': (0.0, 1.0, '数据无效时的保守置信度'),
     'consistency.weights.kappa': (0.0, None, '曲率一致性权重'),
     'consistency.weights.velocity': (0.0, None, '速度方向一致性权重'),
     'consistency.weights.temporal': (0.0, None, '时序平滑度权重'),
@@ -154,4 +201,8 @@ MODULES_VALIDATION_RULES = {
     'backup.min_turn_speed': (0.0, 1.0, '阿克曼车辆最小转向速度 (m/s)'),
     'backup.default_speed_ratio': (0.0, 1.0, '无 soft 速度时的默认速度比例'),
     'backup.min_distance_thresh': (0.001, 1.0, '最小距离阈值 (m)'),
+    'backup.low_speed_transition_factor': (0.0, 1.0, '低速过渡区域因子'),
+    'backup.curvature_speed_limit_thresh': (0.0, 10.0, '曲率速度限制阈值 (1/m)'),
+    'backup.rear_angle_thresh': (1.57, 3.14, '正后方检测阈值 (rad)'),
+    'backup.rear_direction_min_thresh': (0.0, 1.0, '正后方转向判断最小阈值 (m)'),
 }

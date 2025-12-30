@@ -247,5 +247,6 @@ def fill_diagnostics_msg(msg: Any, diag: Dict[str, Any],
     msg.error_message = str(diag.get('error_message', ''))
     msg.consecutive_errors = int(diag.get('consecutive_errors', 0))
     
-    # 紧急停止状态
+    # 安全状态
+    msg.safety_check_passed = bool(diag.get('safety_check_passed', True))
     msg.emergency_stop = bool(diag.get('emergency_stop', False))

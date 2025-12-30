@@ -11,7 +11,7 @@
 MPC_CONFIG = {
     'horizon': 20,                # MPC 预测时域
     'horizon_degraded': 10,       # 降级时的预测时域
-    'dt': 0.02,                   # 时间步长 (秒)
+    'dt': 0.1,                    # 时间步长 (秒) - 应与 trajectory.default_dt_sec 一致
     
     # 代价函数权重
     'weights': {
@@ -38,14 +38,14 @@ MPC_CONFIG = {
         'timeout_decay_rate': 2,           # 超时计数衰减速率
     },
     
-    # Fallback 求解器参数 (ACADOS 不可用时使用)
+    # Fallback 求解器参数
+    # 注意: 共享参数从 backup 配置读取，确保与 Pure Pursuit 备份控制器一致
+    # MPC 特有参数保留在 mpc.fallback 中
     'fallback': {
-        'lookahead_steps': 3,              # 前瞻步数
-        'heading_kp': 1.5,                 # 航向控制增益
-        'max_curvature': 5.0,              # 最大曲率限制 (1/m)
-        'min_distance_thresh': 0.1,        # 最小距离阈值 (m)
-        'min_turn_speed': 0.1,             # 阿克曼车辆最小转向速度 (m/s)
-        'default_speed_ratio': 0.5,        # 无 soft 速度时的默认速度比例
+        'lookahead_steps': 3,              # MPC fallback 特有: 前瞻步数
+        'heading_kp': 1.5,                 # 航向控制增益 (与 backup.kp_heading 保持一致)
+        # 以下参数已移至 backup 配置，这里保留默认值用于向后兼容
+        # 实际使用时应从 backup 配置读取
     },
     
     # ACADOS 求解器参数
@@ -62,13 +62,11 @@ MPC_VALIDATION_RULES = {
     'mpc.horizon': (1, 100, 'MPC 预测时域'),
     'mpc.horizon_degraded': (1, 100, 'MPC 降级预测时域'),
     'mpc.dt': (0.001, 1.0, 'MPC 时间步长 (秒)'),
-    # Fallback 求解器参数
+    # Fallback 求解器参数 (MPC 特有)
     'mpc.fallback.lookahead_steps': (1, 50, 'Fallback 前瞻步数'),
     'mpc.fallback.heading_kp': (0.1, 10.0, 'Fallback 航向控制增益'),
-    'mpc.fallback.max_curvature': (0.1, 20.0, 'Fallback 最大曲率限制 (1/m)'),
-    'mpc.fallback.min_distance_thresh': (0.001, 1.0, 'Fallback 最小距离阈值 (m)'),
-    'mpc.fallback.min_turn_speed': (0.0, 1.0, 'Fallback 最小转向速度 (m/s)'),
-    'mpc.fallback.default_speed_ratio': (0.0, 1.0, 'Fallback 默认速度比例'),
+    # 注意: max_curvature, min_distance_thresh, min_turn_speed, default_speed_ratio
+    # 已统一到 backup 配置，验证规则在 MODULES_VALIDATION_RULES 中
     # MPC 权重 (必须为非负数)
     'mpc.weights.position': (0.0, None, 'MPC 位置权重'),
     'mpc.weights.velocity': (0.0, None, 'MPC 速度权重'),

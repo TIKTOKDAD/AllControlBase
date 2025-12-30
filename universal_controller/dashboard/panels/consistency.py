@@ -3,13 +3,18 @@
 
 配置来源: universal_controller/config/modules_config.py -> CONSISTENCY_CONFIG
 YAML 覆盖: controller_ros/config/turtlebot1.yaml -> consistency 节
+
+显示：
+- 融合权重 α_soft
+- 曲率/速度方向/时序一致性
+- Soft Head 状态
 """
 
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout
 from PyQt5.QtCore import Qt
 from ..widgets.progress_bar import ColorProgressBar
 from ..widgets.status_led import StatusLED
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 
 # 从统一配置模块导入默认值
 from ...config import CONSISTENCY_CONFIG
@@ -72,7 +77,7 @@ class ConsistencyPanel(QGroupBox):
         
         # 权重配置
         weight_title = QLabel('权重配置')
-        weight_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        weight_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(weight_title)
         
         weight_grid = QGridLayout()
@@ -98,7 +103,7 @@ class ConsistencyPanel(QGroupBox):
         
         # 状态
         status_title = QLabel('状态')
-        status_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        status_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(status_title)
         
         self.soft_led = StatusLED('Soft Head')

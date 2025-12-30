@@ -1,12 +1,18 @@
 """
 控制输出面板
+
+显示：
+- 速度命令 (vx, vy, vz, omega)
+- 控制器信息
+- 过渡状态
+- 安全检查
 """
 
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout
 from PyQt5.QtCore import Qt
 from ..widgets.progress_bar import ColorProgressBar
 from ..widgets.status_led import StatusLED
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE
 
 
 class ControlPanel(QGroupBox):
@@ -22,7 +28,7 @@ class ControlPanel(QGroupBox):
         
         # 速度命令
         vel_title = QLabel('速度命令')
-        vel_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        vel_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(vel_title)
         
         self.vx_progress = self._add_velocity_row(layout, 'vx', 2.0, 'm/s')
@@ -34,7 +40,7 @@ class ControlPanel(QGroupBox):
         
         # 控制器信息
         ctrl_title = QLabel('控制器信息')
-        ctrl_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        ctrl_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(ctrl_title)
         
         ctrl_grid = QGridLayout()
@@ -60,7 +66,7 @@ class ControlPanel(QGroupBox):
         
         # 过渡状态
         trans_title = QLabel('过渡状态')
-        trans_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        trans_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(trans_title)
         
         self.transition_led = StatusLED('过渡中')
@@ -84,7 +90,7 @@ class ControlPanel(QGroupBox):
         
         # 安全检查
         safety_title = QLabel('安全检查')
-        safety_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        safety_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(safety_title)
         
         self.safety_led = StatusLED('安全检查')

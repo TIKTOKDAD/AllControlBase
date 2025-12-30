@@ -17,15 +17,22 @@ class PurePursuitController(ITrajectoryTracker):
     """Pure Pursuit 备用控制器"""
     
     def __init__(self, config: Dict[str, Any], platform_config: Dict[str, Any]):
-        backup_config = config.get('backup', config)
+        backup_config = config.get('backup', {})
         
-        self.lookahead_dist = backup_config.get('lookahead_dist', 1.0)
-        self.min_lookahead = backup_config.get('min_lookahead', 0.5)
-        self.max_lookahead = backup_config.get('max_lookahead', 3.0)
-        self.lookahead_ratio = backup_config.get('lookahead_ratio', 0.5)
-        self.kp_z = backup_config.get('kp_z', 1.0)
-        self.dt = backup_config.get('dt', 0.02)
+        # 前瞻距离参数
+        self.lookahead_dist = backup_config['lookahead_dist']
+        self.min_lookahead = backup_config['min_lookahead']
+        self.max_lookahead = backup_config['max_lookahead']
+        self.lookahead_ratio = backup_config['lookahead_ratio']
         
+        # 控制增益
+        self.kp_z = backup_config['kp_z']
+        self.kp_heading = backup_config['kp_heading']
+        
+        # 时间步长
+        self.dt = backup_config['dt']
+        
+        # 约束参数
         constraints = config.get('constraints', platform_config.get('constraints', {}))
         self.v_max = constraints.get('v_max', 2.0)
         self.v_min = constraints.get('v_min', 0.0)
@@ -42,49 +49,42 @@ class PurePursuitController(ITrajectoryTracker):
         self.vy_max = constraints.get('vy_max', self.v_max)
         self.vy_min = constraints.get('vy_min', -self.v_max)
         
+        # 平台配置
         self.output_type = platform_config.get('output_type', 'differential')
         self.output_frame = platform_config.get('output_frame', 'base_link')
         self.platform_type = platform_config.get('type', PlatformType.DIFFERENTIAL)
         self.is_3d = self.platform_type == PlatformType.QUADROTOR
         self.is_omni = self.platform_type == PlatformType.OMNI
         
-        self.heading_mode = self._parse_heading_mode(backup_config.get('heading_mode', 'follow_velocity'))
-        self.kp_heading = backup_config.get('kp_heading', 1.5)
+        # 航向模式
+        self.heading_mode = self._parse_heading_mode(backup_config['heading_mode'])
         self.fixed_heading: Optional[float] = backup_config.get('fixed_heading')
         
-        # Pure Pursuit 控制参数 - 从配置读取
-        self.heading_error_thresh = backup_config.get('heading_error_thresh', np.pi / 3)  # ~60°
-        self.pure_pursuit_angle_thresh = backup_config.get('pure_pursuit_angle_thresh', np.pi / 3)  # ~60°
-        self.heading_control_angle_thresh = backup_config.get('heading_control_angle_thresh', np.pi / 2)  # ~90°
-        self.max_curvature = backup_config.get('max_curvature', 5.0)
-        self.min_turn_speed = backup_config.get('min_turn_speed', 0.1)
-        self.default_speed_ratio = backup_config.get('default_speed_ratio', 0.5)  # 默认速度比例
+        # Pure Pursuit 控制参数
+        self.heading_error_thresh = backup_config['heading_error_thresh']
+        self.pure_pursuit_angle_thresh = backup_config['pure_pursuit_angle_thresh']
+        self.heading_control_angle_thresh = backup_config['heading_control_angle_thresh']
+        self.max_curvature = backup_config['max_curvature']
+        self.min_turn_speed = backup_config['min_turn_speed']
+        self.default_speed_ratio = backup_config['default_speed_ratio']
         
-        # 低速过渡和距离阈值参数 - 从配置读取
-        self.low_speed_transition_factor = backup_config.get('low_speed_transition_factor', 0.5)
-        self.curvature_speed_limit_thresh = backup_config.get('curvature_speed_limit_thresh', 0.1)
-        self.min_distance_thresh = backup_config.get('min_distance_thresh', 0.1)
+        # 低速过渡和距离阈值参数
+        self.low_speed_transition_factor = backup_config['low_speed_transition_factor']
+        self.curvature_speed_limit_thresh = backup_config['curvature_speed_limit_thresh']
+        self.min_distance_thresh = backup_config['min_distance_thresh']
         
         # 角速度变化率限制 (用于防止目标点在正后方时的跳变)
         # 默认使用 alpha_max * dt，但可以单独配置
-        omega_rate_config = backup_config.get('omega_rate_limit')
+        omega_rate_config = backup_config['omega_rate_limit']
         if omega_rate_config is not None:
             self.omega_rate_limit = omega_rate_config
         else:
             self.omega_rate_limit = self.alpha_max * self.dt
         
-        # 正后方检测阈值 (当 heading_error 接近 ±π 时)
-        # 用于避免 arctan2 在 +π 和 -π 之间跳变导致的角速度突变
-        self.rear_angle_thresh = backup_config.get('rear_angle_thresh', 0.9 * np.pi)  # ~162°
-        
-        # 正后方转向方向判断的最小阈值
-        # 当 |local_y| < 此阈值时，认为目标点完全在正后方，使用默认转向方向
-        # 默认 0.05m，可配置以适应不同的噪声环境
-        self.rear_direction_min_thresh = backup_config.get('rear_direction_min_thresh', 0.05)
-        
-        # 正后方默认转向方向: 1 = 左转 (逆时针), -1 = 右转 (顺时针)
-        # 当目标点完全在正后方且无法判断偏向时使用此默认值
-        default_turn_str = backup_config.get('default_turn_direction', 'left')
+        # 正后方处理参数
+        self.rear_angle_thresh = backup_config['rear_angle_thresh']
+        self.rear_direction_min_thresh = backup_config['rear_direction_min_thresh']
+        default_turn_str = backup_config['default_turn_direction']
         self.default_turn_direction = 1 if default_turn_str.lower() == 'left' else -1
         
         # 记录上一次的转向方向，用于正后方情况下保持一致的转向

@@ -81,6 +81,11 @@ class MPCHealthStatus:
     degradation_warning: bool = False
     can_recover: bool = True
     healthy: bool = True
+    # 新增监控指标
+    dt_mismatch: bool = False             # MPC dt 与控制周期不匹配
+    mpc_dt: float = 0.02                  # MPC 时间步长
+    control_period: float = 0.02          # 控制周期
+    consecutive_good: int = 0             # 连续良好次数
 
 
 @dataclass
@@ -108,11 +113,21 @@ class TimeoutStatus:
 
 @dataclass
 class TrackingStatus:
-    """跟踪状态"""
+    """跟踪状态
+    
+    所有误差值均为绝对值（非负），用于诊断和质量评估。
+    
+    字段说明:
+    - lateral_error: 横向误差绝对值 (m)，垂直于轨迹方向
+    - longitudinal_error: 纵向误差绝对值 (m)，沿轨迹方向
+    - heading_error: 航向误差绝对值 (rad)
+    - prediction_error: 预测误差 (m)，MPC 预测状态与实际状态的差异
+                        NaN 表示无预测数据（如使用 fallback 求解器时）
+    """
     lateral_error: float = 0.0
     longitudinal_error: float = 0.0
     heading_error: float = 0.0
-    prediction_error: float = 0.0
+    prediction_error: float = float('nan')  # NaN 表示无数据
 
 
 @dataclass
@@ -129,6 +144,11 @@ class EstimatorStatus:
     slip_detection_enabled: bool = False
     drift_correction_enabled: bool = False
     heading_fallback_enabled: bool = False
+    # 新增监控指标
+    imu_drift_rate: float = 0.0           # IMU 漂移率 (rad/s)
+    high_slip_rate: float = 0.0           # 高打滑率 (%)
+    innovation_warning: bool = False       # 新息范数警告
+    covariance_warning: bool = False       # 协方差范数警告
 
 
 @dataclass
@@ -241,5 +261,5 @@ class DisplayData:
     statistics: StatisticsData = field(default_factory=StatisticsData)
     
     # 元信息
-    version: str = 'v3.17.12'
+    version: str = ''  # 由 data_source 从 __version__ 设置
     transition_progress: float = 1.0

@@ -219,8 +219,12 @@ class TestWithRealComponents:
         """测试与 ControllerBridge 的集成"""
         from controller_ros.lifecycle import HealthChecker
         from controller_ros.bridge import ControllerBridge
+        from universal_controller.config.default_config import DEFAULT_CONFIG
         
-        config = {'system': {'platform': 'differential'}}
+        # 使用完整的默认配置
+        config = DEFAULT_CONFIG.copy()
+        config['system'] = DEFAULT_CONFIG['system'].copy()
+        config['system']['platform'] = 'differential'
         bridge = ControllerBridge(config)
         
         checker = HealthChecker()

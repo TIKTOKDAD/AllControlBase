@@ -3,12 +3,17 @@
 
 配置来源: universal_controller/config/system_config.py -> TRACKING_CONFIG
 YAML 覆盖: controller_ros/config/turtlebot1.yaml -> tracking 节
+
+显示：
+- 横向/纵向/航向/预测误差
+- 误差趋势
+- 跟踪质量评分
 """
 
 from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel
 from PyQt5.QtCore import Qt
 from ..widgets.progress_bar import ColorProgressBar
-from ..styles import COLORS
+from ..styles import COLORS, PANEL_TITLE_STYLE, get_quality_color
 
 # 从统一配置模块导入默认值
 from ...config import TRACKING_CONFIG
@@ -73,7 +78,7 @@ class TrackingPanel(QGroupBox):
         
         # 误差趋势
         trend_title = QLabel('误差趋势')
-        trend_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        trend_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(trend_title)
         
         self.lateral_trend = self._add_trend_row(layout, '横向:')
@@ -84,10 +89,11 @@ class TrackingPanel(QGroupBox):
         
         # 跟踪质量评分
         quality_title = QLabel('跟踪质量评分')
-        quality_title.setStyleSheet('color: #2196F3; font-weight: bold; border-bottom: 1px solid #3D3D3D; padding-bottom: 3px;')
+        quality_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(quality_title)
         
         self.quality_progress = ColorProgressBar(show_percent=True)
+        self.quality_progress.set_inverted(True)  # 质量评分越高越好
         layout.addWidget(self.quality_progress)
         
         rating_row = QHBoxLayout()
@@ -181,13 +187,17 @@ class TrackingPanel(QGroupBox):
         # 根据评级阈值确定评级
         rating_config = self._config['rating']
         if quality >= rating_config['excellent']:
-            rating, color = '优秀 (Excellent)', COLORS['success']
+            rating = '优秀 (Excellent)'
+            color = get_quality_color(quality)
         elif quality >= rating_config['good']:
-            rating, color = '良好 (Good)', COLORS['success']
+            rating = '良好 (Good)'
+            color = get_quality_color(quality)
         elif quality >= rating_config['fair']:
-            rating, color = '一般 (Fair)', COLORS['warning']
+            rating = '一般 (Fair)'
+            color = get_quality_color(quality)
         else:
-            rating, color = '较差 (Poor)', COLORS['error']
+            rating = '较差 (Poor)'
+            color = get_quality_color(quality)
         
         self.rating_label.setText(rating)
         self.rating_label.setStyleSheet(f'color: {color}; font-weight: bold;')

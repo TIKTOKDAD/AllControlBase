@@ -28,7 +28,7 @@ def test_diagnostics_input_defaults():
 def test_diagnostics_input_to_dict():
     """测试 DiagnosticsInput.to_dict()"""
     mpc_health = MPCHealthStatus(
-        healthy=True, warning=False, can_recover=True,
+        healthy=True, degradation_warning=False, can_recover=True,
         consecutive_near_timeout=0, kkt_residual=0.001, condition_number=100.0
     )
     

@@ -71,5 +71,6 @@ float32 transition_progress
 string error_message
 uint32 consecutive_errors
 
-# 紧急停止状态
+# 安全状态
+bool safety_check_passed
 bool emergency_stop
