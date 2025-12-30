@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-测试增强诊断功能
+测试增强诊断功能 v2.1
 
 验证增强诊断模块是否能正常生成建议
+更新：使用整数状态码，与 ControllerState 枚举一致
 """
 
 import sys
@@ -20,7 +21,8 @@ if sys.platform == 'win32':
 
 sys.path.insert(0, '.')
 
-from enhanced_diagnostics import EnhancedDiagnostics
+from enhanced_diagnostics import EnhancedDiagnostics, ControllerState
+
 
 def test_scenario_1_high_error_smooth_control():
     """场景1: 跟踪误差大但控制平滑 - 应该建议增加 position/heading 权重"""
@@ -43,7 +45,7 @@ def test_scenario_1_high_error_smooth_control():
             'tracking_longitudinal_error': 0.25 + 0.05 * np.random.randn(),  # 大误差
             'tracking_heading_error': 0.35 + 0.1 * np.random.randn(),  # 大误差
             'alpha': 0.95,
-            'state': 'MPC_CONTROL',
+            'state': ControllerState.NORMAL,  # 使用整数状态码
             'mpc_success': True
         }
         analyzer.add_sample(diag)
@@ -94,7 +96,7 @@ def test_scenario_2_control_jitter():
             'tracking_longitudinal_error': 0.10,  # 小误差
             'tracking_heading_error': 0.15,  # 小误差
             'alpha': 0.95,
-            'state': 'MPC_CONTROL',
+            'state': ControllerState.NORMAL,  # 使用整数状态码
             'mpc_success': True
         }
         analyzer.add_sample(diag)
@@ -140,7 +142,7 @@ def test_scenario_3_high_rejection_rate():
             'tracking_longitudinal_error': 0.10,
             'tracking_heading_error': 0.15,
             'alpha': alpha,
-            'state': 'MPC_CONTROL',
+            'state': ControllerState.NORMAL,  # 使用整数状态码
             'mpc_success': True
         }
         analyzer.add_sample(diag)
@@ -176,11 +178,12 @@ def test_scenario_4_frequent_state_transitions():
     
     analyzer = EnhancedDiagnostics(window_size=100)
     
-    # 模拟数据：频繁切换
+    # 模拟数据：频繁切换（使用整数状态码）
     base_time = 1000.0
     for i in range(100):
         t = base_time + i * 0.05
-        state = 'BACKUP_CONTROL' if i % 5 < 2 else 'MPC_CONTROL'  # 40% 时间在 backup
+        # 40% 时间在 BACKUP_ACTIVE，60% 时间在 NORMAL
+        state = ControllerState.BACKUP_ACTIVE if i % 5 < 2 else ControllerState.NORMAL
         diag = {
             'timestamp': t,
             'cmd_vx': 0.3,
@@ -191,7 +194,7 @@ def test_scenario_4_frequent_state_transitions():
             'tracking_heading_error': 0.15,
             'alpha': 0.95,
             'state': state,
-            'mpc_success': state == 'MPC_CONTROL'
+            'mpc_success': state == ControllerState.NORMAL
         }
         analyzer.add_sample(diag)
     
@@ -243,7 +246,7 @@ def test_complete_report():
             'tracking_longitudinal_error': 0.10 + 0.02 * np.random.randn(),
             'tracking_heading_error': 0.15 + 0.05 * np.random.randn(),
             'alpha': 0.95,
-            'state': 'MPC_CONTROL',
+            'state': ControllerState.NORMAL,  # 使用整数状态码
             'mpc_success': True
         }
         analyzer.add_sample(diag)
@@ -268,7 +271,7 @@ def test_complete_report():
 
 if __name__ == '__main__':
     print("="*70)
-    print("  增强诊断功能测试")
+    print("  增强诊断功能测试 v2.1")
     print("="*70)
     
     try:

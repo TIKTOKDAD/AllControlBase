@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-增强诊断模块 v2.0 - 统一架构重构版
+增强诊断模块 v2.1 - 统一架构重构版
 
 此模块提供额外的诊断功能，用于分析影响轨迹跟踪但未被标准诊断覆盖的参数：
 1. MPC 权重分析（position, velocity, heading, control_accel, control_alpha）
 2. 一致性检查性能分析（alpha 拒绝率，kappa/v_dir 阈值）
 3. 状态机切换分析（切换频率，MPC 失败检测）
 
-架构改进：
-- 统一使用消息 timestamp，不再使用 time.time()
-- 统一变化率计算逻辑，避免重复
-- 添加纵向跟踪误差分析
-- 修正单位标注（m/s² 而非 m/s²/s）
-- 优化建议生成逻辑
+架构改进 (v2.1):
+- 统一时间戳处理：调用方必须提供 timestamp 字段，不再从 header 中提取
+- 统一状态码处理：state 字段为整数，与 ControllerState 枚举一致
+- window_size 根据 duration 动态计算，避免数据丢失
+- 移除 header 字段依赖，简化数据契约
+
+数据契约：
+- timestamp: float, 消息时间戳（秒），必须由调用方提供
+- cmd_vx, cmd_vy, cmd_omega: float, 控制命令
+- tracking_lateral_error, tracking_longitudinal_error, tracking_heading_error: float, 跟踪误差
+- alpha: float, 一致性权重
+- state: int, 控制器状态码（与 ControllerState 枚举一致）
+- mpc_success: bool, MPC 求解是否成功
 
 使用方法:
   # 在 unified_diagnostics.py 中导入使用
@@ -23,7 +30,7 @@
   rosrun controller_ros enhanced_diagnostics.py --duration 60
 
 作者: Kiro Auto-generated
-版本: 2.0
+版本: 2.2 (统一诊断阈值配置)
 """
 
 import sys
@@ -51,26 +58,111 @@ class ControlSample:
     vy: float
     omega: float
     lateral_error: float
-    longitudinal_error: float  # 新增：纵向误差
+    longitudinal_error: float
     heading_error: float
     alpha: float
-    state: str
+    state: int  # 状态码（整数），与 ControllerState 枚举一致
     mpc_success: bool
+
+
+# 控制器状态枚举 - 与 universal_controller.core.enums.ControllerState 保持一致
+class ControllerState:
+    """控制器状态枚举"""
+    INIT = 0
+    NORMAL = 1
+    SOFT_DISABLED = 2
+    MPC_DEGRADED = 3
+    BACKUP_ACTIVE = 4
+    STOPPING = 5
+    STOPPED = 6
+    
+    NAMES = {
+        0: 'INIT',
+        1: 'NORMAL',
+        2: 'SOFT_DISABLED',
+        3: 'MPC_DEGRADED',
+        4: 'BACKUP_ACTIVE',
+        5: 'STOPPING',
+        6: 'STOPPED',
+    }
+    
+    @classmethod
+    def get_name(cls, state: int) -> str:
+        return cls.NAMES.get(state, f'UNKNOWN({state})')
+    
+    @classmethod
+    def is_backup_or_degraded(cls, state: int) -> bool:
+        """判断是否处于备用或降级状态"""
+        return state in [cls.MPC_DEGRADED, cls.BACKUP_ACTIVE]
+    
+    @classmethod
+    def is_normal(cls, state: int) -> bool:
+        """判断是否处于正常状态"""
+        return state == cls.NORMAL
+
+
+# ============================================================================
+# 诊断阈值配置 (与 unified_diagnostics.py 保持一致)
+# ============================================================================
+
+class DiagnosticsThresholds:
+    """
+    诊断阈值配置 - 统一管理所有诊断判断阈值
+    
+    此类与 unified_diagnostics.py 中的 DiagnosticsThresholds 保持一致，
+    确保增强诊断模块使用相同的阈值标准。
+    """
+    
+    # ===== 跟踪误差阈值 (来自 system_config.py -> TRACKING_CONFIG) =====
+    TRACKING_LATERAL_THRESH = 0.3        # 横向误差阈值 (m)
+    TRACKING_LONGITUDINAL_THRESH = 0.5   # 纵向误差阈值 (m)
+    TRACKING_HEADING_THRESH = 0.5        # 航向误差阈值 (rad, ~28.6°)
+    
+    # 运行时调优阈值
+    TUNING_LATERAL_ERROR_HIGH = 0.15     # 触发权重调整建议
+    TUNING_LONGITUDINAL_ERROR_HIGH = 0.20  # 触发权重调整建议
+    TUNING_HEADING_ERROR_HIGH = 0.3      # 触发权重调整建议 (rad)
+    
+    # 控制平滑性阈值
+    MAX_ACCEL_SMOOTH = 3.0               # 加速度平滑阈值 (m/s²)
+    MAX_ACCEL_JITTER = 8.0               # 加速度抖动阈值 (m/s²)
+    MAX_ANGULAR_ACCEL_SMOOTH = 5.0       # 角加速度平滑阈值 (rad/s²)
+    MAX_ANGULAR_ACCEL_JITTER = 15.0      # 角加速度抖动阈值 (rad/s²)
+    
+    # 一致性检查阈值
+    ALPHA_WARN = 0.5                     # Alpha 警告值
+    ALPHA_CRITICAL = 0.3                 # Alpha 临界值
+    ALPHA_VERY_LOW = 0.2                 # Alpha 极低值
+    CONSISTENCY_REJECTION_HIGH = 0.1     # 一致性拒绝率高阈值
+    CONSISTENCY_REJECTION_MED = 0.05     # 一致性拒绝率中阈值
+    
+    # 状态机切换阈值
+    STATE_TRANSITION_RATE_HIGH = 0.5     # 状态切换频率高阈值 (次/秒)
+    STATE_TRANSITION_RATE_MED = 0.1      # 状态切换频率中阈值 (次/秒)
 
 
 class EnhancedDiagnostics:
     """
-    增强诊断分析器 v2.0
+    增强诊断分析器 v2.1
     
     统一架构，避免重复计算，提供完整的参数诊断
+    
+    数据契约：
+    - timestamp: float, 消息时间戳（秒），必须由调用方提供
+    - cmd_vx, cmd_vy, cmd_omega: float, 控制命令
+    - tracking_lateral_error, tracking_longitudinal_error, tracking_heading_error: float, 跟踪误差
+    - alpha: float, 一致性权重
+    - state: int, 控制器状态码（与 ControllerState 枚举一致）
+    - mpc_success: bool, MPC 求解是否成功
     """
     
-    def __init__(self, window_size: int = 200):
+    def __init__(self, window_size: int = 1000):
         """
         初始化
         
         Args:
-            window_size: 滑动窗口大小（默认200个样本）
+            window_size: 滑动窗口大小，应根据 duration * 诊断频率 设置
+                        默认 1000 支持 50 秒 @ 20Hz
         """
         self.window_size = window_size
         self.samples = deque(maxlen=window_size)
@@ -85,15 +177,27 @@ class EnhancedDiagnostics:
         添加诊断样本
         
         Args:
-            diag: DiagnosticsV2 消息字典，必须包含 timestamp
+            diag: 诊断数据字典，必须包含 timestamp 字段（float，秒）
+                  调用方负责从 ROS 消息中提取时间戳
+        
+        Raises:
+            ValueError: 如果 timestamp 无效
         """
-        # 使用消息自带的 timestamp，而不是 time.time()
+        # timestamp 必须由调用方提供，不再尝试从 header 中提取
+        # 这确保了时间戳处理的一致性
         timestamp = diag.get('timestamp', 0.0)
-        if timestamp == 0.0:
-            # 如果消息没有 timestamp，使用 header.stamp
-            header = diag.get('header')
-            if header:
-                timestamp = header.stamp.to_sec() if hasattr(header.stamp, 'to_sec') else float(header.stamp.secs) + float(header.stamp.nsecs) * 1e-9
+        if timestamp <= 0.0:
+            # 如果没有有效时间戳，跳过此样本
+            return
+        
+        # 状态必须是整数
+        state = diag.get('state', ControllerState.INIT)
+        if not isinstance(state, int):
+            # 尝试转换，如果失败则使用默认值
+            try:
+                state = int(state)
+            except (ValueError, TypeError):
+                state = ControllerState.INIT
         
         sample = ControlSample(
             timestamp=timestamp,
@@ -104,7 +208,7 @@ class EnhancedDiagnostics:
             longitudinal_error=diag.get('tracking_longitudinal_error', 0.0),
             heading_error=diag.get('tracking_heading_error', 0.0),
             alpha=diag.get('alpha', 1.0),
-            state=diag.get('state', 'UNKNOWN'),
+            state=state,
             mpc_success=diag.get('mpc_success', False)
         )
         
@@ -209,14 +313,9 @@ class EnhancedDiagnostics:
         }
         
         # 判断逻辑：误差大但控制平滑 → 跟踪权重过低
-        # 阈值说明：
-        # - 横向误差 > 0.15m 认为较大
-        # - 纵向误差 > 0.20m 认为较大
-        # - 航向误差 > 0.3 rad (17°) 认为较大
-        # - 加速度 < 3.0 m/s² 认为平滑
-        # - 角加速度 < 5.0 rad/s² 认为平滑
+        # 使用 DiagnosticsThresholds 统一管理阈值
         
-        if avg_lateral > 0.15 and derivatives['max_accel'] < 3.0:
+        if avg_lateral > DiagnosticsThresholds.TUNING_LATERAL_ERROR_HIGH and derivatives['max_accel'] < DiagnosticsThresholds.MAX_ACCEL_SMOOTH:
             result["suggestions"].append({
                 "parameter": "mpc.weights.position",
                 "current_issue": f"横向误差较大 (avg={avg_lateral:.3f}m, max={max_lateral:.3f}m) 但控制很平滑",
@@ -224,7 +323,7 @@ class EnhancedDiagnostics:
                 "priority": "high"
             })
         
-        if avg_longitudinal > 0.20 and derivatives['max_accel'] < 3.0:
+        if avg_longitudinal > DiagnosticsThresholds.TUNING_LONGITUDINAL_ERROR_HIGH and derivatives['max_accel'] < DiagnosticsThresholds.MAX_ACCEL_SMOOTH:
             result["suggestions"].append({
                 "parameter": "mpc.weights.velocity",
                 "current_issue": f"纵向误差较大 (avg={avg_longitudinal:.3f}m, max={max_longitudinal:.3f}m) 但控制很平滑",
@@ -232,7 +331,7 @@ class EnhancedDiagnostics:
                 "priority": "high"
             })
         
-        if avg_heading > 0.3 and derivatives['max_angular_accel'] < 5.0:
+        if avg_heading > DiagnosticsThresholds.TUNING_HEADING_ERROR_HIGH and derivatives['max_angular_accel'] < DiagnosticsThresholds.MAX_ANGULAR_ACCEL_SMOOTH:
             result["suggestions"].append({
                 "parameter": "mpc.weights.heading",
                 "current_issue": f"航向误差较大 (avg={np.rad2deg(avg_heading):.1f}°, max={np.rad2deg(max_heading):.1f}°) 但控制很平滑",
@@ -241,11 +340,9 @@ class EnhancedDiagnostics:
             })
         
         # 判断逻辑：控制抖动大 → 平滑权重过低
-        # 阈值说明：
-        # - 加速度 > 8.0 m/s² 认为抖动大
-        # - 角加速度 > 15.0 rad/s² 认为抖动大
+        # 使用 DiagnosticsThresholds 统一管理阈值
         
-        if derivatives['max_accel'] > 8.0:
+        if derivatives['max_accel'] > DiagnosticsThresholds.MAX_ACCEL_JITTER:
             result["suggestions"].append({
                 "parameter": "mpc.weights.control_accel",
                 "current_issue": f"加速度变化过大 (avg={derivatives['avg_accel']:.2f} m/s², max={derivatives['max_accel']:.2f} m/s²)",
@@ -253,7 +350,7 @@ class EnhancedDiagnostics:
                 "priority": "high"
             })
         
-        if derivatives['max_angular_accel'] > 15.0:
+        if derivatives['max_angular_accel'] > DiagnosticsThresholds.MAX_ANGULAR_ACCEL_JITTER:
             result["suggestions"].append({
                 "parameter": "mpc.weights.control_alpha",
                 "current_issue": f"角加速度变化过大 (avg={derivatives['avg_angular_accel']:.2f} rad/s², max={derivatives['max_angular_accel']:.2f} rad/s²)",
@@ -262,7 +359,10 @@ class EnhancedDiagnostics:
             })
         
         # 判断逻辑：误差小且控制平滑 → 权重设置良好
-        if avg_lateral < 0.10 and avg_longitudinal < 0.15 and derivatives['max_accel'] < 3.0:
+        # 使用 DiagnosticsThresholds 统一管理阈值
+        if avg_lateral < DiagnosticsThresholds.TUNING_LATERAL_ERROR_HIGH * 0.67 and \
+           avg_longitudinal < DiagnosticsThresholds.TUNING_LONGITUDINAL_ERROR_HIGH * 0.75 and \
+           derivatives['max_accel'] < DiagnosticsThresholds.MAX_ACCEL_SMOOTH:
             result["suggestions"].append({
                 "parameter": "mpc.weights",
                 "current_issue": "无",
@@ -305,19 +405,16 @@ class EnhancedDiagnostics:
         }
         
         # 判断逻辑：拒绝率过高 → 阈值过严
-        # 阈值说明：
-        # - 拒绝率 > 10% 认为过高
-        # - 拒绝率 5-10% 认为偏高
-        # - 拒绝率 < 5% 认为良好
+        # 使用 DiagnosticsThresholds 统一管理阈值
         
-        if rejection_rate > 0.1:
+        if rejection_rate > DiagnosticsThresholds.CONSISTENCY_REJECTION_HIGH:
             result["suggestions"].append({
                 "parameter": "consistency.kappa_thresh / v_dir_thresh",
                 "current_issue": f"一致性检查拒绝率过高 ({rejection_rate*100:.1f}%)",
                 "suggestion": "放宽一致性阈值 (kappa_thresh: 0.5→0.7, v_dir_thresh: 0.8→0.9)",
                 "priority": "high"
             })
-        elif rejection_rate > 0.05:
+        elif rejection_rate > DiagnosticsThresholds.CONSISTENCY_REJECTION_MED:
             result["suggestions"].append({
                 "parameter": "consistency.kappa_thresh / v_dir_thresh",
                 "current_issue": f"一致性检查拒绝率偏高 ({rejection_rate*100:.1f}%)",
@@ -333,18 +430,16 @@ class EnhancedDiagnostics:
             })
         
         # 判断逻辑：min_alpha 很低 → 轨迹质量问题
-        # 阈值说明：
-        # - min_alpha < 0.2 认为严重问题
-        # - min_alpha < 0.3 认为需要关注
+        # 使用 DiagnosticsThresholds 统一管理阈值
         
-        if min_alpha < 0.2:
+        if min_alpha < DiagnosticsThresholds.ALPHA_VERY_LOW:
             result["suggestions"].append({
                 "parameter": "trajectory quality",
                 "current_issue": f"检测到严重的轨迹一致性问题 (min_alpha={min_alpha:.2f})",
                 "suggestion": "检查轨迹发布节点，可能存在数据质量问题或网络延迟",
                 "priority": "critical"
             })
-        elif min_alpha < 0.3:
+        elif min_alpha < DiagnosticsThresholds.ALPHA_CRITICAL:
             result["suggestions"].append({
                 "parameter": "trajectory quality",
                 "current_issue": f"检测到轨迹一致性偏低 (min_alpha={min_alpha:.2f})",
@@ -393,13 +488,16 @@ class EnhancedDiagnostics:
         backup_to_mpc_count = 0
         
         for _, from_state, to_state in self.state_transitions:
-            key = f"{from_state} → {to_state}"
+            from_name = ControllerState.get_name(from_state)
+            to_name = ControllerState.get_name(to_state)
+            key = f"{from_name} → {to_name}"
             transition_types[key] = transition_types.get(key, 0) + 1
             
-            # 统计 MPC 失败切换
-            if "MPC" in from_state and "BACKUP" in to_state:
+            # 统计 MPC 失败切换（从正常状态切换到备用/降级状态）
+            if ControllerState.is_normal(from_state) and ControllerState.is_backup_or_degraded(to_state):
                 mpc_to_backup_count += 1
-            elif "BACKUP" in from_state and "MPC" in to_state:
+            # 统计恢复切换（从备用/降级状态恢复到正常状态）
+            elif ControllerState.is_backup_or_degraded(from_state) and ControllerState.is_normal(to_state):
                 backup_to_mpc_count += 1
         
         result = {
@@ -415,18 +513,16 @@ class EnhancedDiagnostics:
         }
         
         # 判断逻辑：切换频繁 → 状态机参数不当
-        # 阈值说明：
-        # - 切换频率 > 0.5 次/秒 认为频繁
-        # - 切换频率 > 0.1 次/秒 认为偏高
+        # 使用 DiagnosticsThresholds 统一管理阈值
         
-        if transition_rate > 0.5:
+        if transition_rate > DiagnosticsThresholds.STATE_TRANSITION_RATE_HIGH:
             result["suggestions"].append({
                 "parameter": "safety.state_machine.mpc_fail_thresh / mpc_recovery_thresh",
                 "current_issue": f"状态切换频繁 ({transition_rate:.2f} 次/秒)",
                 "suggestion": "调整状态机参数，减少不必要的切换 (mpc_fail_thresh: 3→5, mpc_recovery_thresh: 5→3)",
                 "priority": "high"
             })
-        elif transition_rate > 0.1:
+        elif transition_rate > DiagnosticsThresholds.STATE_TRANSITION_RATE_MED:
             result["suggestions"].append({
                 "parameter": "safety.state_machine",
                 "current_issue": f"状态切换偏频繁 ({transition_rate:.2f} 次/秒)",
@@ -454,7 +550,7 @@ class EnhancedDiagnostics:
         """
         report = []
         report.append("\n" + "="*70)
-        report.append("  增强诊断报告 (Enhanced Diagnostics Report v2.0)")
+        report.append("  增强诊断报告 (Enhanced Diagnostics Report v2.2)")
         report.append("="*70)
         
         # 1. MPC 权重分析
@@ -566,27 +662,34 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     print("="*70)
-    print("  增强诊断工具 v2.0 - 独立运行模式")
+    print("  增强诊断工具 v2.1 - 独立运行模式")
     print("="*70)
     print(f"\n订阅 /controller/diagnostics 进行分析...")
     print(f"持续时间: {args.duration} 秒\n")
     
     rospy.init_node('enhanced_diagnostics', anonymous=True)
     
-    analyzer = EnhancedDiagnostics(window_size=200)
+    # 计算 window_size：duration * 预期诊断频率(20Hz) * 1.5 安全系数
+    expected_diag_rate = 20
+    window_size = int(args.duration * expected_diag_rate * 1.5)
+    window_size = max(window_size, 500)  # 至少 500 个样本
+    
+    analyzer = EnhancedDiagnostics(window_size=window_size)
     
     def diagnostics_callback(msg):
-        """诊断消息回调"""
+        """诊断消息回调 - 统一时间戳处理"""
+        # 从 header.stamp 提取时间戳
+        timestamp = msg.header.stamp.to_sec() if hasattr(msg.header.stamp, 'to_sec') else 0.0
         diag_dict = {
-            'header': msg.header,
+            'timestamp': timestamp,
             'cmd_vx': msg.cmd_vx,
             'cmd_vy': msg.cmd_vy,
             'cmd_omega': msg.cmd_omega,
             'tracking_lateral_error': msg.tracking_lateral_error,
             'tracking_longitudinal_error': msg.tracking_longitudinal_error,
             'tracking_heading_error': msg.tracking_heading_error,
-            'alpha': msg.consistency_alpha_soft,  # 修复：使用正确的字段名
-            'state': msg.state,
+            'alpha': msg.consistency_alpha_soft,
+            'state': msg.state,  # 整数状态码
             'mpc_success': msg.mpc_success
         }
         analyzer.add_sample(diag_dict)
