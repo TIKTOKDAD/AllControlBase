@@ -10,10 +10,11 @@
 """
 
 # 系统配置
+# 注意: 重力加速度 (gravity) 是物理常量，定义在 core/constants.py 的 DEFAULT_GRAVITY 中
+#       不作为可配置参数，因为在地球表面几乎不变 (9.78-9.83 m/s²)
 SYSTEM_CONFIG = {
     'ctrl_freq': 50,              # 控制频率 (Hz)
     'platform': 'differential',   # 默认平台类型
-    'gravity': 9.81,              # 重力加速度 (m/s²)
     # 控制循环暂停检测
     'long_pause_threshold': 0.5,  # 长时间暂停检测阈值 (秒)
     'ekf_reset_threshold': 2.0,   # EKF 重置阈值 (秒)
@@ -43,10 +44,6 @@ WATCHDOG_CONFIG = {
 # 在 controller_ros/config/ 中定义，不在核心库中定义
 DIAGNOSTICS_CONFIG = {
     'publish_rate': 10,                  # 诊断发布降频率 (每 N 次控制循环发布一次)
-    # 错误处理配置
-    'max_consecutive_errors_detail': 10, # 详细记录错误的最大次数
-    'error_summary_interval': 50,        # 摘要日志间隔（每 N 次错误记录一次）
-    'max_error_count': 1000,             # 错误计数上限（防止整数溢出）
 }
 
 # =============================================================================
@@ -77,9 +74,9 @@ TRACKING_CONFIG = {
 
 # 系统配置验证规则
 # 注意: 超时配置允许 <=0 表示禁用，所以最小值设为 None (无下限)
+# 注意: gravity 是物理常量，不在此验证（定义在 core/constants.py）
 SYSTEM_VALIDATION_RULES = {
     'system.ctrl_freq': (1, 1000, '控制频率 (Hz)'),
-    'system.gravity': (0.1, 20.0, '重力加速度 (m/s²)'),
     'system.long_pause_threshold': (0.01, 10.0, '长时间暂停检测阈值 (秒)'),
     'system.ekf_reset_threshold': (0.1, 60.0, 'EKF 重置阈值 (秒)'),
     'watchdog.odom_timeout_ms': (None, 10000, '里程计超时 (ms)，<=0 禁用'),

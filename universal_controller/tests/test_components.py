@@ -282,7 +282,8 @@ def test_timeout_monitor_disabled_timeout():
     验证当超时阈值 <= 0 时，对应的超时检测被禁用。
     这是 TurtleBot1 等没有 IMU 的平台的常见配置。
     """
-    config = DEFAULT_CONFIG.copy()
+    import copy
+    config = copy.deepcopy(DEFAULT_CONFIG)
     
     # 设置 IMU 超时为负数，表示禁用
     config['watchdog']['imu_timeout_ms'] = -1
@@ -302,7 +303,7 @@ def test_timeout_monitor_disabled_timeout():
     assert status.imu_timeout == False, "IMU timeout should be disabled when threshold <= 0"
     
     # 测试 odom 超时禁用
-    config2 = DEFAULT_CONFIG.copy()
+    config2 = copy.deepcopy(DEFAULT_CONFIG)
     config2['watchdog']['odom_timeout_ms'] = 0  # 0 也表示禁用
     config2['watchdog']['startup_grace_ms'] = 10
     

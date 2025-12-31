@@ -9,7 +9,12 @@
 - safety_config.py: 安全和约束配置
 - ekf_config.py: EKF 配置
 - attitude_config.py: 姿态控制配置
-- modules_config.py: 其他模块配置
+- trajectory_config.py: 轨迹配置
+- consistency_config.py: 一致性检查配置
+- transform_config.py: 坐标变换配置
+- transition_config.py: 平滑过渡配置
+- backup_config.py: 备份控制器配置
+- mock_config.py: Mock 配置
 - validation.py: 配置验证
 
 使用示例:
@@ -39,13 +44,10 @@ from .safety_config import (
 )
 from .ekf_config import EKF_CONFIG, EKF_VALIDATION_RULES
 from .attitude_config import ATTITUDE_CONFIG, ATTITUDE_VALIDATION_RULES
-from .modules_config import (
-    CONSISTENCY_CONFIG,
-    TRANSFORM_CONFIG,
-    TRANSITION_CONFIG,
-    BACKUP_CONFIG,
-    MODULES_VALIDATION_RULES,
-)
+from .consistency_config import CONSISTENCY_CONFIG, CONSISTENCY_VALIDATION_RULES
+from .transform_config import TRANSFORM_CONFIG, TRANSFORM_VALIDATION_RULES
+from .transition_config import TRANSITION_CONFIG, TRANSITION_VALIDATION_RULES
+from .backup_config import BACKUP_CONFIG, BACKUP_VALIDATION_RULES
 from .trajectory_config import TRAJECTORY_CONFIG, TRAJECTORY_VALIDATION_RULES
 from .mock_config import MOCK_CONFIG, MOCK_VALIDATION_RULES, is_mock_allowed
 
@@ -91,7 +93,10 @@ CONFIG_VALIDATION_RULES.update(MPC_VALIDATION_RULES)
 CONFIG_VALIDATION_RULES.update(SAFETY_VALIDATION_RULES)
 CONFIG_VALIDATION_RULES.update(EKF_VALIDATION_RULES)
 CONFIG_VALIDATION_RULES.update(ATTITUDE_VALIDATION_RULES)
-CONFIG_VALIDATION_RULES.update(MODULES_VALIDATION_RULES)
+CONFIG_VALIDATION_RULES.update(CONSISTENCY_VALIDATION_RULES)
+CONFIG_VALIDATION_RULES.update(TRANSFORM_VALIDATION_RULES)
+CONFIG_VALIDATION_RULES.update(TRANSITION_VALIDATION_RULES)
+CONFIG_VALIDATION_RULES.update(BACKUP_VALIDATION_RULES)
 CONFIG_VALIDATION_RULES.update(TRAJECTORY_VALIDATION_RULES)
 CONFIG_VALIDATION_RULES.update(MOCK_VALIDATION_RULES)
 
@@ -109,6 +114,8 @@ def validate_config(config: Dict[str, Any], raise_on_error: bool = True) -> list
     
     Returns:
         错误列表，每个元素为 (key_path, error_message)
+        注意：此接口为向后兼容，不包含严重级别信息
+        如需严重级别信息，请使用 validate_full_config()
     
     Raises:
         ConfigValidationError: 当 raise_on_error=True 且发现错误时
@@ -120,7 +127,10 @@ def validate_config(config: Dict[str, Any], raise_on_error: bool = True) -> list
         >>> print(errors)
         [('mpc.horizon', 'MPC 预测时域 值 -1 超出范围 [1, 100]')]
     """
-    return validate_full_config(config, CONFIG_VALIDATION_RULES, raise_on_error)
+    # 调用完整验证，然后转换为 2 元组格式（向后兼容）
+    full_errors = validate_full_config(config, CONFIG_VALIDATION_RULES, raise_on_error)
+    # 转换为 (key, msg) 格式，丢弃 severity
+    return [(key, msg) for key, msg, _ in full_errors]
 
 
 # =============================================================================

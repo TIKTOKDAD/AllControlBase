@@ -9,7 +9,15 @@ from ..core.data_types import ControlOutput, SafetyDecision
 from ..core.enums import ControllerState, PlatformType
 from ..core.diagnostics_input import DiagnosticsInput
 from ..core.ros_compat import get_monotonic_time
-from ..core.constants import EPSILON
+from ..core.constants import (
+    EPSILON, 
+    MIN_DT_FOR_ACCEL, 
+    MAX_DT_FOR_ACCEL,
+    SAFETY_VELOCITY_MARGIN,
+    SAFETY_ACCEL_MARGIN,
+    SAFETY_ACCEL_WARMUP_MARGIN_MAX,
+    SAFETY_ACCEL_ABSOLUTE_MAX_MULTIPLIER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +35,10 @@ class BasicSafetyMonitor(ISafetyMonitor):
         self.alpha_max = constraints.get('alpha_max', 3.0)
         
         safety_config = config.get('safety', {})
-        self.velocity_margin = safety_config.get('velocity_margin', 1.1)
-        self.accel_margin = safety_config.get('accel_margin', 1.5)
+        
+        # 使用常量作为安全裕度（不再从配置读取）
+        self.velocity_margin = SAFETY_VELOCITY_MARGIN
+        self.accel_margin = SAFETY_ACCEL_MARGIN
         
         # 紧急减速度配置
         # 用于安全违规时限制命令的减速度
@@ -40,18 +50,24 @@ class BasicSafetyMonitor(ISafetyMonitor):
         self.accel_filter_warmup_alpha = safety_config.get('accel_filter_warmup_alpha', 0.5)  # 预热系数
         self.accel_filter_warmup_period = safety_config.get('accel_filter_warmup_period', self.accel_filter_window)  # 预热期
         self.accel_warmup_margin_multiplier = safety_config.get('accel_warmup_margin_multiplier', 1.5)  # 预热期间裕度倍数
+        
+        # 使用常量作为安全上限（不再从配置读取）
         # 预热期间裕度倍数的上限，防止配置错误导致安全检查过于宽松
-        self.accel_warmup_margin_max = safety_config.get('accel_warmup_margin_max', 2.0)
-        # 绝对加速度上限 - 即使在预热期间也不能超过此值
-        # 这是一个硬性安全限制，防止任何情况下的危险加速度
-        # 默认为 a_max 的 2 倍，确保即使滤波器未收敛也能捕获极端情况
-        self.accel_absolute_max_multiplier = safety_config.get('accel_absolute_max_multiplier', 2.0)
-        self.max_dt_for_accel = safety_config.get('max_dt_for_accel', 1.0)  # 加速度计算最大时间间隔
-        self.min_dt_for_accel = safety_config.get('min_dt_for_accel', 0.001)  # 加速度计算最小时间间隔
+        self.accel_warmup_margin_max = SAFETY_ACCEL_WARMUP_MARGIN_MAX
+        # 绝对加速度上限倍数 - 硬性安全限制
+        self.accel_absolute_max_multiplier = SAFETY_ACCEL_ABSOLUTE_MAX_MULTIPLIER
+        
+        # 使用常量作为加速度计算的时间间隔阈值
+        self.max_dt_for_accel = MAX_DT_FOR_ACCEL
+        self.min_dt_for_accel = MIN_DT_FOR_ACCEL
         
         self._last_cmd: Optional[ControlOutput] = None
         self._last_time: Optional[float] = None
-        self.is_3d = platform_config.get('type') == PlatformType.QUADROTOR
+        # 使用配置的 is_ground_vehicle，默认根据平台类型判断
+        self.is_3d = not platform_config.get(
+            'is_ground_vehicle', 
+            platform_config.get('type') != PlatformType.QUADROTOR
+        )
         
         # 加速度历史记录（用于滤波）
         self._accel_history_x: deque = deque(maxlen=self.accel_filter_window)

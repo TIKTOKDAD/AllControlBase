@@ -159,7 +159,7 @@ class TestParamLoaderConfigSeparation:
     
     def test_transform_config_contains_frame_names(self):
         """测试 transform 配置包含坐标系名称"""
-        from universal_controller.config.modules_config import TRANSFORM_CONFIG
+        from universal_controller.config.transform_config import TRANSFORM_CONFIG
         
         # transform 配置应该包含坐标系名称
         assert 'source_frame' in TRANSFORM_CONFIG
@@ -278,7 +278,8 @@ class TestConfigKeyMatching:
         
         # 检查顶级键
         # ROS 层特有的键，不需要在 DEFAULT_CONFIG 中定义
-        ros_only_keys = {'node', 'topics', 'tf', 'visualizer', 'cmd_vel_adapter'}
+        # 注意: transform 是混合配置，算法层参数在 DEFAULT_CONFIG 中，ROS TF2 参数在 param_loader.py 中
+        ros_only_keys = {'node', 'topics', 'visualizer', 'cmd_vel_adapter', 'clock'}
         
         for key in yaml_config.keys():
             if key not in ros_only_keys:

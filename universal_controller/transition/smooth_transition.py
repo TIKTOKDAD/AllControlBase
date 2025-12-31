@@ -5,6 +5,7 @@ import numpy as np
 from ..core.interfaces import ISmoothTransition
 from ..core.data_types import ControlOutput
 from ..core.ros_compat import get_monotonic_time
+from ..core.constants import TRANSITION_COMPLETION_THRESHOLD
 
 
 class ExponentialSmoothTransition(ISmoothTransition):
@@ -15,7 +16,8 @@ class ExponentialSmoothTransition(ISmoothTransition):
         
         self.tau = transition_config.get('tau', 0.1)
         self.max_duration = transition_config.get('max_duration', 0.5)
-        self.completion_threshold = transition_config.get('completion_threshold', 0.95)
+        # 使用常量作为完成阈值，这是数学收敛判定标准
+        self.completion_threshold = TRANSITION_COMPLETION_THRESHOLD
         self.start_time: Optional[float] = None
         self.in_transition = False
         self.from_cmd: Optional[ControlOutput] = None

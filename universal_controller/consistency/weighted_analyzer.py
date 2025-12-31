@@ -6,7 +6,13 @@ import logging
 
 from ..core.interfaces import IConsistencyChecker
 from ..core.data_types import Trajectory, ConsistencyResult, Point3D
-from ..core.constants import EPSILON, MIN_SEGMENT_LENGTH, MIN_DENOMINATOR, MIN_RELATIVE_CROSS
+from ..core.constants import (
+    EPSILON, 
+    MIN_SEGMENT_LENGTH, 
+    MIN_DENOMINATOR, 
+    MIN_RELATIVE_CROSS,
+    CONSISTENCY_INVALID_DATA_CONFIDENCE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +46,9 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         self.w_temporal = weights.get('temporal', 0.8)
         self.alpha_min = consistency_config.get('alpha_min', 0.1)
         
-        # 数据无效时的保守 confidence 值
+        # 数据无效时的保守 confidence 值 - 使用常量
         # 与 TrajectoryDefaults.default_confidence (0.9) 不同，这是运行时异常的保守处理
-        self.invalid_data_confidence = consistency_config.get('invalid_data_confidence', 0.5)
+        self.invalid_data_confidence = CONSISTENCY_INVALID_DATA_CONFIDENCE
     
     def compute(self, trajectory: Trajectory) -> ConsistencyResult:
         if not trajectory.soft_enabled or trajectory.velocities is None:

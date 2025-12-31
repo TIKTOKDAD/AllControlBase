@@ -10,193 +10,156 @@
 # - 适应较低的传感器频率
 # - 禁用 IMU (TurtleBot1 没有)
 #
-# =============================================================================
-# 配置架构说明
-# =============================================================================
-# 
-# 配置优先级 (从低到高):
-#   1. universal_controller/config/*.py  - 默认配置 (代码中定义)
-#   2. 本 YAML 文件                       - 平台特定覆盖
-#   3. ROS 参数服务器                     - 运行时覆盖 (可选)
-#
-# 原则:
-#   - 本文件只覆盖与默认值不同的配置项
-#   - 未定义的配置项使用 universal_controller/config/ 中的默认值
-#   - 默认值参考: universal_controller/config/*_config.py
-#
 
 # =============================================================================
-# 系统配置 - TurtleBot1 特有
+# 系统配置
 # =============================================================================
 system:
-  ctrl_freq: 20                   # 控制频率 (Hz) - TurtleBot1 建议 20Hz (默认 50)
+  ctrl_freq: 20                   # 控制频率 (Hz) - TurtleBot1 建议 20Hz
   platform: "differential"        # 平台类型: 差速车
 
 # =============================================================================
+# 运动约束 - TurtleBot1 安全限制
+# =============================================================================
+constraints:
+  v_max: 0.5                      # 最大线速度 (m/s) - 保守设置
+  v_min: -0.2                     # 最小线速度 (m/s) - 允许倒车
+  omega_max: 1.0                  # 最大角速度 (rad/s)
+  omega_max_low: 0.5              # 低速时最大角速度 (rad/s)
+  v_low_thresh: 0.1               # 低速阈值 (m/s)
+  a_max: 0.5                      # 最大加速度 (m/s²) - 保守设置
+  alpha_max: 1.5                  # 最大角加速度 (rad/s²)
+
+# =============================================================================
 # 话题配置 - TurtleBot1 特有
-# 注意: 只覆盖与默认值不同的话题，其他使用 controller_params.yaml 默认值
+#
+# 注意: 只覆盖需要修改的话题，其他话题使用 base/controller_params.yaml 的默认值
 # =============================================================================
 topics:
-  odom: "/odom"                           # TurtleBot1 里程计 (默认 /controller/input/odom)
-  imu: ""                                 # 禁用 IMU (TurtleBot1 没有)
-  trajectory: "/nn/local_trajectory"      # 神经网络轨迹输入 (默认 /controller/input/trajectory)
-  cmd_unified: "/cmd_unified"             # 统一控制命令输出 (默认 /controller/cmd)
-  # diagnostics, state, debug_path 使用默认值
+  odom: "/odom"                   # TurtleBot1 里程计
+  imu: ""                         # 禁用 IMU (TurtleBot1 没有)
+  trajectory: "/nn/local_trajectory"  # 神经网络轨迹输入
+  cmd_unified: "/cmd_unified"     # 统一控制命令输出
 
 # =============================================================================
 # 超时配置 - 适应 TurtleBot1 较低传感器频率
-#
-# 超时检测时序:
-#   t=0ms    收到轨迹
-#   t=1000ms 轨迹超时，进入宽限期
-#   t=1600ms 宽限期结束，触发安全停止
-#
-# 总安全停止延迟 = traj_timeout_ms + traj_grace_ms = 1.6秒
 # =============================================================================
 watchdog:
-  traj_grace_ms: 600              # 轨迹宽限期 (默认 500) - 适应实际延迟 300-600ms
+  odom_timeout_ms: 500            # 里程计超时 (ms)
+  traj_timeout_ms: 1000           # 轨迹超时 (ms)
+  traj_grace_ms: 600              # 轨迹宽限期 (ms) - 适应实际延迟 300-600ms
+  imu_timeout_ms: -1              # IMU 超时，禁用
+  startup_grace_ms: 5000          # 启动宽限期 (ms)
 
 # =============================================================================
 # 诊断配置
 # =============================================================================
 diagnostics:
-  publish_rate: 5                 # 诊断发布降频率 (默认 10)
+  publish_rate: 5                 # 诊断发布降频率 - TurtleBot1 降低频率
 
 # =============================================================================
 # MPC 配置 - 针对 TurtleBot1 优化
-#
-# 预测时域: 必须 < 轨迹点数(8)，留1点余量
-# 时间步长: mpc.dt 是时间步长的主配置 (单一真相源)
-#           trajectory.default_dt_sec 会自动继承此值
 # =============================================================================
 mpc:
-  horizon: 7                      # MPC 预测时域 (默认 20)
-  horizon_degraded: 4             # 降级模式预测时域 (默认 10)
-  dt: 0.1                         # MPC 时间步长 (秒) - 主配置，trajectory 自动继承
+  horizon: 7                      # MPC 预测时域 - 适应轨迹点数(8)
+  horizon_degraded: 4             # 降级模式预测时域
+  dt: 0.1                         # 时间步长 (秒)
   
-  # 代价函数权重 - 基于诊断结果调优
   weights:
-    position: 15.0                # 位置跟踪权重 (默认 10.0)
-    velocity: 6.0                 # 速度跟踪权重 (默认 1.0)
-    heading: 8.0                  # 航向跟踪权重 (默认 5.0)
+    position: 15.0                # 位置跟踪权重 - 提高位置精度
+    velocity: 6.0                 # 速度跟踪权重 - 提高速度精度
+    heading: 8.0                  # 航向跟踪权重 - 提高航向精度
+    control_accel: 0.1            # 加速度控制权重
+    control_alpha: 0.1            # 角加速度控制权重
   
-  # MPC 健康监控 - 放宽阈值适应较低控制频率
   health_monitor:
-    time_warning_thresh_ms: 20    # 求解时间警告阈值 (默认 8)
-    time_critical_thresh_ms: 40   # 求解时间临界阈值 (默认 15)
-    time_recovery_thresh_ms: 15   # 求解时间恢复阈值 (默认 6)
-    consecutive_warning_limit: 10 # 连续超时次数限制 (默认 3)
-
-# =============================================================================
-# 速度约束 - TurtleBot1 安全限制
-# =============================================================================
-constraints:
-  v_max: 0.5                      # 最大线速度 (默认 2.0)
-  v_min: -0.2                     # 最小线速度 (默认 0.0) - 允许倒车
-  omega_max: 1.0                  # 最大角速度 (默认 2.0)
-  omega_max_low: 0.5              # 低速时最大角速度 (默认 1.0)
-  a_max: 0.5                      # 最大加速度 (默认 1.5)
-  alpha_max: 1.5                  # 最大角加速度 (默认 3.0)
+    time_warning_thresh_ms: 20    # 求解时间警告阈值 (ms) - 放宽
+    time_critical_thresh_ms: 40   # 求解时间临界阈值 (ms) - 放宽
+    time_recovery_thresh_ms: 15   # 求解时间恢复阈值 (ms)
+    consecutive_warning_limit: 10 # 连续警告次数限制 - 放宽
+    consecutive_recovery_limit: 5 # 连续恢复次数限制
+  
+  fallback:
+    lookahead_steps: 3            # 前瞻步数
 
 # =============================================================================
 # 轨迹配置
-#
-# dt 配置说明 (单一真相源原则):
-# - mpc.dt 是时间步长的主配置，用户只需配置这一个
-# - trajectory.default_dt_sec 会自动从 mpc.dt 继承
-# - 继承在 ParamLoader 加载配置时自动完成，无需手动配置
 # =============================================================================
 trajectory:
-  low_speed_thresh: 0.05          # 低速阈值 (默认 0.1) - 诊断建议降低
+  low_speed_thresh: 0.05          # 低速阈值 (m/s) - 降低以适应 TurtleBot1
+  min_points: 2                   # 最小轨迹点数
+  max_points: 100                 # 最大轨迹点数
+  max_point_distance: 10.0        # 相邻点最大距离 (m)
 
 # =============================================================================
-# 一致性检查配置
-#
-# 这些权重影响 alpha 值的计算，进而影响 soft/hard velocities 的混合比例。
-# 当 alpha < alpha_min 时，会禁用 soft 模式，完全使用从轨迹点计算的速度。
-#
-# 权重说明 (使用加权几何平均，比例关系比绝对值更重要):
-# - 默认权重: kappa=1.0, velocity=1.5, temporal=0.8 (速度方向优先)
-# - TurtleBot1 权重: kappa=0.3, velocity=0.3, temporal=0.4 (时序平滑优先)
-# - TurtleBot1 作为低速差速车，更注重运动平滑性
+# 一致性检查配置 - TurtleBot1 优化
 # =============================================================================
 consistency:
+  alpha_min: 0.1                  # α 最小值
+  kappa_thresh: 0.5               # 曲率一致性阈值
+  v_dir_thresh: 0.8               # 速度方向一致性阈值
+  temporal_smooth_thresh: 0.5     # 时序平滑度阈值
+  max_curvature: 10.0             # 曲率计算最大值限制 (1/m)
+  temporal_window_size: 10        # 时序平滑度滑动窗口大小
   weights:
-    kappa: 0.3                    # 曲率一致性权重 (默认 1.0)
-    velocity: 0.3                 # 速度方向一致性权重 (默认 1.5)
-    temporal: 0.4                 # 时序平滑度权重 (默认 0.8)
+    kappa: 0.3                    # 曲率一致性权重 - TurtleBot1 更注重平滑
+    velocity: 0.3                 # 速度方向一致性权重
+    temporal: 0.4                 # 时序平滑度权重 - 优先
 
 # =============================================================================
-# 跟踪质量评估配置 - Dashboard 显示用
-#
-# TurtleBot1 差速车特性:
-# - 横向误差更严格 (0.25 < 默认 0.3): 差速车不能侧向移动，横向偏差更难纠正
-# - 纵向误差更宽松 (0.6 > 默认 0.5): 可通过调整速度补偿，容忍度更高
+# 跟踪质量评估配置 - TurtleBot1 差速车特性
 # =============================================================================
 tracking:
-  lateral_thresh: 0.25            # 横向误差阈值 (默认 0.3) - 差速车更严格
-  longitudinal_thresh: 0.6        # 纵向误差阈值 (默认 0.5) - 差速车更宽松
+  lateral_thresh: 0.25            # 横向误差阈值 (m) - 差速车更严格
+  longitudinal_thresh: 0.6        # 纵向误差阈值 (m) - 差速车更宽松
+  heading_thresh: 0.5             # 航向误差阈值 (rad)
 
 # =============================================================================
 # 安全配置
 # =============================================================================
 safety:
-  emergency_decel: 1.0            # 紧急减速度 (默认 3.0) - TurtleBot1 更保守
+  emergency_decel: 1.0            # 紧急减速度 (m/s²) - TurtleBot1 更保守
+  v_stop_thresh: 0.05             # 停车速度阈值 (m/s)
+  stopping_timeout: 5.0           # 停车超时 (秒)
   
-  # 状态机配置 - 禁用 α 检查 (轨迹可能不包含速度信息)
   state_machine:
-    mpc_recovery_tolerance: 1     # 最近 N 次中允许的失败次数 (默认 0)
+    alpha_disable_thresh: 0.0     # α 禁用阈值
+    mpc_recovery_thresh: 5        # MPC 恢复计数阈值
+    mpc_recovery_tolerance: 1     # MPC 恢复容错次数 - 放宽
+    mpc_fail_window_size: 10      # MPC 失败检测滑动窗口大小
+    mpc_fail_thresh: 3            # 窗口内失败次数阈值
 
 # =============================================================================
 # 备份控制器配置 (Pure Pursuit) - TurtleBot1 优化
 # =============================================================================
 backup:
-  # 前瞻距离 - TurtleBot1 较小
-  lookahead_dist: 0.5             # 前瞻距离 (默认 1.0)
-  min_lookahead: 0.3              # 最小前瞻距离 (默认 0.5)
-  max_lookahead: 1.5              # 最大前瞻距离 (默认 3.0)
-  
-  # 控制增益
-  kp_heading: 2.0                 # 航向增益 (默认 1.5)
+  lookahead_dist: 0.5             # 前瞻距离 (m) - 较小
+  min_lookahead: 0.3              # 最小前瞻距离 (m)
+  max_lookahead: 1.5              # 最大前瞻距离 (m)
+  lookahead_ratio: 0.5            # 前瞻比例
+  kp_heading: 2.0                 # 航向增益 - 提高响应
+  heading_error_thresh: 1.047     # 航向误差阈值 (rad, ~60°)
+  max_curvature: 5.0              # 最大曲率限制 (1/m)
+  default_speed_ratio: 0.5        # 无 soft 速度时的默认速度比例
+  min_distance_thresh: 0.1        # 最小距离阈值 (m)
 
 # =============================================================================
 # 坐标变换配置
 # =============================================================================
 transform:
-  source_frame: base_footprint    # TurtleBot1 机体坐标系 (默认 base_link)
-  timeout_ms: 50                  # TF2 查询超时 (默认 10) - TurtleBot1 放宽
-  
-  # TF2 预热参数 - TurtleBot1 启动较慢
-  buffer_warmup_timeout_sec: 5.0  # TF buffer 预热超时 (默认 2.0)
-  buffer_warmup_interval_sec: 0.2 # TF buffer 预热检查间隔 (默认 0.1)
-  
-  # 注意: expected_source_frames 使用默认值即可
-  # 默认值包含: base_link, base_footprint, base_link_0, '', odom
-  # 其中 odom 表示轨迹已在里程计坐标系中，无需变换
+  source_frame: "base_footprint"  # TurtleBot1 机体坐标系
+  target_frame: "odom"            # 目标坐标系
+  timeout_ms: 50                  # TF2 查询超时 (ms) - 放宽
+  buffer_warmup_timeout_sec: 3.0  # TF buffer 预热超时 (秒) - TurtleBot1 启动较慢
+  buffer_warmup_interval_sec: 0.1 # TF buffer 预热检查间隔 (秒)
 
 # =============================================================================
 # cmd_vel 适配器配置
-#
-# 配置统一性说明:
-# - 速度限制统一从 constraints.v_max/omega_max 读取
-# - 加速度限制统一从 constraints.a_max/alpha_max 读取 (不再重复定义)
-# - 确保与控制器使用相同的约束值
-#
-# 话题说明:
-# - 输入话题自动从 topics.cmd_unified 读取，无需重复配置
-# - 仅配置 cmd_vel_adapter 特有的话题
-#
-# 速度变化率限制说明:
-# - 对所有命令源生效（控制器和手柄），作为最后一道安全防线
-# - 控制器输出通常已经过 VelocitySmoother 处理，rate limit 主要影响手柄命令
-# - 设为 false 可禁用此功能（不推荐）
 # =============================================================================
 cmd_vel_adapter:
   publish_rate: 20.0              # 命令发布频率 (Hz)
-  cmd_timeout: 0.5                # 命令超时 (秒)，适用于所有命令源（控制器和手柄）
-  enable_rate_limit: true         # 启用速度变化率限制 (使用 constraints.a_max/alpha_max)
-  
-  # 话题配置 (仅 cmd_vel_adapter 特有话题)
-  joy_topic: "/joy_cmd_vel"
-  mode_topic: "/visualizer/control_mode"
+  cmd_timeout: 0.5                # 命令超时 (秒)
+  enable_rate_limit: true         # 启用速度变化率限制
+  joy_topic: "/joy_cmd_vel"       # 手柄输入话题
+  mode_topic: "/visualizer/control_mode"  # 模式切换话题
   output_topic: "/mobile_base/commands/velocity"  # TurtleBot1 底盘话题

@@ -70,7 +70,12 @@ import numpy as np
 from ..core.interfaces import IAttitudeController
 from ..core.data_types import ControlOutput, AttitudeCommand
 from ..core.ros_compat import get_monotonic_time, normalize_angle
-from ..core.constants import EPSILON
+from ..core.constants import (
+    EPSILON,
+    DEFAULT_GRAVITY,
+    ATTITUDE_MIN_THRUST_FACTOR,
+    ATTITUDE_FACTOR_MIN,
+)
 
 
 class QuadrotorAttitudeController(IAttitudeController):
@@ -93,9 +98,8 @@ class QuadrotorAttitudeController(IAttitudeController):
         
         # 物理参数
         self.mass = attitude_config.get('mass', 1.5)  # kg
-        # 重力加速度 - 优先从 system.gravity 读取
-        self.gravity = config.get('system', {}).get('gravity', 
-                        attitude_config.get('gravity', 9.81))
+        # 重力加速度 - 使用物理常量
+        self.gravity = DEFAULT_GRAVITY
         
         # 姿态角速度限制 (F14.2)
         self.roll_rate_max = attitude_config.get('roll_rate_max', 3.0)  # rad/s
@@ -139,11 +143,11 @@ class QuadrotorAttitudeController(IAttitudeController):
         # 推力变化率限制 (每秒相对于悬停推力的变化)
         self.thrust_rate_max = attitude_config.get('thrust_rate_max', 2.0)
         
-        # 最小推力加速度因子 (相对于重力)
-        self.min_thrust_factor = attitude_config.get('min_thrust_factor', 0.1)
+        # 最小推力加速度因子 - 使用常量
+        self.min_thrust_factor = ATTITUDE_MIN_THRUST_FACTOR
         
-        # 姿态角饱和后推力重计算的最小因子
-        self.attitude_factor_min = attitude_config.get('attitude_factor_min', 0.1)
+        # 姿态角饱和后推力重计算的最小因子 - 使用常量
+        self.attitude_factor_min = ATTITUDE_FACTOR_MIN
         
         # pitch 符号反转选项
         # True (默认): 正 pitch 命令 -> 前向加速度 (更直观的控制接口)

@@ -1,0 +1,240 @@
+# internal_params.yaml
+# 内部实现参数
+#
+# =============================================================================
+# 文件职责
+# =============================================================================
+#
+# 本文件定义两类参数：
+#
+# 1. ROS 层特有参数
+#    - TF2 重试策略、buffer 预热等 ROS 特有配置
+#    - 这些参数在 Python 算法库中没有对应项
+#
+# 2. 算法层高级参数的 ROS 覆盖
+#    - 这些参数在 Python 配置中有默认值
+#    - 本文件提供 ROS 环境下的推荐值
+#    - 普通用户不应修改，除非有特殊需求
+#
+# =============================================================================
+# 不在本文件中定义的内容 (已移至 core/constants.py)
+# =============================================================================
+#
+# 以下参数是物理/数学/算法常量，硬编码在 core/constants.py 中：
+#
+# 物理常量:
+# - DEFAULT_GRAVITY: 标准重力加速度 (9.81 m/s^2)
+#
+# 数值稳定性常量:
+# - EPSILON, EPSILON_SMALL, MIN_DENOMINATOR 等
+# - MIN_DT_FOR_ACCEL, MAX_DT_FOR_ACCEL: 加速度计算时间间隔边界
+#
+# 几何常量:
+# - PURE_PURSUIT_ANGLE_THRESH: pi/3，Pure Pursuit 经典切换角度
+# - HEADING_CONTROL_ANGLE_THRESH: pi/2，正交方向
+# - REAR_ANGLE_THRESH: 正后方检测阈值
+#
+# MPC 求解器标准配置:
+# - MPC_QP_SOLVER, MPC_INTEGRATOR_TYPE, MPC_NLP_SOLVER_TYPE, MPC_NLP_MAX_ITER
+#
+# 数值稳定性阈值:
+# - CONDITION_NUMBER_THRESH, CONDITION_NUMBER_RECOVERY, KKT_RESIDUAL_THRESH
+#
+# 数学边界:
+# - CONFIDENCE_MIN, CONFIDENCE_MAX
+# - QUATERNION_NORM_SQ_MIN, QUATERNION_NORM_SQ_MAX
+#
+# 安全裕度常量:
+# - SAFETY_VELOCITY_MARGIN (1.1): 速度限制裕度
+# - SAFETY_ACCEL_MARGIN (1.5): 加速度限制裕度
+# - SAFETY_ACCEL_WARMUP_MARGIN_MAX (2.0): 预热期间裕度上限
+# - SAFETY_ACCEL_ABSOLUTE_MAX_MULTIPLIER (2.0): 绝对加速度上限倍数
+#
+# EKF 算法常量:
+# - EKF_MAX_TILT_ANGLE (1.047): IMU 姿态角有效性检查阈值
+# - EKF_MIN_VELOCITY_FOR_JACOBIAN (0.01): Jacobian 计算最小速度
+# - EKF_COVARIANCE_EXPLOSION_THRESH (1000.0): 协方差爆炸检测阈值
+# - EKF_INNOVATION_ANOMALY_THRESH (10.0): 创新度异常检测阈值
+#
+# 轨迹验证常量:
+# - TRAJECTORY_MIN_DT_SEC (0.01): 最小时间步长
+# - TRAJECTORY_MAX_DT_SEC (1.0): 最大时间步长
+# - TRAJECTORY_MAX_COORD (100.0): 最大合理坐标值
+#
+# 一致性检查常量:
+# - CONSISTENCY_INVALID_DATA_CONFIDENCE (0.5): 数据无效时的保守置信度
+#
+# 姿态控制常量:
+# - ATTITUDE_MIN_THRUST_FACTOR (0.1): 最小推力因子
+# - ATTITUDE_FACTOR_MIN (0.1): 姿态角饱和后推力重计算的最小因子
+#
+# =============================================================================
+# 配置加载顺序
+# =============================================================================
+#
+# 1. universal_controller/config/*.py  - Python 默认配置 (算法库内部)
+# 2. base/controller_params.yaml       - ROS 层基础配置 (话题、时钟)
+# 3. base/internal_params.yaml         - 本文件
+# 4. platforms/{platform}.yaml         - 平台特定配置 (用户可调参数)
+# 5. ROS 参数服务器                     - 运行时覆盖
+#
+# =============================================================================
+
+
+# =============================================================================
+# ROS 层特有参数 - TF2 配置
+# 这些参数只在 ROS 环境中使用，Python 算法库中没有对应项
+# =============================================================================
+transform:
+  buffer_warmup_timeout_sec: 2.0
+  buffer_warmup_interval_sec: 0.1
+  retry_interval_sec: 1.0
+  max_retry_interval_sec: 30.0
+  backoff_multiplier: 2.0
+  max_retries: -1
+
+# =============================================================================
+# 算法层高级参数 - MPC 健康监控
+# =============================================================================
+mpc:
+  horizon_change_min_interval: 1.0
+  health_monitor:
+    recovery_multiplier: 2.0
+    consecutive_good_for_decay: 2
+    timeout_decay_rate: 2
+    middle_zone_decay_rate: 1
+
+# =============================================================================
+# 算法层高级参数 - 安全模块
+# 注意: velocity_margin, accel_margin, accel_warmup_margin_max, 
+#       accel_absolute_max_multiplier 已移至 constants.py
+# =============================================================================
+safety:
+  accel_filter_window: 3
+  accel_filter_alpha: 0.3
+  accel_filter_warmup_alpha: 0.5
+  accel_filter_warmup_period: 3
+  accel_warmup_margin_multiplier: 1.5
+  state_machine:
+    alpha_recovery_thresh: 5
+    alpha_recovery_value: 0.3
+    mpc_fail_ratio_thresh: 0.5
+    mpc_recovery_history_min: 3
+    mpc_recovery_recent_count: 5
+    mpc_recovery_success_ratio: 0.8
+    degraded_state_timeout: 30.0
+    backup_state_timeout: 60.0
+    enable_state_timeout_stop: false
+
+# =============================================================================
+# 算法层高级参数 - 备份控制器
+# =============================================================================
+backup:
+  heading_mode: "follow_velocity"
+  low_speed_transition_factor: 0.5
+  curvature_speed_limit_thresh: 0.1
+  rear_direction_min_thresh: 0.05
+  default_turn_direction: "left"
+
+# =============================================================================
+# 算法层高级参数 - 轨迹验证
+# 注意: min_dt_sec, max_dt_sec, max_coord 已移至 constants.py
+# =============================================================================
+trajectory:
+  velocity_decay_threshold: 0.1
+  default_confidence: 0.9
+
+# =============================================================================
+# 算法层高级参数 - 一致性检查
+# 注意: invalid_data_confidence 已移至 constants.py
+# =============================================================================
+# consistency 模块的常量参数已全部移至 constants.py
+
+# =============================================================================
+# 算法层高级参数 - 过渡动画
+# 注意: completion_threshold 已移至 constants.py (TRANSITION_COMPLETION_THRESHOLD)
+# =============================================================================
+transition:
+  type: "exponential"
+  tau: 0.1
+  max_duration: 0.5
+  duration: 0.2
+
+# =============================================================================
+# 算法层高级参数 - 跟踪质量评估
+# =============================================================================
+tracking:
+  prediction_thresh: 0.5
+  weights:
+    lateral: 0.4
+    longitudinal: 0.4
+    heading: 0.2
+  rating:
+    excellent: 90
+    good: 70
+    fair: 50
+
+# =============================================================================
+# 算法层高级参数 - 诊断
+# =============================================================================
+diagnostics:
+  max_consecutive_errors_detail: 10
+  error_summary_interval: 50
+  max_error_count: 1000
+
+# =============================================================================
+# 算法层高级参数 - 系统
+# =============================================================================
+system:
+  long_pause_threshold: 0.5
+  ekf_reset_threshold: 2.0
+
+# =============================================================================
+# 算法层高级参数 - 姿态控制 (仅四旋翼)
+# 注意: min_thrust_factor, attitude_factor_min 已移至 constants.py
+# =============================================================================
+attitude:
+  yaw_drift_rate: 0.001
+  hover_enter_factor: 1.0
+  hover_exit_factor: 1.5
+  hover_cmd_exit_factor: 2.0
+  hover_debounce_time: 0.1
+  position_attitude_decoupled: false
+  invert_pitch_sign: true
+  dt: 0.02
+
+
+# =============================================================================
+# 算法层高级参数 - EKF 状态估计器
+# 注意: max_tilt_angle, min_velocity_for_jacobian, covariance_explosion_thresh,
+#       innovation_anomaly_thresh 已移至 constants.py
+# =============================================================================
+ekf:
+  use_odom_orientation_fallback: true
+  theta_covariance_fallback_thresh: 0.5
+  imu_motion_compensation: false
+  measurement_noise:
+    odom_position: 0.01
+    odom_velocity: 0.1
+    odom_orientation: 0.01
+    odom_angular_velocity: 0.05
+    imu_accel: 0.5
+    imu_gyro: 0.01
+  process_noise:
+    position: 0.001
+    velocity: 0.1
+    orientation: 0.01
+    angular_velocity: 0.1
+    imu_bias: 0.0001
+  adaptive:
+    base_slip_thresh: 2.0
+    slip_velocity_factor: 0.5
+    slip_covariance_scale: 10.0
+    stationary_covariance_scale: 0.1
+    stationary_thresh: 0.05
+    slip_probability_k_factor: 5.0
+    slip_history_window: 20
+  accel_freshness_thresh: 0.1
+  anomaly_detection:
+    drift_thresh: 0.1
+    jump_thresh: 0.5

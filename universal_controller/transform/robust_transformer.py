@@ -79,6 +79,9 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self.target_frame = transform_config.get('target_frame', 'odom')
         self.drift_correction_thresh = transform_config.get('drift_correction_thresh', 0.01)
         
+        # 延迟补偿参数
+        self.max_delay_compensation_sec = transform_config.get('max_delay_compensation_sec', 0.5)
+        
         # 坐标系验证配置
         self.expected_source_frames: List[str] = transform_config.get(
             'expected_source_frames', ['base_link', 'base_footprint', 'base_link_0', '', 'odom'])
@@ -306,8 +309,8 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         traj_stamp = traj.header.stamp
         if traj_stamp > 0:
             time_diff = target_time - traj_stamp
-            # 如果轨迹时间戳在合理范围内 (0-500ms 延迟)，使用它
-            if 0 <= time_diff <= 0.5:
+            # 如果轨迹时间戳在合理范围内，使用它
+            if 0 <= time_diff <= self.max_delay_compensation_sec:
                 lookup_time = traj_stamp
         
         # 尝试 TF2 查找

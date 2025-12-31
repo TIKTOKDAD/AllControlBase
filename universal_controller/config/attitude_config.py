@@ -5,12 +5,22 @@
 - 姿态角限制
 - 悬停检测参数
 - 推力限制
+
+注意:
+=====
+以下参数是物理约束常量，已移至 core/constants.py:
+- DEFAULT_GRAVITY: 重力加速度 (9.81 m/s²)
+- ATTITUDE_MIN_THRUST_FACTOR: 最小推力因子 (0.1)
+- ATTITUDE_FACTOR_MIN: 姿态角饱和后推力重计算的最小因子 (0.1)
+
+这些参数不应由用户配置。
 """
 
 ATTITUDE_CONFIG = {
     # 物理参数
     'mass': 1.5,                    # 质量 (kg)
-    # 注意: 重力加速度统一使用 system.gravity
+    # 注意: 重力加速度是物理常量，统一使用 core/constants.py 的 DEFAULT_GRAVITY
+    # 注意: min_thrust_factor 和 attitude_factor_min 已移至 constants.py
     
     # F14.2: 姿态角速度限制
     'roll_rate_max': 3.0,           # 最大滚转角速度 (rad/s)
@@ -45,8 +55,8 @@ ATTITUDE_CONFIG = {
     'thrust_min': 0.1,               # 最小推力
     'thrust_max': 2.0,               # 最大推力
     'thrust_rate_max': 2.0,          # 推力变化率限制 (每秒)
-    'min_thrust_factor': 0.1,        # 最小推力加速度因子
-    'attitude_factor_min': 0.1,      # 姿态角饱和后推力重计算的最小因子
+    # 注意: min_thrust_factor 和 attitude_factor_min 已移至 constants.py
+    # (ATTITUDE_MIN_THRUST_FACTOR, ATTITUDE_FACTOR_MIN)
     
     # 其他参数
     'invert_pitch_sign': True,       # pitch 符号反转
@@ -54,6 +64,7 @@ ATTITUDE_CONFIG = {
 }
 
 # 姿态控制配置验证规则
+# 注意: min_thrust_factor 和 attitude_factor_min 已移至 constants.py，不再需要验证
 ATTITUDE_VALIDATION_RULES = {
     'attitude.mass': (0.01, 100.0, '质量 (kg)'),
     'attitude.roll_max': (0.01, 1.57, '最大滚转角 (rad)'),

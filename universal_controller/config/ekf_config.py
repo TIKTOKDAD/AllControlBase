@@ -4,7 +4,18 @@
 - 测量噪声
 - 过程噪声
 - 自适应参数
-- 异常检测参数
+
+注意:
+=====
+以下 EKF 算法常量已移至 core/constants.py:
+- EKF_MAX_TILT_ANGLE: IMU 姿态角有效性检查阈值 (1.047 rad, ~60°)
+- EKF_MIN_VELOCITY_FOR_JACOBIAN: Jacobian 计算的最小速度阈值 (0.01 m/s)
+- EKF_COVARIANCE_EXPLOSION_THRESH: 协方差爆炸检测阈值 (1000.0)
+- EKF_INNOVATION_ANOMALY_THRESH: 创新度异常检测阈值 (10.0)
+- COVARIANCE_MIN_EIGENVALUE: 协方差矩阵最小特征值
+- COVARIANCE_INITIAL_VALUE: 协方差矩阵初始值
+
+这些参数是数值稳定性参数，不应由用户配置。
 """
 
 EKF_CONFIG = {
@@ -25,11 +36,10 @@ EKF_CONFIG = {
     },
     
     # IMU 相关参数
-    'max_tilt_angle': 1.047,               # IMU 姿态角有效性检查阈值 (rad, ~60°)
+    # 注意: max_tilt_angle 已移至 constants.py (EKF_MAX_TILT_ANGLE)
     'accel_freshness_thresh': 0.1,         # 加速度数据新鲜度阈值 (秒)
     
-    # Jacobian 计算参数
-    'min_velocity_for_jacobian': 0.01,     # Jacobian 计算的最小速度阈值 (m/s)
+    # 注意: min_velocity_for_jacobian 已移至 constants.py (EKF_MIN_VELOCITY_FOR_JACOBIAN)
     
     # 测量噪声
     'measurement_noise': {
@@ -51,21 +61,17 @@ EKF_CONFIG = {
     },
     
     # 异常检测参数
+    # 注意: covariance_explosion_thresh 和 innovation_anomaly_thresh 
+    # 已移至 constants.py (EKF_COVARIANCE_EXPLOSION_THRESH, EKF_INNOVATION_ANOMALY_THRESH)
     'anomaly_detection': {
         'drift_thresh': 0.1,               # IMU 漂移检测阈值 (rad/s)
         'jump_thresh': 0.5,                # 位置跳变检测阈值 (m)
-        'covariance_explosion_thresh': 1000.0,  # 协方差爆炸检测阈值
-        'innovation_anomaly_thresh': 10.0,      # 创新度异常检测阈值
-    },
-    
-    # 协方差参数
-    'covariance': {
-        'min_eigenvalue': 1e-6,            # 最小特征值 (保证正定)
-        'initial_value': 0.1,              # 初始协方差对角线值
     },
 }
 
 # EKF 配置验证规则
+# 注意: max_tilt_angle, min_velocity_for_jacobian, covariance_explosion_thresh, 
+# innovation_anomaly_thresh 已移至 constants.py，不再需要验证
 EKF_VALIDATION_RULES = {
     # 测量噪声 (必须为正数)
     'ekf.measurement_noise.odom_position': (1e-9, 10.0, 'Odom 位置测量噪声'),
@@ -83,6 +89,4 @@ EKF_VALIDATION_RULES = {
     # 异常检测阈值
     'ekf.anomaly_detection.drift_thresh': (0.001, 1.0, 'IMU 漂移检测阈值 (rad/s)'),
     'ekf.anomaly_detection.jump_thresh': (0.01, 10.0, '位置跳变检测阈值 (m)'),
-    'ekf.anomaly_detection.covariance_explosion_thresh': (10.0, 100000.0, '协方差爆炸检测阈值'),
-    'ekf.anomaly_detection.innovation_anomaly_thresh': (1.0, 100.0, '创新度异常检测阈值'),
 }

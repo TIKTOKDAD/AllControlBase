@@ -191,25 +191,21 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str,
     # 严重错误 (ERROR 级别) - 这些错误可能导致系统行为异常
     # ==========================================================================
     
-    # EKF 数值稳定性参数验证
-    MIN_VELOCITY_FOR_JACOBIAN = EPSILON
-    min_vel_jacobian = get_config_value(config, 'ekf.min_velocity_for_jacobian')
-    if min_vel_jacobian is not None and _is_numeric(min_vel_jacobian):
-        if min_vel_jacobian < MIN_VELOCITY_FOR_JACOBIAN:
-            add_error('ekf.min_velocity_for_jacobian',
-                      f'Jacobian 最小速度阈值 ({min_vel_jacobian}) 过小，'
-                      f'可能导致数值不稳定，建议 >= {MIN_VELOCITY_FOR_JACOBIAN}',
-                      ValidationSeverity.ERROR)
-    
-    # EKF 协方差最小特征值验证
-    MIN_EIGENVALUE = 1e-10
-    min_eigenvalue = get_config_value(config, 'ekf.covariance.min_eigenvalue')
-    if min_eigenvalue is not None and _is_numeric(min_eigenvalue):
-        if min_eigenvalue < MIN_EIGENVALUE:
-            add_error('ekf.covariance.min_eigenvalue',
-                      f'协方差最小特征值 ({min_eigenvalue}) 过小，'
-                      f'可能导致协方差矩阵奇异，建议 >= {MIN_EIGENVALUE}',
-                      ValidationSeverity.ERROR)
+    # 注意: 以下参数已移至 constants.py，不再需要从配置中验证:
+    # - ekf.min_velocity_for_jacobian -> EKF_MIN_VELOCITY_FOR_JACOBIAN
+    # - ekf.max_tilt_angle -> EKF_MAX_TILT_ANGLE
+    # - ekf.anomaly_detection.covariance_explosion_thresh -> EKF_COVARIANCE_EXPLOSION_THRESH
+    # - ekf.anomaly_detection.innovation_anomaly_thresh -> EKF_INNOVATION_ANOMALY_THRESH
+    # - safety.velocity_margin -> SAFETY_VELOCITY_MARGIN
+    # - safety.accel_margin -> SAFETY_ACCEL_MARGIN
+    # - safety.accel_warmup_margin_max -> SAFETY_ACCEL_WARMUP_MARGIN_MAX
+    # - safety.accel_absolute_max_multiplier -> SAFETY_ACCEL_ABSOLUTE_MAX_MULTIPLIER
+    # - trajectory.min_dt_sec -> TRAJECTORY_MIN_DT_SEC
+    # - trajectory.max_dt_sec -> TRAJECTORY_MAX_DT_SEC
+    # - trajectory.max_coord -> TRAJECTORY_MAX_COORD
+    # - consistency.invalid_data_confidence -> CONSISTENCY_INVALID_DATA_CONFIDENCE
+    # - attitude.min_thrust_factor -> ATTITUDE_MIN_THRUST_FACTOR
+    # - attitude.attitude_factor_min -> ATTITUDE_FACTOR_MIN
     
     # MPC 权重验证 - 必须为正值
     MIN_MPC_WEIGHT = EPSILON

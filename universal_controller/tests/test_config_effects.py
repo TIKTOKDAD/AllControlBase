@@ -300,9 +300,8 @@ def test_mpc_health_monitor_config():
         'time_warning_thresh_ms': 5,
         'time_critical_thresh_ms': 10,
         'time_recovery_thresh_ms': 3,
-        'condition_number_thresh': 1e6,
-        'condition_number_recovery': 1e4,
-        'kkt_residual_thresh': 1e-4,
+        # 注意: condition_number_thresh, kkt_residual_thresh 等数值稳定性阈值
+        # 已移至 core/constants.py，不再可配置
         'consecutive_warning_limit': 2,
         'consecutive_recovery_limit': 3,
         'recovery_multiplier': 2.0,
@@ -377,19 +376,23 @@ def test_consistency_thresholds_config():
 # 6. 安全配置测试
 # =============================================================================
 
-def test_safety_velocity_margin_config():
-    """测试安全速度裕度配置"""
-    for margin in [1.0, 1.1, 1.2]:
-        config = DEFAULT_CONFIG.copy()
-        config['safety'] = DEFAULT_CONFIG['safety'].copy()
-        config['safety']['velocity_margin'] = margin
+def test_safety_velocity_margin_constant():
+    """测试安全速度裕度使用常量
+    
+    注意: velocity_margin 已移至 constants.py (SAFETY_VELOCITY_MARGIN)
+    不再从配置读取，始终使用常量值 1.1
+    """
+    from universal_controller.core.constants import SAFETY_VELOCITY_MARGIN
+    
+    config = DEFAULT_CONFIG.copy()
+    platform_config = PLATFORM_CONFIG['differential']
+    monitor = BasicSafetyMonitor(config, platform_config)
+    
+    # 验证使用常量值
+    assert monitor.velocity_margin == SAFETY_VELOCITY_MARGIN
+    assert monitor.velocity_margin == 1.1
         
-        platform_config = PLATFORM_CONFIG['differential']
-        monitor = BasicSafetyMonitor(config, platform_config)
-        
-        assert monitor.velocity_margin == margin
-        
-    print("✓ test_safety_velocity_margin_config passed")
+    print("✓ test_safety_velocity_margin_constant passed")
 
 
 def test_safety_stop_threshold_config():
@@ -503,16 +506,22 @@ def test_transition_tau_config():
 
 
 def test_transition_max_duration_config():
-    """测试平滑过渡最大时长配置"""
+    """测试平滑过渡最大时长配置
+    
+    注意: completion_threshold 已移至 constants.py (TRANSITION_COMPLETION_THRESHOLD)，
+    不再是可配置参数，因此只测试 max_duration。
+    """
+    from universal_controller.core.constants import TRANSITION_COMPLETION_THRESHOLD
+    
     config = DEFAULT_CONFIG.copy()
     config['transition'] = DEFAULT_CONFIG['transition'].copy()
     config['transition']['max_duration'] = 1.0
-    config['transition']['completion_threshold'] = 0.9
     
     transition = ExponentialSmoothTransition(config)
     
     assert transition.max_duration == 1.0
-    assert transition.completion_threshold == 0.9
+    # completion_threshold 现在是常量
+    assert transition.completion_threshold == TRANSITION_COMPLETION_THRESHOLD
     
     print("✓ test_transition_max_duration_config passed")
 
@@ -685,7 +694,7 @@ if __name__ == '__main__':
     
     print("\n[6/10] Safety Config Tests...")
     print("-" * 40)
-    test_safety_velocity_margin_config()
+    test_safety_velocity_margin_constant()
     test_safety_stop_threshold_config()
     test_state_machine_recovery_config()
     

@@ -20,6 +20,7 @@ Topics:
 Note:
     - Input trajectory coordinates assumed in base_link frame
     - Differential drive only uses x, y coordinates
+    - Configuration parameters are read from TrajectoryDefaults (Single Source of Truth)
 """
 
 import rospy
@@ -30,6 +31,9 @@ from std_msgs.msg import Header, Float32MultiArray
 
 from controller_ros.utils.param_loader import ParamLoader, TOPICS_DEFAULTS
 from controller_ros.lifecycle import LifecycleMixin
+
+# Import TrajectoryDefaults for configuration
+from universal_controller.core.data_types import TrajectoryDefaults
 
 try:
     from controller_ros.msg import LocalTrajectoryV4
@@ -56,15 +60,16 @@ class TrajectoryPublisher(LifecycleMixin):
     
     Subscribe /waypoint topic and convert to LocalTrajectoryV4 format.
     
+    Configuration:
+    - All trajectory parameters are read from TrajectoryDefaults
+    - TrajectoryDefaults.configure() is called during initialization
+    
     Lifecycle:
     - Implements ILifecycleComponent via LifecycleMixin
     - initialize(): Setup ROS interfaces
     - reset(): Reset statistics
     - shutdown(): Publish stop trajectory and cleanup
     """
-    
-    # Validation constants
-    MAX_COORD = 100.0  # Maximum reasonable coordinate (meters)
     
     def __init__(self):
         LifecycleMixin.__init__(self)
@@ -74,13 +79,14 @@ class TrajectoryPublisher(LifecycleMixin):
         config = ParamLoader.load(node=None, validate=False)
         topics = ParamLoader.get_topics(node=None)
         
-        # Get trajectory parameters from config
-        traj_config = config.get('trajectory', {})
-        transform_config = config.get('transform', {})
-        mpc_config = config.get('mpc', {})
+        # Configure TrajectoryDefaults with loaded config
+        TrajectoryDefaults.configure(config)
         
-        # dt_sec priority: trajectory.default_dt_sec > mpc.dt > default
-        self._dt = traj_config.get('default_dt_sec', mpc_config.get('dt', 0.1))
+        # Get configuration from TrajectoryDefaults (Single Source of Truth)
+        transform_config = config.get('transform', {})
+        
+        # dt_sec from TrajectoryDefaults
+        self._dt = TrajectoryDefaults.dt_sec
         self._confidence = rospy.get_param('~confidence', 1.0)
         self._soft_enabled = rospy.get_param('~soft_enabled', False)
         
@@ -89,7 +95,7 @@ class TrajectoryPublisher(LifecycleMixin):
         if private_frame:
             self._frame_id = private_frame
         else:
-            self._frame_id = transform_config.get('source_frame', 'base_link')
+            self._frame_id = TrajectoryDefaults.default_frame_id
         
         # Topics: use unified topic configuration
         self._input_topic = rospy.get_param('~input_topic', '/waypoint')
@@ -188,9 +194,11 @@ class TrajectoryPublisher(LifecycleMixin):
             rospy.logwarn_throttle(1.0, "Trajectory contains NaN/Inf, ignoring")
             return
         
-        if np.any(np.abs(positions) > self.MAX_COORD):
+        # Use max_coord from TrajectoryDefaults
+        max_coord = TrajectoryDefaults.max_coord
+        if np.any(np.abs(positions) > max_coord):
             self._invalid_count += 1
-            rospy.logwarn_throttle(1.0, f"Trajectory coordinates exceed {self.MAX_COORD}m")
+            rospy.logwarn_throttle(1.0, f"Trajectory coordinates exceed {max_coord}m")
             return
         
         # Create and publish message
@@ -275,7 +283,9 @@ class StopTrajectoryPublisher:
         # Use unified configuration
         config = ParamLoader.load(node=None, validate=False)
         topics = ParamLoader.get_topics(node=None)
-        transform_config = config.get('transform', {})
+        
+        # Configure TrajectoryDefaults
+        TrajectoryDefaults.configure(config)
         
         self._output_topic = rospy.get_param(
             '~output_topic',
@@ -283,7 +293,7 @@ class StopTrajectoryPublisher:
         )
         
         private_frame = rospy.get_param('~frame_id', None)
-        self._frame_id = private_frame or transform_config.get('source_frame', 'base_link')
+        self._frame_id = private_frame or TrajectoryDefaults.default_frame_id
         
         self._pub = rospy.Publisher(self._output_topic, LocalTrajectoryV4, queue_size=1)
         rospy.sleep(0.5)
@@ -298,7 +308,7 @@ class StopTrajectoryPublisher:
         msg.points = [Point(x=0.0, y=0.0, z=0.0)]
         msg.velocities_flat = []
         msg.soft_enabled = False
-        msg.dt_sec = 0.1
+        msg.dt_sec = TrajectoryDefaults.dt_sec
         msg.confidence = 1.0
         
         self._pub.publish(msg)

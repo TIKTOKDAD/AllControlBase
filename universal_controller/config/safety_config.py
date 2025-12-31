@@ -5,6 +5,18 @@
 - 安全监控参数
 - 状态机参数
 - 加速度滤波参数
+
+注意:
+=====
+以下安全裕度参数是安全工程常量，已移至 core/constants.py:
+- SAFETY_VELOCITY_MARGIN: 速度限制裕度 (1.1)
+- SAFETY_ACCEL_MARGIN: 加速度限制裕度 (1.5)
+- SAFETY_ACCEL_WARMUP_MARGIN_MAX: 预热期间裕度上限 (2.0)
+- SAFETY_ACCEL_ABSOLUTE_MAX_MULTIPLIER: 绝对加速度上限倍数 (2.0)
+- MIN_DT_FOR_ACCEL: 加速度计算最小时间间隔
+- MAX_DT_FOR_ACCEL: 加速度计算最大时间间隔
+
+这些参数不应由用户配置，以确保系统安全性。
 """
 
 # 运动约束配置
@@ -30,8 +42,12 @@ SAFETY_CONFIG = {
     'vz_stop_thresh': 0.1,      # 垂直停车速度阈值 (m/s)
     'stopping_timeout': 5.0,    # 停车超时时间 (秒)
     'emergency_decel': 3.0,     # 紧急减速度 (m/s²)
-    'velocity_margin': 1.1,     # 速度限制裕度 (安全检查时的速度上限倍数)
-    'accel_margin': 1.5,        # 加速度限制裕度 (安全检查时的加速度上限倍数)
+    
+    # 注意: 安全裕度参数已移至 core/constants.py:
+    # - SAFETY_VELOCITY_MARGIN (1.1): 速度限制裕度
+    # - SAFETY_ACCEL_MARGIN (1.5): 加速度限制裕度
+    # - SAFETY_ACCEL_WARMUP_MARGIN_MAX (2.0): 预热期间裕度上限
+    # - SAFETY_ACCEL_ABSOLUTE_MAX_MULTIPLIER (2.0): 绝对加速度上限倍数
     
     # 注意: 低速保护参数统一在 CONSTRAINTS_CONFIG 中定义:
     # - omega_max_low: 低速时最大角速度
@@ -42,11 +58,7 @@ SAFETY_CONFIG = {
     'accel_filter_alpha': 0.3,       # 低通滤波系数
     'accel_filter_warmup_alpha': 0.5,  # 滤波器预热期间的系数
     'accel_filter_warmup_period': 3,   # 滤波器预热期长度
-    'accel_warmup_margin_multiplier': 1.5,  # 预热期间裕度倍数
-    'accel_warmup_margin_max': 2.0,    # 预热期间裕度上限 (防止配置错误)
-    'accel_absolute_max_multiplier': 2.0,   # 绝对加速度上限倍数 (硬性安全限制)
-    'min_dt_for_accel': 0.001,       # 加速度计算的最小时间间隔 (秒)
-    'max_dt_for_accel': 1.0,         # 加速度计算的最大时间间隔 (秒)
+    'accel_warmup_margin_multiplier': 1.5,  # 预热期间裕度倍数 (受 SAFETY_ACCEL_WARMUP_MARGIN_MAX 限制)
     
     # 状态机配置
     #
@@ -108,6 +120,8 @@ SAFETY_CONFIG = {
 }
 
 # 安全配置验证规则
+# 注意: velocity_margin, accel_margin, accel_warmup_margin_max, accel_absolute_max_multiplier
+# 已移至 constants.py，不再需要验证
 SAFETY_VALIDATION_RULES = {
     # 约束配置
     'constraints.v_max': (0.01, 100.0, '最大速度 (m/s)'),
@@ -117,14 +131,10 @@ SAFETY_VALIDATION_RULES = {
     # 安全配置
     'safety.v_stop_thresh': (0.0, 1.0, '停止速度阈值 (m/s)'),
     'safety.stopping_timeout': (0.1, 60.0, '停止超时 (秒)'),
-    'safety.velocity_margin': (1.0, 2.0, '速度裕度'),
-    'safety.accel_margin': (1.0, 3.0, '加速度裕度'),
     'safety.accel_filter_window': (1, 20, '加速度滤波窗口大小'),
     'safety.accel_filter_alpha': (0.0, 1.0, '加速度滤波系数'),
     'safety.accel_filter_warmup_period': (1, 20, '滤波器预热期长度'),
     'safety.accel_warmup_margin_multiplier': (1.0, 5.0, '预热期间裕度倍数'),
-    'safety.accel_warmup_margin_max': (1.0, 5.0, '预热期间裕度上限'),
-    'safety.accel_absolute_max_multiplier': (1.0, 10.0, '绝对加速度上限倍数'),
     # 状态机配置
     'safety.state_machine.alpha_recovery_thresh': (1, 100, 'α 恢复计数阈值'),
     'safety.state_machine.alpha_recovery_value': (0.0, 1.0, 'α 恢复值'),

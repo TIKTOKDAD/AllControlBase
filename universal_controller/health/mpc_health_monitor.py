@@ -2,6 +2,11 @@
 from typing import Dict, Any
 
 from ..core.data_types import MPCHealthStatus
+from ..core.constants import (
+    CONDITION_NUMBER_THRESH,
+    CONDITION_NUMBER_RECOVERY,
+    KKT_RESIDUAL_THRESH,
+)
 
 
 class MPCHealthMonitor:
@@ -15,6 +20,10 @@ class MPCHealthMonitor:
             time_warning_thresh_ms: 8
             time_critical_thresh_ms: 15
             ...
+    
+    注意:
+        数值稳定性阈值 (condition_number_thresh, kkt_residual_thresh) 
+        使用 core/constants.py 中的常量，因为这些是算法标准阈值。
     """
     
     def __init__(self, config: Dict[str, Any]):
@@ -25,9 +34,10 @@ class MPCHealthMonitor:
         self.time_warning_thresh = health_config.get('time_warning_thresh_ms', 8)
         self.time_critical_thresh = health_config.get('time_critical_thresh_ms', 15)
         self.time_recovery_thresh = health_config.get('time_recovery_thresh_ms', 6)
-        self.condition_number_thresh = health_config.get('condition_number_thresh', 1e8)
-        self.condition_number_recovery = health_config.get('condition_number_recovery', 1e5)
-        self.kkt_residual_thresh = health_config.get('kkt_residual_thresh', 1e-3)
+        # 使用常量作为数值稳定性阈值
+        self.condition_number_thresh = CONDITION_NUMBER_THRESH
+        self.condition_number_recovery = CONDITION_NUMBER_RECOVERY
+        self.kkt_residual_thresh = KKT_RESIDUAL_THRESH
         self.consecutive_warning_limit = health_config.get('consecutive_warning_limit', 3)
         self.consecutive_recovery_limit = health_config.get('consecutive_recovery_limit', 5)
         self.recovery_multiplier = health_config.get('recovery_multiplier', 2.0)

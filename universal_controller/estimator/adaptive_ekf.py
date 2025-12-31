@@ -8,7 +8,17 @@ from ..core.interfaces import IStateEstimator
 from ..core.data_types import EstimatorOutput, Odometry, Imu
 from ..config.default_config import PLATFORM_CONFIG
 from ..core.ros_compat import euler_from_quaternion, get_monotonic_time, normalize_angle
-from ..core.constants import QUATERNION_NORM_SQ_MIN, QUATERNION_NORM_SQ_MAX
+from ..core.constants import (
+    QUATERNION_NORM_SQ_MIN, 
+    QUATERNION_NORM_SQ_MAX,
+    COVARIANCE_MIN_EIGENVALUE,
+    COVARIANCE_INITIAL_VALUE,
+    DEFAULT_GRAVITY,
+    EKF_MAX_TILT_ANGLE,
+    EKF_MIN_VELOCITY_FOR_JACOBIAN,
+    EKF_COVARIANCE_EXPLOSION_THRESH,
+    EKF_INNOVATION_ANOMALY_THRESH,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +41,8 @@ class AdaptiveEKFEstimator(IStateEstimator):
     def __init__(self, config: Dict[str, Any]):
         ekf_config = config.get('ekf', config)
         
-        # 初始协方差值
-        covariance_config = ekf_config.get('covariance', {})
-        self.initial_covariance = covariance_config.get('initial_value', 0.1)
+        # 初始协方差值 - 使用常量
+        self.initial_covariance = COVARIANCE_INITIAL_VALUE
         
         # 状态向量 [px, py, pz, vx, vy, vz, θ, ω, bias_ax, bias_ay, bias_az]
         self.x = np.zeros(11)
@@ -44,10 +53,8 @@ class AdaptiveEKFEstimator(IStateEstimator):
         self.platform_config = PLATFORM_CONFIG.get(platform_name, PLATFORM_CONFIG['differential'])
         self.velocity_heading_coupled = self.platform_config.get('velocity_heading_coupled', True)
         
-        # 重力加速度 - 统一从 system.gravity 读取
-        # 使用 DEFAULT_GRAVITY 作为默认值
-        from ..core.constants import DEFAULT_GRAVITY
-        self.gravity = config.get('system', {}).get('gravity', DEFAULT_GRAVITY)
+        # 重力加速度 - 使用物理常量
+        self.gravity = DEFAULT_GRAVITY
         
         # 自适应参数
         adaptive = ekf_config.get('adaptive', {})
@@ -59,12 +66,12 @@ class AdaptiveEKFEstimator(IStateEstimator):
         self.slip_probability_k_factor = adaptive.get('slip_probability_k_factor', 5.0)
         self.slip_history_window = adaptive.get('slip_history_window', 20)
         
-        # IMU 相关参数
-        self.max_tilt_angle = ekf_config.get('max_tilt_angle', np.pi / 3)  # ~60°
+        # IMU 相关参数 - 使用常量
+        self.max_tilt_angle = EKF_MAX_TILT_ANGLE
         self.accel_freshness_thresh = ekf_config.get('accel_freshness_thresh', 0.1)  # 100ms
         
-        # Jacobian 计算参数
-        self.min_velocity_for_jacobian = ekf_config.get('min_velocity_for_jacobian', 0.01)
+        # Jacobian 计算参数 - 使用常量
+        self.min_velocity_for_jacobian = EKF_MIN_VELOCITY_FOR_JACOBIAN
         
         # 航向备选参数
         self.use_odom_orientation_fallback = ekf_config.get('use_odom_orientation_fallback', True)
@@ -104,11 +111,12 @@ class AdaptiveEKFEstimator(IStateEstimator):
         anomaly = ekf_config.get('anomaly_detection', {})
         self.drift_thresh = anomaly.get('drift_thresh', 0.1)
         self.jump_thresh = anomaly.get('jump_thresh', 0.5)
-        self.min_eigenvalue = ekf_config.get('covariance', {}).get('min_eigenvalue', 1e-6)
-        # 协方差爆炸检测阈值 - 当协方差范数超过此值时认为估计器发散
-        self.covariance_explosion_thresh = anomaly.get('covariance_explosion_thresh', 1000.0)
-        # 创新度异常阈值 - 当创新度超过此值时认为测量异常
-        self.innovation_anomaly_thresh = anomaly.get('innovation_anomaly_thresh', 10.0)
+        # 使用常量作为协方差最小特征值
+        self.min_eigenvalue = COVARIANCE_MIN_EIGENVALUE
+        # 协方差爆炸检测阈值 - 使用常量
+        self.covariance_explosion_thresh = EKF_COVARIANCE_EXPLOSION_THRESH
+        # 创新度异常阈值 - 使用常量
+        self.innovation_anomaly_thresh = EKF_INNOVATION_ANOMALY_THRESH
         
         # IMU 运动加速度补偿
         self.imu_motion_compensation = ekf_config.get('imu_motion_compensation', False)

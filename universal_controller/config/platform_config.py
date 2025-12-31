@@ -1,9 +1,9 @@
 """平台配置
 
-定义不同机器人平台的运动学特性和控制维度。
+定义不同机器人平台的运动学特性。
 
-坐标系说明 (不需要建图/定位):
-==================================
+坐标系说明:
+===========
 
 系统使用两个坐标系:
 
@@ -17,12 +17,24 @@
 
 控制输出坐标系 (output_frame):
    - 差速车/阿克曼车: base_link (vx, omega) - 机体坐标系
-   - 全向车/四旋翼: odom (vx, vy, omega) - 里程计坐标系
+   - 全向车/四旋翼: world (vx, vy, omega) - 世界坐标系
 
-状态向量维度定义: [px, py, pz, vx, vy, vz, theta, omega]
-                  [0,  1,  2,  3,  4,  5,  6,     7    ]
-                  
-其中 px, py, pz, vx, vy, vz 都在 odom 坐标系下。
+平台特性说明:
+=============
+
+velocity_heading_coupled:
+   - True: 速度方向与航向耦合（差速车、阿克曼车）
+     车辆只能沿车头方向移动，不能横向滑移
+   - False: 速度方向与航向解耦（全向车、四旋翼）
+     可以在任意方向移动，航向独立控制
+
+is_ground_vehicle:
+   - True: 地面车辆，z 方向运动受限
+   - False: 空中平台，可三维运动
+
+can_rotate_in_place:
+   - True: 可原地旋转（差速车、全向车、四旋翼）
+   - False: 不可原地旋转，需要最小转弯半径（阿克曼车）
 
 支持的平台类型:
 - ackermann: 阿克曼转向车辆 (如汽车)
@@ -37,58 +49,40 @@ PLATFORM_CONFIG = {
     # 阿克曼转向车辆 (如汽车)
     "ackermann": {
         "type": PlatformType.ACKERMANN,
-        "active_dims": [0, 1, 3, 6],      # 活跃状态维度: px, py, vx, theta
-        "control_dims": [3, 7],            # 控制维度: vx (纵向速度), omega (角速度)
-        "constraints": {
-            "pz": 0,           # z 位置约束为 0 (地面车辆)
-            "vy": 0,           # 横向速度约束为 0 (非完整约束)
-            "vz": 0,           # z 速度约束为 0
-            "curvature": True  # 启用曲率约束 (转向角限制)
-        },
-        "velocity_heading_coupled": True,  # 速度方向与航向耦合 (车头朝向即运动方向)
-        "output_type": "differential",     # 输出类型: 差速 (v, omega)
-        "output_frame": "base_link"        # 输出坐标系: 机体坐标系
+        "velocity_heading_coupled": True,   # 速度方向与航向耦合
+        "is_ground_vehicle": True,          # 地面车辆
+        "can_rotate_in_place": False,       # 不可原地旋转
+        "output_type": "differential",      # 输出类型: 差速 (v, omega)
+        "output_frame": "base_link",        # 输出坐标系: 机体坐标系
     },
     
     # 差速驱动车辆 (如两轮机器人)
     "differential": {
         "type": PlatformType.DIFFERENTIAL,
-        "active_dims": [0, 1, 3, 6, 7],    # 活跃状态维度: px, py, vx, theta, omega
-        "control_dims": [3, 7],            # 控制维度: vx, omega
-        "constraints": {
-            "pz": 0,            # z 位置约束为 0
-            "vy": 0,            # 横向速度约束为 0 (非完整约束)
-            "vz": 0,            # z 速度约束为 0
-            "curvature": False  # 无曲率约束 (可原地旋转)
-        },
-        "velocity_heading_coupled": True,  # 速度方向与航向耦合
-        "output_type": "differential",     # 输出类型: 差速
-        "output_frame": "base_link"        # 输出坐标系: 机体坐标系
+        "velocity_heading_coupled": True,   # 速度方向与航向耦合
+        "is_ground_vehicle": True,          # 地面车辆
+        "can_rotate_in_place": True,        # 可原地旋转
+        "output_type": "differential",      # 输出类型: 差速
+        "output_frame": "base_link",        # 输出坐标系: 机体坐标系
     },
     
     # 全向移动平台 (如麦克纳姆轮)
     "omni": {
         "type": PlatformType.OMNI,
-        "active_dims": [0, 1, 3, 4, 6, 7],  # 活跃状态维度: px, py, vx, vy, theta, omega
-        "control_dims": [3, 4, 7],          # 控制维度: vx, vy, omega
-        "constraints": {
-            "pz": 0,  # z 位置约束为 0
-            "vz": 0   # z 速度约束为 0
-        },
-        "velocity_heading_coupled": False,  # 速度方向与航向解耦 (可横向移动)
+        "velocity_heading_coupled": False,  # 速度方向与航向解耦
+        "is_ground_vehicle": True,          # 地面车辆
+        "can_rotate_in_place": True,        # 可原地旋转
         "output_type": "omni",              # 输出类型: 全向
-        "output_frame": "world"             # 输出坐标系: 世界坐标系
+        "output_frame": "world",            # 输出坐标系: 世界坐标系
     },
     
     # 四旋翼无人机
     "quadrotor": {
         "type": PlatformType.QUADROTOR,
-        "active_dims": [0, 1, 2, 3, 4, 5, 6, 7],  # 全部状态维度都活跃
-        "control_dims": [3, 4, 5, 7],              # 控制维度: vx, vy, vz, omega (yaw rate)
-        "constraints": {},                         # 无运动学约束 (可自由飞行)
-        "attitude_interface": True,                # 使用姿态接口 (输出期望姿态角)
-        "velocity_heading_coupled": False,         # 速度方向与航向解耦
-        "output_type": "3d",                       # 输出类型: 三维
-        "output_frame": "world"                    # 输出坐标系: 世界坐标系
-    }
+        "velocity_heading_coupled": False,  # 速度方向与航向解耦
+        "is_ground_vehicle": False,         # 空中平台
+        "can_rotate_in_place": True,        # 可原地旋转
+        "output_type": "3d",                # 输出类型: 三维
+        "output_frame": "world",            # 输出坐标系: 世界坐标系
+    },
 }

@@ -10,18 +10,18 @@ UC 数据类型: universal_controller.core.data_types.Trajectory
 - 注意: ROS 的 MODE_HOLD 对应 UC 的 MODE_HOVER (数值相同，语义相近)
 
 配置说明:
-- 配置参数统一从 universal_controller.config.trajectory_config.TRAJECTORY_CONFIG 读取
-- 通过 DataManager 传递配置，确保与 YAML 配置一致
+- 配置参数统一通过 TrajectoryDefaults 类获取
+- TrajectoryDefaults 是轨迹配置的单一数据源 (Single Source of Truth)
+- 在使用前应调用 TrajectoryDefaults.configure(config) 初始化配置
 """
 from typing import Any, Optional, Tuple, Dict
 import logging
 import numpy as np
 
 from universal_controller.core.data_types import (
-    Trajectory as UcTrajectory, Header, Point3D
+    Trajectory as UcTrajectory, Header, Point3D, TrajectoryDefaults
 )
 from universal_controller.core.enums import TrajectoryMode
-from universal_controller.config.trajectory_config import TRAJECTORY_CONFIG
 from .base import IMsgConverter
 
 logger = logging.getLogger(__name__)
@@ -55,12 +55,10 @@ class TrajectoryAdapter(IMsgConverter):
     - 如果 ROS 消息的 frame_id 为空，使用默认值 'base_link'
     - 网络输出的轨迹通常在 base_link 坐标系下
     
-    配置参数 (从 TRAJECTORY_CONFIG 读取，可通过 config 字典覆盖):
-    - max_coord: 最大合理坐标值 (米)
-    - velocity_decay_threshold: 速度衰减填充阈值 (m/s)
-    - min_dt_sec: 最小时间间隔 (秒)
-    - max_dt_sec: 最大时间间隔 (秒)
-    - default_dt_sec: 默认时间间隔 (秒)
+    配置说明:
+    - 所有配置参数通过 TrajectoryDefaults 类获取
+    - 在使用前应确保已调用 TrajectoryDefaults.configure(config)
+    - 配置参数包括: max_coord, velocity_decay_threshold, min_dt_sec, max_dt_sec, dt_sec
     """
     
     def __init__(self, config: Dict[str, Any] = None):
@@ -68,30 +66,20 @@ class TrajectoryAdapter(IMsgConverter):
         初始化轨迹适配器
         
         Args:
-            config: 配置字典，可选。会与 TRAJECTORY_CONFIG 合并，
-                   传入的配置优先级更高。
+            config: 配置字典，可选。如果提供，会调用 TrajectoryDefaults.configure() 更新配置。
                    
         配置说明:
-            dt_sec 继承已在 ParamLoader._sync_dt_config() 中统一处理。
-            传入的 config['trajectory']['default_dt_sec'] 已经是最终值，
-            无需在此处再次处理继承逻辑。
+            如果传入 config，会更新 TrajectoryDefaults 的配置。
+            所有参数从 TrajectoryDefaults 类属性读取，确保配置的单一数据源。
         """
         super().__init__()
         
-        # 从 TRAJECTORY_CONFIG 获取默认值，然后用传入的 config 覆盖
-        self._config = TRAJECTORY_CONFIG.copy()
+        # 如果提供了配置，更新 TrajectoryDefaults
         if config is not None:
-            # 合并 trajectory 配置
-            traj_config = config.get('trajectory', {})
-            self._config.update(traj_config)
-            # 注意: dt 继承已在 ParamLoader 中处理，此处无需重复
+            TrajectoryDefaults.configure(config)
         
-        # 缓存常用配置值
-        self._max_coord = self._config.get('max_coord', 100.0)
-        self._velocity_decay_threshold = self._config.get('velocity_decay_threshold', 0.1)
-        self._min_dt_sec = self._config.get('min_dt_sec', 0.01)
-        self._max_dt_sec = self._config.get('max_dt_sec', 1.0)
-        self._default_dt_sec = self._config.get('default_dt_sec', 0.1)
+        # 注意: 不再缓存配置值，直接从 TrajectoryDefaults 读取
+        # 这确保了配置的一致性，即使在运行时更新配置也能生效
     
     def _validate_dt_sec(self, dt_sec: float) -> float:
         """
@@ -103,18 +91,22 @@ class TrajectoryAdapter(IMsgConverter):
         Returns:
             有效的时间间隔值
         """
-        if dt_sec <= 0 or dt_sec < self._min_dt_sec or dt_sec > self._max_dt_sec:
+        min_dt = TrajectoryDefaults.min_dt_sec
+        max_dt = TrajectoryDefaults.max_dt_sec
+        default_dt = TrajectoryDefaults.dt_sec
+        
+        if dt_sec <= 0 or dt_sec < min_dt or dt_sec > max_dt:
             if dt_sec <= 0:
                 logger.warning(
-                    f"Invalid dt_sec={dt_sec} (non-positive), using default {self._default_dt_sec}. "
+                    f"Invalid dt_sec={dt_sec} (non-positive), using default {default_dt}. "
                     f"This may indicate upstream trajectory generation issues."
                 )
             else:
                 logger.warning(
-                    f"dt_sec={dt_sec} out of valid range [{self._min_dt_sec}, {self._max_dt_sec}], "
-                    f"using default {self._default_dt_sec}."
+                    f"dt_sec={dt_sec} out of valid range [{min_dt}, {max_dt}], "
+                    f"using default {default_dt}."
                 )
-            return self._default_dt_sec
+            return default_dt
         return dt_sec
     
     def _process_velocities(self, velocities_flat: list, num_points: int, 
@@ -194,7 +186,8 @@ class TrajectoryAdapter(IMsgConverter):
                     last_vel = velocities[-1, :]
                     last_vel_magnitude = np.sqrt(last_vel[0]**2 + last_vel[1]**2 + last_vel[2]**2)
                     
-                    if last_vel_magnitude > self._velocity_decay_threshold:
+                    velocity_decay_threshold = TrajectoryDefaults.velocity_decay_threshold
+                    if last_vel_magnitude > velocity_decay_threshold:
                         logger.debug(
                             f"Velocity points ({num_vel_points}) < position points ({num_points}), "
                             f"padding with decaying velocity (magnitude={last_vel_magnitude:.2f} m/s)"
@@ -235,6 +228,7 @@ class TrajectoryAdapter(IMsgConverter):
         
         validated = []
         has_invalid = False
+        max_coord = TrajectoryDefaults.max_coord
         
         for i, p in enumerate(points):
             # 检查 NaN 和 Inf
@@ -244,9 +238,9 @@ class TrajectoryAdapter(IMsgConverter):
                 continue
             
             # 检查坐标范围
-            if abs(p.x) > self._max_coord or abs(p.y) > self._max_coord or abs(p.z) > self._max_coord:
+            if abs(p.x) > max_coord or abs(p.y) > max_coord or abs(p.z) > max_coord:
                 logger.warning(
-                    f"Trajectory point {i} out of range (max={self._max_coord}m): "
+                    f"Trajectory point {i} out of range (max={max_coord}m): "
                     f"({p.x}, {p.y}, {p.z})"
                 )
                 has_invalid = True

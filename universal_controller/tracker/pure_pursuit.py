@@ -8,7 +8,12 @@ from ..core.data_types import Trajectory, ControlOutput, ConsistencyResult, Poin
 from ..core.enums import PlatformType, HeadingMode
 from ..core.ros_compat import normalize_angle, angle_difference
 from ..core.velocity_smoother import VelocitySmoother
-from ..core.constants import EPSILON
+from ..core.constants import (
+    EPSILON, 
+    PURE_PURSUIT_ANGLE_THRESH, 
+    HEADING_CONTROL_ANGLE_THRESH, 
+    REAR_ANGLE_THRESH
+)
 from ..config.default_config import PLATFORM_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -71,6 +76,11 @@ class PurePursuitController(ITrajectoryTracker):
         self.platform_type = platform_config.get('type', PlatformType.DIFFERENTIAL)
         self.is_3d = self.platform_type == PlatformType.QUADROTOR
         self.is_omni = self.platform_type == PlatformType.OMNI
+        # 使用配置的 can_rotate_in_place，默认根据平台类型判断
+        self.can_rotate_in_place = platform_config.get(
+            'can_rotate_in_place', 
+            self.platform_type != PlatformType.ACKERMANN
+        )
         
         # 航向模式
         self.heading_mode = self._parse_heading_mode(backup_config['heading_mode'])
@@ -78,8 +88,9 @@ class PurePursuitController(ITrajectoryTracker):
         
         # Pure Pursuit 控制参数
         self.heading_error_thresh = backup_config['heading_error_thresh']
-        self.pure_pursuit_angle_thresh = backup_config['pure_pursuit_angle_thresh']
-        self.heading_control_angle_thresh = backup_config['heading_control_angle_thresh']
+        # 使用常量作为角度阈值，这些是 Pure Pursuit 算法的几何常量
+        self.pure_pursuit_angle_thresh = PURE_PURSUIT_ANGLE_THRESH
+        self.heading_control_angle_thresh = HEADING_CONTROL_ANGLE_THRESH
         self.max_curvature = backup_config['max_curvature']
         self.min_turn_speed = backup_config['min_turn_speed']
         self.default_speed_ratio = backup_config['default_speed_ratio']
@@ -98,7 +109,8 @@ class PurePursuitController(ITrajectoryTracker):
             self.omega_rate_limit = self.alpha_max * self.dt
         
         # 正后方处理参数
-        self.rear_angle_thresh = backup_config['rear_angle_thresh']
+        # 使用常量作为正后方检测阈值
+        self.rear_angle_thresh = REAR_ANGLE_THRESH
         self.rear_direction_min_thresh = backup_config['rear_direction_min_thresh']
         default_turn_str = backup_config['default_turn_direction']
         self.default_turn_direction = 1 if default_turn_str.lower() == 'left' else -1

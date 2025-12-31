@@ -36,7 +36,7 @@ import time
 import logging
 
 from .enums import TrajectoryMode, ControllerState
-from .constants import normalize_angle
+from .constants import normalize_angle, CONFIDENCE_MIN, CONFIDENCE_MAX
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -46,22 +46,49 @@ logger = logging.getLogger(__name__)
 # 轨迹默认配置 (可通过 Trajectory.configure() 修改)
 # =============================================================================
 class TrajectoryDefaults:
-    """轨迹默认配置，可在运行时修改"""
+    """
+    轨迹默认配置，可在运行时修改
+    
+    此类是轨迹配置的单一数据源 (Single Source of Truth)。
+    所有模块（包括 ROS 层）应通过此类获取轨迹相关配置，而不是直接从配置字典读取。
+    
+    配置来源: universal_controller/config/trajectory_config.py
+    
+    注意:
+    =====
+    以下参数使用 constants.py 中的常量，不再从配置读取:
+    - min_dt_sec, max_dt_sec: 使用 TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC
+    - max_coord: 使用 TRAJECTORY_MAX_COORD
+    - min_confidence, max_confidence: 使用 CONFIDENCE_MIN, CONFIDENCE_MAX
+    """
+    # 时间参数
     dt_sec: float = 0.1
+    # 注意: min_dt_sec 和 max_dt_sec 现在使用常量，这里的值仅作为类属性的初始值
+    # 实际使用时应从 constants.py 导入 TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC
+    min_dt_sec: float = 0.01  # 已移至 constants.py: TRAJECTORY_MIN_DT_SEC
+    max_dt_sec: float = 1.0   # 已移至 constants.py: TRAJECTORY_MAX_DT_SEC
+    
+    # 速度计算参数
     low_speed_thresh: float = 0.1
+    
+    # 置信度参数
+    # 注意: min_confidence 和 max_confidence 是数学定义 [0, 1]，
+    # 使用 constants.py 中的 CONFIDENCE_MIN, CONFIDENCE_MAX
     default_confidence: float = 0.9
+    
+    # 坐标系
     default_frame_id: str = 'base_link'
     
-    # 置信度范围 (用于 clip)
-    min_confidence: float = 0.0
-    max_confidence: float = 1.0
-    
-    # 验证参数
-    min_dt_sec: float = 0.01
-    max_dt_sec: float = 1.0
+    # 轨迹点数限制
     min_points: int = 2
     max_points: int = 100
+    
+    # 验证参数
     max_point_distance: float = 10.0
+    max_coord: float = 100.0  # 已移至 constants.py: TRAJECTORY_MAX_COORD
+    
+    # 速度填充参数 (轨迹适配器使用)
+    velocity_decay_threshold: float = 0.1  # 速度衰减填充阈值 (m/s)
     
     # 验证开关
     validate_enabled: bool = True
@@ -80,11 +107,21 @@ class TrajectoryDefaults:
             
             为了兼容直接使用 DEFAULT_CONFIG 的场景（不经过 ParamLoader），
             此处保留了 mpc.dt 的 fallback 逻辑。
+            
+            注意: min_dt_sec, max_dt_sec, max_coord 现在使用 constants.py 中的常量，
+            不再从配置读取。这些是数值稳定性参数，不应由用户配置。
         
         Example:
             >>> from universal_controller.config import DEFAULT_CONFIG
             >>> TrajectoryDefaults.configure(DEFAULT_CONFIG)
         """
+        # 导入常量
+        from .constants import (
+            TRAJECTORY_MIN_DT_SEC,
+            TRAJECTORY_MAX_DT_SEC,
+            TRAJECTORY_MAX_COORD,
+        )
+        
         traj_config = config.get('trajectory', {})
         transform_config = config.get('transform', {})
         mpc_config = config.get('mpc', {})
@@ -96,33 +133,39 @@ class TrajectoryDefaults:
         elif 'dt' in mpc_config:
             cls.dt_sec = mpc_config['dt']
         
+        # 时间参数 - 使用常量，不再从配置读取
+        cls.min_dt_sec = TRAJECTORY_MIN_DT_SEC
+        cls.max_dt_sec = TRAJECTORY_MAX_DT_SEC
+        
+        # 速度计算参数
         if 'low_speed_thresh' in traj_config:
             cls.low_speed_thresh = traj_config['low_speed_thresh']
+        
+        # 置信度参数
         if 'default_confidence' in traj_config:
             cls.default_confidence = traj_config['default_confidence']
-        
-        # 置信度范围参数
-        if 'min_confidence' in traj_config:
-            cls.min_confidence = traj_config['min_confidence']
-        if 'max_confidence' in traj_config:
-            cls.max_confidence = traj_config['max_confidence']
+        # 注意: min_confidence 和 max_confidence 是数学定义 [0, 1]，
+        # 使用 constants.py 中的 CONFIDENCE_MIN, CONFIDENCE_MAX，不再从配置读取
         
         # 坐标系配置: 统一从 transform 读取
         # 轨迹的默认坐标系应与 transform.source_frame 一致
         if 'source_frame' in transform_config:
             cls.default_frame_id = transform_config['source_frame']
         
-        # 验证参数
-        if 'min_dt_sec' in traj_config:
-            cls.min_dt_sec = traj_config['min_dt_sec']
-        if 'max_dt_sec' in traj_config:
-            cls.max_dt_sec = traj_config['max_dt_sec']
+        # 轨迹点数限制
         if 'min_points' in traj_config:
             cls.min_points = traj_config['min_points']
         if 'max_points' in traj_config:
             cls.max_points = traj_config['max_points']
+        
+        # 验证参数 - max_coord 使用常量，不再从配置读取
         if 'max_point_distance' in traj_config:
             cls.max_point_distance = traj_config['max_point_distance']
+        cls.max_coord = TRAJECTORY_MAX_COORD
+        
+        # 速度填充参数
+        if 'velocity_decay_threshold' in traj_config:
+            cls.velocity_decay_threshold = traj_config['velocity_decay_threshold']
 
 
 # 模拟 ROS Header
@@ -202,11 +245,11 @@ class Trajectory:
             logger.warning(f"Trajectory confidence={self.confidence} invalid (NaN/Inf), using default {TrajectoryDefaults.default_confidence}")
             self.confidence = TrajectoryDefaults.default_confidence
         else:
-            # 使用配置的 min_confidence 和 max_confidence 进行 clip
+            # 使用常量 CONFIDENCE_MIN, CONFIDENCE_MAX 进行 clip
             self.confidence = np.clip(
                 self.confidence, 
-                TrajectoryDefaults.min_confidence, 
-                TrajectoryDefaults.max_confidence
+                CONFIDENCE_MIN, 
+                CONFIDENCE_MAX
             )
         
         # 验证 dt_sec: 必须是正的有限数值

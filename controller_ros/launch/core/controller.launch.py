@@ -47,9 +47,20 @@ def generate_launch_description():
     )
     
     # 配置文件路径
+    # 配置加载顺序 (从低到高):
+    # 1. base/controller_params.yaml  - ROS 层基础配置 (话题、时钟)
+    # 2. base/internal_params.yaml    - 内部实现参数 (用户不应修改)
+    # 3. platforms/{platform}.yaml    - 平台特定配置 (用户可调参数)
     base_config = PathJoinSubstitution([
         pkg_share, 'config', 'base', 'controller_params.yaml'
     ])
+    
+    internal_config = PathJoinSubstitution([
+        pkg_share, 'config', 'base', 'internal_params.yaml'
+    ])
+    
+    # 注意: ROS2 中动态平台配置需要通过 LaunchConfiguration 处理
+    # 这里使用 base_config 和 internal_config，平台配置通过参数覆盖
     
     # 控制器节点
     controller_node = Node(
@@ -59,6 +70,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             base_config,
+            internal_config,
             {
                 'system.platform': LaunchConfiguration('platform'),
                 'system.ctrl_freq': LaunchConfiguration('ctrl_freq'),

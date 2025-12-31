@@ -73,7 +73,9 @@ class TestTrajectoryPublisherLogic:
     
     def test_coordinate_range_check(self):
         """Test coordinate range validation"""
-        MAX_COORD = 100.0
+        # Use TrajectoryDefaults for consistency
+        from universal_controller.core.data_types import TrajectoryDefaults
+        max_coord = TrajectoryDefaults.max_coord
         
         # Valid coordinates
         positions_valid = np.array([
@@ -81,15 +83,15 @@ class TestTrajectoryPublisherLogic:
             [50.0, 50.0],
             [99.0, -99.0],
         ])
-        is_valid = not np.any(np.abs(positions_valid) > MAX_COORD)
+        is_valid = not np.any(np.abs(positions_valid) > max_coord)
         assert is_valid
         
         # Invalid coordinates
         positions_invalid = np.array([
             [0.0, 0.0],
-            [150.0, 50.0],  # Exceeds MAX_COORD
+            [150.0, 50.0],  # Exceeds max_coord
         ])
-        is_valid = not np.any(np.abs(positions_invalid) > MAX_COORD)
+        is_valid = not np.any(np.abs(positions_invalid) > max_coord)
         assert not is_valid
     
     def test_empty_trajectory_handling(self):
@@ -198,26 +200,36 @@ class TestConfigurationConsistency:
     
     def test_frame_id_default(self):
         """Test default frame_id matches trajectory_adapter"""
-        # Both should default to 'base_link'
-        trajectory_publisher_default = 'base_link'
-        trajectory_adapter_default = 'base_link'
+        from universal_controller.core.data_types import TrajectoryDefaults
         
-        assert trajectory_publisher_default == trajectory_adapter_default
+        # Both should default to 'base_link'
+        assert TrajectoryDefaults.default_frame_id == 'base_link'
     
     def test_dt_inheritance(self):
         """Test dt_sec inheritance from mpc.dt"""
+        from universal_controller.core.data_types import TrajectoryDefaults
+        
         config = {
             'trajectory': {},
-            'mpc': {'dt': 0.1},
+            'mpc': {'dt': 0.15},
         }
         
-        # dt priority: trajectory.default_dt_sec > mpc.dt > default
-        traj_config = config.get('trajectory', {})
-        mpc_config = config.get('mpc', {})
+        # Configure and verify dt inheritance
+        TrajectoryDefaults.configure(config)
         
-        dt = traj_config.get('default_dt_sec', mpc_config.get('dt', 0.1))
+        # Should inherit from mpc.dt when trajectory.default_dt_sec is not set
+        assert TrajectoryDefaults.dt_sec == 0.15
         
-        assert dt == 0.1
+        # Reset to default for other tests
+        TrajectoryDefaults.dt_sec = 0.1
+    
+    def test_max_coord_consistency(self):
+        """Test max_coord is consistent across modules"""
+        from universal_controller.core.data_types import TrajectoryDefaults
+        from universal_controller.config.trajectory_config import TRAJECTORY_CONFIG
+        
+        # TrajectoryDefaults should have same default as TRAJECTORY_CONFIG
+        assert TrajectoryDefaults.max_coord == TRAJECTORY_CONFIG['max_coord']
     
     def test_topic_from_param_loader(self):
         """Test that output topic comes from ParamLoader"""

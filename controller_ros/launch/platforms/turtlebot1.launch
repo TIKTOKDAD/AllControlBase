@@ -32,10 +32,20 @@
   <param name="/use_sim_time" value="$(arg use_sim_time)"/>
   
   <!-- ========== 加载配置文件 ========== -->
+  <!-- 
+  配置加载顺序 (从低到高):
+  1. base/controller_params.yaml  - ROS 层基础配置 (话题、时钟)
+  2. base/internal_params.yaml    - 内部实现参数 (用户不应修改)
+  3. platforms/turtlebot1.yaml    - TurtleBot1 专用配置 (用户可调参数)
+  -->
+  
   <!-- 基础配置 -->
   <rosparam file="$(find controller_ros)/config/base/controller_params.yaml" command="load"/>
   
-  <!-- TurtleBot1 专用配置 (覆盖基础配置) -->
+  <!-- 内部实现参数 (用户不应修改) -->
+  <rosparam file="$(find controller_ros)/config/base/internal_params.yaml" command="load"/>
+  
+  <!-- TurtleBot1 专用配置 (覆盖基础配置和内部参数) -->
   <rosparam file="$(find controller_ros)/config/platforms/turtlebot1.yaml" command="load"/>
   
   <!-- 

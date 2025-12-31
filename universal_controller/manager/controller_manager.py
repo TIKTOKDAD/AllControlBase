@@ -110,8 +110,11 @@ class ControllerManager:
         self.default_frame_id = self.platform_config.get('output_frame', 'base_link')
         self.transform_target_frame = config.get('transform', {}).get('target_frame', 'odom')
         
-        # 检查是否为无人机平台
-        self.is_quadrotor = self.platform_config.get('type') == PlatformType.QUADROTOR
+        # 检查是否为无人机平台（使用 is_ground_vehicle 配置）
+        self.is_quadrotor = not self.platform_config.get(
+            'is_ground_vehicle', 
+            self.platform_config.get('type') != PlatformType.QUADROTOR
+        )
         
         mpc_config = config.get('mpc', {})
         self.horizon_normal = mpc_config.get('horizon', 20)
@@ -191,14 +194,24 @@ class ControllerManager:
         Raises:
             ConfigValidationError: 当 strict_mode=True 且验证失败时
         """
+        from ..config.validation import ValidationSeverity
+        
         errors = validate_logical_consistency(self.config)
         
         if errors:
-            error_messages = '\n'.join([f'  - {key}: {msg}' for key, msg in errors])
+            # validate_logical_consistency 返回 (key, msg, severity) 三元组
+            # 根据严重级别过滤：严格模式下所有错误都报告，非严格模式下只报告 ERROR 和 FATAL
             if strict_mode:
+                # 严格模式：所有错误都报告
+                error_messages = '\n'.join([f'  - {key}: {msg} [{severity.name}]' for key, msg, severity in errors])
                 raise ConfigValidationError(f'配置验证失败:\n{error_messages}')
             else:
-                logger.warning(f'配置验证发现问题 (非严格模式，继续运行):\n{error_messages}')
+                # 非严格模式：WARNING 只记录日志，ERROR/FATAL 也记录但不阻止启动
+                for key, msg, severity in errors:
+                    if severity == ValidationSeverity.WARNING:
+                        logger.warning(f'配置警告 [{key}]: {msg}')
+                    else:
+                        logger.warning(f'配置问题 [{key}]: {msg} [{severity.name}]')
     
     def _init_ros_publishers(self) -> None:
         """
@@ -382,28 +395,35 @@ class ControllerManager:
         logger.info(f"Controller state changed: {old_state.name} -> {new_state.name}")
         
         # MPC horizon 动态调整
-        # 注意: set_horizon() 有节流机制，可能返回 False 表示未更新
-        # 只有当 set_horizon() 返回 True 时才更新 _current_horizon，确保状态一致
+        # 
+        # 设计说明:
+        # - _current_horizon 记录"期望的 horizon"，而非"实际的 horizon"
+        # - 即使 set_horizon() 被节流，也要更新 _current_horizon
+        # - 这确保了状态机的期望状态被正确记录
+        # - MPC 控制器内部会在下次调用时检查并应用正确的 horizon
+        #
+        # 节流机制说明:
+        # - set_horizon() 有节流机制防止频繁重新初始化 ACADOS 求解器
+        # - 当被节流时返回 False，但这不影响状态机的期望状态
+        # - 实际的 horizon 会在节流间隔过后自动同步
         if new_state == ControllerState.MPC_DEGRADED:
-            if self._current_horizon != self.horizon_degraded:
+            target_horizon = self.horizon_degraded
+            if self._current_horizon != target_horizon:
+                self._current_horizon = target_horizon
                 if self.mpc_tracker:
-                    if self.mpc_tracker.set_horizon(self.horizon_degraded):
-                        self._current_horizon = self.horizon_degraded
-                        logger.info(f"MPC horizon reduced to {self.horizon_degraded}")
+                    if self.mpc_tracker.set_horizon(target_horizon):
+                        logger.info(f"MPC horizon reduced to {target_horizon}")
                     else:
-                        logger.debug(f"MPC horizon change to {self.horizon_degraded} throttled")
-                else:
-                    self._current_horizon = self.horizon_degraded
+                        logger.debug(f"MPC horizon change to {target_horizon} throttled, will sync later")
         elif new_state == ControllerState.NORMAL and old_state == ControllerState.MPC_DEGRADED:
-            if self._current_horizon != self.horizon_normal:
+            target_horizon = self.horizon_normal
+            if self._current_horizon != target_horizon:
+                self._current_horizon = target_horizon
                 if self.mpc_tracker:
-                    if self.mpc_tracker.set_horizon(self.horizon_normal):
-                        self._current_horizon = self.horizon_normal
-                        logger.info(f"MPC horizon restored to {self.horizon_normal}")
+                    if self.mpc_tracker.set_horizon(target_horizon):
+                        logger.info(f"MPC horizon restored to {target_horizon}")
                     else:
-                        logger.debug(f"MPC horizon change to {self.horizon_normal} throttled")
-                else:
-                    self._current_horizon = self.horizon_normal
+                        logger.debug(f"MPC horizon change to {target_horizon} throttled, will sync later")
         
         # 平滑过渡
         if (old_state in [ControllerState.NORMAL, ControllerState.SOFT_DISABLED, ControllerState.MPC_DEGRADED] and

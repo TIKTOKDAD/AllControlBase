@@ -21,8 +21,14 @@
 
 配置分层设计:
 =============
-- transform.*: 坐标变换配置（坐标系名称 + 算法参数 + ROS TF2 参数）
-- topics.*: ROS 话题配置，仅 ROS 层使用
+配置分为三类:
+1. 算法层参数: 定义在 universal_controller/config/*.py，Python 和 YAML 都有
+2. ROS 层特有参数: 只在本文件中定义默认值，Python 算法库中无对应
+   - TOPICS_DEFAULTS: ROS 话题名称
+   - TRANSFORM_ROS_DEFAULTS: TF2 重试策略参数
+   - CMD_VEL_ADAPTER_DEFAULTS: cmd_vel 适配器配置
+   - CLOCK_DEFAULTS: 时钟跳变检测配置
+3. 混合配置: transform 配置包含算法层参数和 ROS TF2 参数
 """
 from typing import Dict, Any, List, Tuple
 import logging

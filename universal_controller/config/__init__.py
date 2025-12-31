@@ -6,13 +6,18 @@
 - 配置验证 (validate_config)
 
 配置文件结构:
-- platform_config.py: 平台运动学配置
+- platform_config.py: 平台运动学配置（物理模型，不可配置）
 - system_config.py: 系统基础配置
 - mpc_config.py: MPC 控制器配置
 - safety_config.py: 安全和约束配置
 - ekf_config.py: EKF 状态估计器配置
 - attitude_config.py: 姿态控制配置
-- modules_config.py: 其他模块配置
+- trajectory_config.py: 轨迹配置
+- consistency_config.py: 一致性检查配置
+- transform_config.py: 坐标变换配置
+- transition_config.py: 平滑过渡配置
+- backup_config.py: 备份控制器配置
+- mock_config.py: Mock 配置（测试用）
 - validation.py: 配置验证逻辑
 
 使用示例:

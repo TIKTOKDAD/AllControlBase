@@ -4,12 +4,26 @@
 - 默认时间步长
 - 轨迹点数限制
 - 速度计算阈值
-- 轨迹验证参数
 - 轨迹适配器参数 (ROS 消息转换)
+
+配置使用说明:
+===============
+所有模块应通过 TrajectoryDefaults 类获取轨迹配置，而不是直接从此文件读取。
+TrajectoryDefaults 是轨迹配置的单一数据源 (Single Source of Truth)。
+
+使用方式:
+    from universal_controller.core.data_types import TrajectoryDefaults
+    
+    # 初始化配置 (通常在启动时调用一次)
+    TrajectoryDefaults.configure(config)
+    
+    # 读取配置
+    max_coord = TrajectoryDefaults.max_coord
+    dt_sec = TrajectoryDefaults.dt_sec
 
 坐标系配置说明:
 ===============
-坐标系配置统一在 modules_config.py 的 TRANSFORM_CONFIG 中定义:
+坐标系配置统一在 transform_config.py 的 TRANSFORM_CONFIG 中定义:
 - transform.source_frame: 输入坐标系 (网络输出的局部坐标系，如 base_link)
 - transform.target_frame: 输出坐标系 (控制器工作坐标系，如 odom)
 
@@ -17,14 +31,24 @@
 1. 避免配置重复和不一致
 2. 坐标变换是 transform 模块的职责
 3. 轨迹配置专注于轨迹数据本身的参数
+
+注意:
+=====
+以下参数是数值稳定性/物理合理性常量，已移至 core/constants.py:
+- TRAJECTORY_MIN_DT_SEC: 最小时间步长 (0.01s)
+- TRAJECTORY_MAX_DT_SEC: 最大时间步长 (1.0s)
+- TRAJECTORY_MAX_COORD: 最大合理坐标值 (100m)
+- CONFIDENCE_MIN, CONFIDENCE_MAX: 置信度边界 [0, 1]
+
+这些参数不应由用户配置。
 """
 
 # 轨迹配置
 TRAJECTORY_CONFIG = {
     # 时间参数
     'default_dt_sec': 0.1,            # 默认时间步长 (秒)
-    'min_dt_sec': 0.01,               # 最小时间步长 (秒)
-    'max_dt_sec': 1.0,                # 最大时间步长 (秒)
+    # 注意: min_dt_sec 和 max_dt_sec 已移至 constants.py
+    # (TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC)
     
     # 轨迹点数限制
     'min_points': 2,                  # 最小轨迹点数
@@ -37,7 +61,7 @@ TRAJECTORY_CONFIG = {
     
     # 轨迹验证参数
     'max_point_distance': 10.0,       # 相邻点最大距离 (m)
-    'max_coord': 100.0,               # 最大合理坐标值 (米)，超出视为无效
+    # 注意: max_coord 已移至 constants.py (TRAJECTORY_MAX_COORD)
     
     # 速度填充参数 (轨迹适配器使用)
     'velocity_decay_threshold': 0.1,  # 速度衰减填充阈值 (m/s)
@@ -45,26 +69,23 @@ TRAJECTORY_CONFIG = {
                                       # 使用线性衰减填充；否则使用零填充
     
     # 置信度参数
-    'min_confidence': 0.0,            # 最小置信度 (用于 clip)
-    'max_confidence': 1.0,            # 最大置信度 (用于 clip)
+    # 注意: min_confidence 和 max_confidence 是数学定义 [0, 1]，
+    # 使用 core/constants.py 中的 CONFIDENCE_MIN, CONFIDENCE_MAX
     'default_confidence': 0.9,        # 默认置信度
 }
 
 # 轨迹配置验证规则
+# 注意: min_dt_sec, max_dt_sec, max_coord 已移至 constants.py，不再需要验证
 TRAJECTORY_VALIDATION_RULES = {
     'trajectory.default_dt_sec': (0.001, 1.0, '默认时间步长 (秒)'),
-    'trajectory.min_dt_sec': (0.001, 1.0, '最小时间步长 (秒)'),
-    'trajectory.max_dt_sec': (0.01, 10.0, '最大时间步长 (秒)'),
     'trajectory.low_speed_thresh': (0.0, 10.0, '低速阈值 (m/s)'),
     'trajectory.min_points': (1, 100, '最小轨迹点数'),
     'trajectory.max_points': (2, 1000, '最大轨迹点数'),
     'trajectory.max_point_distance': (0.1, 100.0, '相邻点最大距离 (m)'),
-    'trajectory.max_coord': (1.0, 10000.0, '最大合理坐标值 (米)'),
     'trajectory.velocity_decay_threshold': (0.0, 10.0, '速度衰减填充阈值 (m/s)'),
-    'trajectory.min_confidence': (0.0, 1.0, '最小置信度'),
-    'trajectory.max_confidence': (0.0, 1.0, '最大置信度'),
     'trajectory.default_confidence': (0.0, 1.0, '默认置信度'),
 }
 
-# 注意: 轨迹验证参数已整合到 core/data_types.py 的 TrajectoryDefaults 类中
+# 注意: 轨迹配置参数已整合到 core/data_types.py 的 TrajectoryDefaults 类中
 # TrajectoryDefaults.configure(config) 会同时配置默认值和验证参数
+# 所有模块应通过 TrajectoryDefaults 获取配置，而不是直接从此文件读取

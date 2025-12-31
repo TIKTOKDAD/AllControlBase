@@ -10,7 +10,13 @@ from ..core.data_types import Trajectory, ControlOutput, ConsistencyResult
 from ..core.enums import PlatformType
 from ..core.ros_compat import normalize_angle, angle_difference, get_monotonic_time
 from ..core.velocity_smoother import VelocitySmoother
-from ..core.constants import EPSILON
+from ..core.constants import (
+    EPSILON,
+    MPC_QP_SOLVER,
+    MPC_INTEGRATOR_TYPE,
+    MPC_NLP_SOLVER_TYPE,
+    MPC_NLP_MAX_ITER,
+)
 from ..config.default_config import PLATFORM_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -68,6 +74,11 @@ class MPCController(ITrajectoryTracker):
         self.platform_type = platform_config.get('type', PlatformType.DIFFERENTIAL)
         self.is_3d = self.platform_type == PlatformType.QUADROTOR
         self.is_omni = self.platform_type == PlatformType.OMNI
+        # 使用配置的 can_rotate_in_place，默认根据平台类型判断
+        self.can_rotate_in_place = platform_config.get(
+            'can_rotate_in_place', 
+            self.platform_type != PlatformType.ACKERMANN
+        )
         
         # MPC 权重
         mpc_weights = mpc_config.get('weights', {})
@@ -116,12 +127,11 @@ class MPCController(ITrajectoryTracker):
         self.min_turn_speed = backup_config.get('min_turn_speed', 0.1)
         self.default_speed_ratio = backup_config.get('default_speed_ratio', 0.5)
         
-        # ACADOS 求解器参数
-        solver_config = mpc_config.get('solver', {})
-        self.nlp_max_iter = solver_config.get('nlp_max_iter', 50)
-        self.qp_solver = solver_config.get('qp_solver', 'PARTIAL_CONDENSING_HPIPM')
-        self.integrator_type = solver_config.get('integrator_type', 'ERK')
-        self.nlp_solver_type = solver_config.get('nlp_solver_type', 'SQP_RTI')
+        # ACADOS 求解器参数 - 使用常量，这些是算法实现细节
+        self.nlp_max_iter = MPC_NLP_MAX_ITER
+        self.qp_solver = MPC_QP_SOLVER
+        self.integrator_type = MPC_INTEGRATOR_TYPE
+        self.nlp_solver_type = MPC_NLP_SOLVER_TYPE
         
         # ACADOS 求解器
         self._solver = None
@@ -570,14 +580,14 @@ class MPCController(ITrajectoryTracker):
                                                np.cos(target_heading - theta))
                     omega = self.fallback_heading_kp * heading_error
                     
-                    # 根据平台类型决定是否可以原地转向
-                    if self.platform_type == PlatformType.ACKERMANN:
+                    # 根据平台配置决定是否可以原地转向
+                    if not self.can_rotate_in_place:
                         # 阿克曼车辆不能原地转向，需要以最小速度前进/后退
                         # 使用配置的最小转向速度
                         min_turn_speed = max(self.min_turn_speed, self.v_min) if self.v_min > 0 else self.min_turn_speed
                         vx = min_turn_speed
                     else:
-                        # 差速车可以原地转向
+                        # 差速车/全向车/四旋翼可以原地转向
                         vx = 0.0
                 else:
                     curvature = 2.0 * local_y / L_sq
