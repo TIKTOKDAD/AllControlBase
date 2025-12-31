@@ -49,19 +49,41 @@ universal_controller/config/
 
 | 分类 | 定义位置 | 说明 | 示例 |
 |------|----------|------|------|
-| **物理常量** | `core/constants.py` | 不可配置的物理/数学常量 | 重力加速度、EPSILON |
+| **物理/数学常量** | `core/constants.py` | 不可配置的物理/数学/几何常量 | 重力加速度、EPSILON、角度阈值 |
+| **算法标准参数** | `core/constants.py` | 基于控制理论/数值分析的标准配置 | MPC 求解器类型、条件数阈值 |
+| **安全裕度常量** | `core/constants.py` | 安全工程标准裕度值 | 速度裕度 1.1、加速度裕度 1.5 |
 | **平台运动学** | `platform_config.py` | 平台运动学模型 (不可配置) | 状态维度、约束类型 |
 | **用户可调参数** | `platforms/*.yaml` | 需要根据平台调整的参数 | MPC 权重、速度约束、超时 |
-| **内部实现参数** | `internal_params.yaml` | 内部算法参数，用户不应修改 | EKF 噪声、滤波器系数 |
+| **内部实现参数** | `internal_params.yaml` | 内部算法参数，用户不应修改 | EKF 噪声、滤波器系数、状态机逻辑 |
 | **ROS 层特有参数** | `controller_params.yaml` | ROS 特有配置 | topics、clock |
 
 ### 设计原则
 
-1. **物理常量在代码中固定**：重力加速度、数值精度等
-2. **用户可调参数在平台配置中显式列出**：所有需要根据平台特性调整的参数
-3. **内部实现参数独立存放**：在 `internal_params.yaml` 中，用户不应修改
-4. **Python 默认值作为安全网**：当 YAML 缺失某项时使用默认值
-5. **用户只需面对 controller_ros 包**：所有配置都在这个 ROS 包中统一管理
+1. **物理/数学常量在代码中固定**：重力加速度、数值精度、几何角度阈值等
+2. **算法标准参数在代码中固定**：MPC 求解器配置、数值稳定性阈值等
+3. **安全裕度常量在代码中固定**：确保系统安全性，不允许用户随意修改
+4. **用户可调参数在平台配置中显式列出**：所有需要根据平台特性调整的参数
+5. **内部实现参数独立存放**：在 `internal_params.yaml` 中，用户不应修改
+6. **Python 默认值作为安全网**：当 YAML 缺失某项时使用默认值
+7. **用户只需面对 controller_ros 包**：所有配置都在这个 ROS 包中统一管理
+
+### 参数分类决策树
+
+```
+参数是否基于物理定律/数学定义？
+├── 是 → core/constants.py (如重力加速度、π/3 角度阈值)
+└── 否 → 参数是否基于控制理论/数值分析的标准配置？
+    ├── 是 → core/constants.py (如 MPC 求解器类型、条件数阈值)
+    └── 否 → 参数是否涉及系统安全？
+        ├── 是 → core/constants.py (如安全裕度常量)
+        └── 否 → 参数是否需要根据平台硬件特性调整？
+            ├── 是 → platforms/*.yaml (如速度限制、MPC 权重)
+            └── 否 → 参数是否是算法内部实现细节？
+                ├── 是 → internal_params.yaml (如 EKF 噪声、滤波器系数)
+                └── 否 → 参数是否是 ROS 特有配置？
+                    ├── 是 → controller_params.yaml (如话题名称)
+                    └── 否 → 评估是否需要此参数
+```
 
 ### 配置分类表
 
@@ -100,19 +122,53 @@ universal_controller/config/
 
 | 模块 | 参数 | 理由 |
 |------|------|------|
-| `ekf.*` | EKF 状态估计器参数 | 参数高度耦合，需要专业知识 |
-| `transition.*` | 状态过渡参数 | 内部控制逻辑 |
-| `mpc.solver.*` | ACADOS 求解器参数 | 需要优化器专业知识 |
-| `mpc.health_monitor.condition_number_*` | 数值稳定性参数 | 内部健康监控 |
-| `safety.accel_filter_*` | 加速度滤波参数 | 内部安全机制 |
-| `safety.state_machine.*` (高级) | 状态机高级参数 | 内部控制逻辑 |
+| **EKF 状态估计器** | | |
+| `ekf.measurement_noise.*` | 测量噪声参数 | 基于传感器特性，需要专业知识 |
+| `ekf.process_noise.*` | 过程噪声参数 | 基于系统动态特性，参数高度耦合 |
+| `ekf.adaptive.*` | 自适应参数 | 打滑检测和协方差调整的内部逻辑 |
+| `ekf.anomaly_detection.*` | 异常检测参数 | 内部健康监控 |
+| **过渡动画** | | |
+| `transition.*` | 状态过渡参数 | 内部控制逻辑，基于控制理论 |
+| **MPC 健康监控** | | |
+| `mpc.horizon_change_min_interval` | Horizon 调整节流 | 防止频繁重新初始化求解器 |
+| `mpc.health_monitor.recovery_multiplier` | 恢复条件倍数 | 内部健康监控逻辑 |
+| `mpc.health_monitor.*_decay_rate` | 衰减率参数 | 内部状态机逻辑 |
+| **安全模块** | | |
+| `safety.accel_filter_*` | 加速度滤波参数 | 信号处理参数，基于滤波器理论 |
+| `safety.state_machine.alpha_recovery_*` | α 恢复参数 | 内部状态机逻辑 |
+| `safety.state_machine.mpc_fail_ratio_thresh` | 失败率阈值 | 内部健康监控 |
+| `safety.state_machine.mpc_recovery_*` | MPC 恢复参数 | 内部状态机逻辑 |
+| `safety.state_machine.*_state_timeout` | 状态超时参数 | 内部监控逻辑 |
+| **备份控制器** | | |
 | `backup.heading_mode` | 航向控制模式 | 内部控制逻辑 |
-| `backup.*_angle_thresh` | 角度阈值参数 | 内部控制逻辑 |
+| `backup.low_speed_transition_factor` | 低速过渡因子 | 内部控制逻辑 |
+| `backup.curvature_speed_limit_thresh` | 曲率速度限制阈值 | 内部控制逻辑 |
+| `backup.rear_direction_*` | 正后方处理参数 | 内部控制逻辑 |
+| **轨迹处理** | | |
+| `trajectory.velocity_decay_threshold` | 速度衰减阈值 | 轨迹适配器内部逻辑 |
+| `trajectory.default_confidence` | 默认置信度 | 内部默认值 |
+| **跟踪质量评估** | | |
+| `tracking.prediction_thresh` | 预测误差阈值 | Dashboard 内部参数 |
+| `tracking.weights.*` | 评分权重 | Dashboard 内部参数 |
+| `tracking.rating.*` | 评级阈值 | Dashboard 内部参数 |
+| **诊断** | | |
+| `diagnostics.max_consecutive_errors_detail` | 错误详细输出次数 | 内部日志控制 |
+| `diagnostics.error_summary_interval` | 错误摘要间隔 | 内部日志控制 |
+| `diagnostics.max_error_count` | 最大错误计数 | 内部日志控制 |
+| **系统** | | |
+| `system.long_pause_threshold` | 暂停检测阈值 | 内部监控逻辑 |
+| `system.ekf_reset_threshold` | EKF 重置阈值 | 内部监控逻辑 |
+| **姿态控制 (四旋翼)** | | |
+| `attitude.yaw_drift_rate` | yaw 漂移率 | 内部补偿逻辑 |
+| `attitude.hover_*_factor` | 悬停检测因子 | 内部状态机逻辑 |
+| `attitude.hover_debounce_time` | 悬停去抖动时间 | 内部状态机逻辑 |
+| `attitude.position_attitude_decoupled` | 位置-姿态解耦 | 内部控制逻辑 |
+| `attitude.invert_pitch_sign` | pitch 符号反转 | 内部坐标系处理 |
+| `attitude.dt` | 姿态控制时间步长 | 内部控制逻辑 |
+| **坐标变换 (ROS TF2)** | | |
+| `transform.retry_*` | TF2 重试策略 | ROS 层内部逻辑 |
 | `transform.drift_*` | 漂移估计参数 | 内部补偿机制 |
-| `tracking.weights.*` | Dashboard 权重 | 仅影响显示 |
-| `tracking.rating.*` | Dashboard 评级 | 仅影响显示 |
-| `diagnostics.*` (高级) | 诊断内部参数 | 内部日志控制 |
-| `attitude.*` (高级) | 姿态控制内部参数 | 内部控制逻辑 |
+| `transform.fallback_*_limit_ms` | 降级检测参数 | 内部健康监控 |
 
 ### 配置文件结构
 
@@ -157,16 +213,83 @@ controller_ros/src/controller_ros/utils/param_loader.py
 
 这些常量定义在 `universal_controller/core/constants.py` 中：
 
+### 数值稳定性常量
+
 | 常量 | 值 | 说明 |
 |------|-----|------|
-| `DEFAULT_GRAVITY` | 9.81 | 重力加速度 (m/s²) |
 | `EPSILON` | 1e-6 | 通用数值精度阈值 |
 | `EPSILON_SMALL` | 1e-9 | 高精度数值阈值 |
 | `EPSILON_ANGLE` | 1e-9 | 角度计算精度阈值 |
 | `EPSILON_VELOCITY` | 1e-6 | 速度计算精度阈值 |
 | `MIN_DENOMINATOR` | 1e-9 | 除法保护最小分母 |
 | `MIN_SEGMENT_LENGTH` | 1e-6 | 最小线段长度 (m) |
+
+### 物理常量
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `DEFAULT_GRAVITY` | 9.81 | 重力加速度 (m/s²) |
+
+### 几何常量 (Pure Pursuit 算法)
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `PURE_PURSUIT_ANGLE_THRESH` | π/3 (1.047) | Pure Pursuit 模式切换角度阈值 (~60°) |
+| `HEADING_CONTROL_ANGLE_THRESH` | π/2 (1.571) | 航向控制模式角度阈值 (90°) |
+| `REAR_ANGLE_THRESH` | π - π/10 (2.827) | 正后方检测阈值 (~162°) |
+
+### MPC 求解器标准配置
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `MPC_QP_SOLVER` | "PARTIAL_CONDENSING_HPIPM" | QP 求解器类型 |
+| `MPC_INTEGRATOR_TYPE` | "ERK" | 积分器类型 |
+| `MPC_NLP_SOLVER_TYPE` | "SQP_RTI" | NLP 求解器类型 |
+| `MPC_NLP_MAX_ITER` | 50 | NLP 最大迭代次数 |
+
+### 数值稳定性阈值
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `CONDITION_NUMBER_THRESH` | 1e8 | 条件数警告阈值 |
+| `CONDITION_NUMBER_RECOVERY` | 1e5 | 条件数恢复阈值 |
+| `KKT_RESIDUAL_THRESH` | 1e-3 | KKT 残差阈值 |
+
+### 安全裕度常量
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `SAFETY_VELOCITY_MARGIN` | 1.1 | 速度限制裕度 (10%) |
+| `SAFETY_ACCEL_MARGIN` | 1.5 | 加速度限制裕度 (50%) |
+| `SAFETY_ACCEL_WARMUP_MARGIN_MAX` | 2.0 | 预热期间裕度上限 |
+| `SAFETY_ACCEL_ABSOLUTE_MAX_MULTIPLIER` | 2.0 | 绝对加速度上限倍数 |
+
+### EKF 算法常量
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `EKF_MAX_TILT_ANGLE` | 1.047 | IMU 姿态角有效性阈值 (~60°) |
+| `EKF_MIN_VELOCITY_FOR_JACOBIAN` | 0.01 | Jacobian 计算最小速度 (m/s) |
+| `EKF_COVARIANCE_EXPLOSION_THRESH` | 1000.0 | 协方差爆炸检测阈值 |
+| `EKF_INNOVATION_ANOMALY_THRESH` | 10.0 | 创新度异常检测阈值 |
+
+### 轨迹验证常量
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `TRAJECTORY_MIN_DT_SEC` | 0.01 | 最小时间步长 (秒) |
+| `TRAJECTORY_MAX_DT_SEC` | 1.0 | 最大时间步长 (秒) |
+| `TRAJECTORY_MAX_COORD` | 100.0 | 最大合理坐标值 (m) |
+
+### 其他常量
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
 | `NEVER_RECEIVED_TIME_MS` | 1e9 | 表示"从未收到"的时间值 |
+| `TRANSITION_COMPLETION_THRESHOLD` | 0.95 | 过渡完成阈值 |
+| `CONSISTENCY_INVALID_DATA_CONFIDENCE` | 0.5 | 数据无效时的保守置信度 |
+| `ATTITUDE_MIN_THRUST_FACTOR` | 0.1 | 最小推力因子 |
+| `ATTITUDE_FACTOR_MIN` | 0.1 | 姿态角饱和后推力重计算最小因子 |
 
 ---
 

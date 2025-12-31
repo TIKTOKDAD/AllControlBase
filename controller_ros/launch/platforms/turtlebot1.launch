@@ -3,12 +3,16 @@
   TurtleBot1 + ROS Noetic 专用 Launch 文件
   
   使用方法:
+    roslaunch controller_ros controller.launch platform:=turtlebot1
+    roslaunch controller_ros controller.launch platform:=turtlebot1 dashboard:=true
+    roslaunch controller_ros controller.launch platform:=turtlebot1 visualizer:=true
+    roslaunch controller_ros controller.launch platform:=turtlebot1 visualizer:=true camera_image:=/usb_cam/image_raw
+    roslaunch controller_ros controller.launch platform:=turtlebot1 dashboard:=true visualizer:=true
+    roslaunch controller_ros controller.launch platform:=turtlebot1 use_sim_time:=true
+  
+  或者直接使用本文件:
     roslaunch controller_ros platforms/turtlebot1.launch
     roslaunch controller_ros platforms/turtlebot1.launch dashboard:=true
-    roslaunch controller_ros platforms/turtlebot1.launch visualizer:=true
-    roslaunch controller_ros platforms/turtlebot1.launch visualizer:=true camera_image:=/usb_cam/image_raw
-    roslaunch controller_ros platforms/turtlebot1.launch dashboard:=true visualizer:=true
-    roslaunch controller_ros platforms/turtlebot1.launch use_sim_time:=true
   
   默认行为:
     - dashboard 和 visualizer 默认关闭，需要时显式启用
@@ -19,6 +23,11 @@
     2. universal_controller 已安装 (pip install -e .)
     3. 轨迹发布器已启动 (发布 /nn/local_trajectory)
     4. (可选) 相机标定: roslaunch controller_ros tools/trajectory_visualizer.launch calibration_mode:=true
+  
+  配置文件加载顺序 (从低到高优先级):
+    1. base/controller_params.yaml  - ROS 层基础配置 (话题、时钟、TF2)
+    2. base/internal_params.yaml    - 算法内部参数 (滤波器、EKF、状态机逻辑)
+    3. platforms/turtlebot1.yaml    - TurtleBot1 专用配置 (用户可调参数)
 -->
 <launch>
   <!-- ========== 参数 ========== -->
@@ -33,19 +42,21 @@
   
   <!-- ========== 加载配置文件 ========== -->
   <!-- 
-  配置加载顺序 (从低到高):
-  1. base/controller_params.yaml  - ROS 层基础配置 (话题、时钟)
-  2. base/internal_params.yaml    - 内部实现参数 (用户不应修改)
+  配置加载顺序 (从低到高优先级):
+  1. base/controller_params.yaml  - ROS 层基础配置 (话题、时钟、TF2)
+  2. base/internal_params.yaml    - 算法内部参数 (滤波器、EKF、状态机逻辑)
   3. platforms/turtlebot1.yaml    - TurtleBot1 专用配置 (用户可调参数)
+  
+  注意: 后加载的配置会覆盖先加载的同名参数
   -->
   
-  <!-- 基础配置 -->
+  <!-- ROS 层基础配置 (话题、时钟、TF2) -->
   <rosparam file="$(find controller_ros)/config/base/controller_params.yaml" command="load"/>
   
-  <!-- 内部实现参数 (用户不应修改) -->
+  <!-- 算法内部参数 (滤波器、EKF、状态机逻辑，用户不应修改) -->
   <rosparam file="$(find controller_ros)/config/base/internal_params.yaml" command="load"/>
   
-  <!-- TurtleBot1 专用配置 (覆盖基础配置和内部参数) -->
+  <!-- TurtleBot1 专用配置 (覆盖基础配置) -->
   <rosparam file="$(find controller_ros)/config/platforms/turtlebot1.yaml" command="load"/>
   
   <!-- 
@@ -59,9 +70,9 @@
   <node pkg="controller_ros" type="controller_node.py" name="universal_controller_node" output="screen">
     <!-- 
     控制器节点说明:
-    - 订阅 /odom, /nn/local_trajectory
-    - 发布 /cmd_unified, /controller/diagnostics, /controller/state
-    - 使用 TF2 查询 base_link -> odom 变换
+    - 订阅: /odom, /nn/local_trajectory (配置在 turtlebot1.yaml 的 topics 块)
+    - 发布: /cmd_unified, /controller/diagnostics, /controller/state
+    - 使用 TF2 查询 base_footprint -> odom 变换
     
     紧急停止:
     - 发送 std_msgs/Empty 到 /controller/emergency_stop 触发紧急停止
@@ -125,11 +136,17 @@
 </launch>
 
 
-<!-- # 终端 1: TurtleBot 驱动
+<!-- 快速启动示例:
+
+# 终端 1: TurtleBot 驱动
 roslaunch turtlebot_bringup minimal.launch
 
 # 终端 2: 控制器 (已包含 ACADOS 高性能求解器)
-roslaunch controller_ros platforms/turtlebot1.launch
+roslaunch controller_ros controller.launch platform:=turtlebot1
 
 # 终端 3: 你的轨迹发布器
-rosrun your_package trajectory_publisher.py -->
+rosrun your_package trajectory_publisher.py
+
+# 带可视化界面启动:
+roslaunch controller_ros controller.launch platform:=turtlebot1 dashboard:=true visualizer:=true
+-->

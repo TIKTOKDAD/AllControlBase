@@ -1,80 +1,57 @@
 # internal_params.yaml
-# 内部实现参数
+# 算法内部参数 - 用户不应修改
 #
 # =============================================================================
 # 文件职责
 # =============================================================================
 #
-# 本文件定义两类参数：
+# 本文件定义算法层内部参数：
 #
-# 1. ROS 层特有参数
-#    - TF2 重试策略、buffer 预热等 ROS 特有配置
-#    - 这些参数在 Python 算法库中没有对应项
+# 1. 滤波器参数
+#    - 加速度滤波器系数、窗口大小
+#    - 基于信号处理理论选择
 #
-# 2. 算法层高级参数的 ROS 覆盖
-#    - 这些参数在 Python 配置中有默认值
-#    - 本文件提供 ROS 环境下的推荐值
-#    - 普通用户不应修改，除非有特殊需求
+# 2. 状态机内部逻辑参数
+#    - Alpha 恢复逻辑、MPC 失败/恢复检测
+#    - 状态超时监控
+#
+# 3. EKF 噪声模型参数
+#    - 测量噪声、过程噪声
+#    - 自适应参数 (打滑检测)
+#
+# 4. 控制器内部逻辑参数
+#    - MPC 健康监控内部参数
+#    - 备份控制器内部逻辑
+#    - 状态过渡动画参数
+#
+# 5. 漂移估计参数 (高级功能)
+#    - TF 漂移估计算法参数
 #
 # =============================================================================
-# 不在本文件中定义的内容 (已移至 core/constants.py)
+# 不在本文件中定义的内容
 # =============================================================================
 #
-# 以下参数是物理/数学/算法常量，硬编码在 core/constants.py 中：
+# ROS 层特有参数 (在 controller_params.yaml 中定义):
+# - topics: ROS 话题名称
+# - clock: 时钟跳变检测
+# - transform (TF2 部分): buffer 预热、重试策略、降级检测
 #
-# 物理常量:
-# - DEFAULT_GRAVITY: 标准重力加速度 (9.81 m/s^2)
-#
-# 数值稳定性常量:
+# 物理/数学常量 (硬编码在 core/constants.py 中):
+# - DEFAULT_GRAVITY: 标准重力加速度 (9.81 m/s²)
 # - EPSILON, EPSILON_SMALL, MIN_DENOMINATOR 等
-# - MIN_DT_FOR_ACCEL, MAX_DT_FOR_ACCEL: 加速度计算时间间隔边界
-#
-# 几何常量:
-# - PURE_PURSUIT_ANGLE_THRESH: pi/3，Pure Pursuit 经典切换角度
-# - HEADING_CONTROL_ANGLE_THRESH: pi/2，正交方向
-# - REAR_ANGLE_THRESH: 正后方检测阈值
-#
-# MPC 求解器标准配置:
-# - MPC_QP_SOLVER, MPC_INTEGRATOR_TYPE, MPC_NLP_SOLVER_TYPE, MPC_NLP_MAX_ITER
-#
-# 数值稳定性阈值:
-# - CONDITION_NUMBER_THRESH, CONDITION_NUMBER_RECOVERY, KKT_RESIDUAL_THRESH
-#
-# 数学边界:
-# - CONFIDENCE_MIN, CONFIDENCE_MAX
-# - QUATERNION_NORM_SQ_MIN, QUATERNION_NORM_SQ_MAX
-#
-# 安全裕度常量:
-# - SAFETY_VELOCITY_MARGIN (1.1): 速度限制裕度
-# - SAFETY_ACCEL_MARGIN (1.5): 加速度限制裕度
-# - SAFETY_ACCEL_WARMUP_MARGIN_MAX (2.0): 预热期间裕度上限
-# - SAFETY_ACCEL_ABSOLUTE_MAX_MULTIPLIER (2.0): 绝对加速度上限倍数
-#
-# EKF 算法常量:
-# - EKF_MAX_TILT_ANGLE (1.047): IMU 姿态角有效性检查阈值
-# - EKF_MIN_VELOCITY_FOR_JACOBIAN (0.01): Jacobian 计算最小速度
-# - EKF_COVARIANCE_EXPLOSION_THRESH (1000.0): 协方差爆炸检测阈值
-# - EKF_INNOVATION_ANOMALY_THRESH (10.0): 创新度异常检测阈值
-#
-# 轨迹验证常量:
-# - TRAJECTORY_MIN_DT_SEC (0.01): 最小时间步长
-# - TRAJECTORY_MAX_DT_SEC (1.0): 最大时间步长
-# - TRAJECTORY_MAX_COORD (100.0): 最大合理坐标值
-#
-# 一致性检查常量:
-# - CONSISTENCY_INVALID_DATA_CONFIDENCE (0.5): 数据无效时的保守置信度
-#
-# 姿态控制常量:
-# - ATTITUDE_MIN_THRUST_FACTOR (0.1): 最小推力因子
-# - ATTITUDE_FACTOR_MIN (0.1): 姿态角饱和后推力重计算的最小因子
+# - PURE_PURSUIT_ANGLE_THRESH, HEADING_CONTROL_ANGLE_THRESH 等
+# - MPC_QP_SOLVER, MPC_INTEGRATOR_TYPE 等
+# - SAFETY_VELOCITY_MARGIN, SAFETY_ACCEL_MARGIN 等
+# - EKF_MAX_TILT_ANGLE, EKF_COVARIANCE_EXPLOSION_THRESH 等
+# - TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_COORD 等
 #
 # =============================================================================
 # 配置加载顺序
 # =============================================================================
 #
 # 1. universal_controller/config/*.py  - Python 默认配置 (算法库内部)
-# 2. base/controller_params.yaml       - ROS 层基础配置 (话题、时钟)
-# 3. base/internal_params.yaml         - 本文件
+# 2. base/controller_params.yaml       - ROS 层基础配置 (话题、时钟、TF2)
+# 3. base/internal_params.yaml         - 本文件 (用户不应修改)
 # 4. platforms/{platform}.yaml         - 平台特定配置 (用户可调参数)
 # 5. ROS 参数服务器                     - 运行时覆盖
 #
@@ -82,159 +59,257 @@
 
 
 # =============================================================================
-# ROS 层特有参数 - TF2 配置
-# 这些参数只在 ROS 环境中使用，Python 算法库中没有对应项
+# 漂移估计参数 (高级功能，通常禁用)
+#
+# 用于估计 TF 坐标变换的漂移误差，在 TF 不可靠时提供补偿。
+# 这是算法层参数，与 ROS TF2 的 buffer/重试策略不同。
 # =============================================================================
 transform:
-  buffer_warmup_timeout_sec: 2.0
-  buffer_warmup_interval_sec: 0.1
-  retry_interval_sec: 1.0
-  max_retry_interval_sec: 30.0
-  backoff_multiplier: 2.0
-  max_retries: -1
+  drift_estimation_enabled: false     # 漂移估计开关，默认禁用
+  recovery_correction_enabled: true   # TF 恢复后是否校正累积漂移
+  max_accumulated_drift: 1.0          # 漂移累积上限 (米)
+  drift_rate: 0.01                    # 漂移率 (米/秒)
+  drift_velocity_factor: 0.1          # 速度相关漂移因子
+  max_drift_dt: 0.5                   # 漂移估计最大时间间隔 (秒)
+  drift_correction_thresh: 0.01       # 漂移校正阈值 (米/弧度)
+
 
 # =============================================================================
-# 算法层高级参数 - MPC 健康监控
+# MPC 健康监控内部参数
+#
+# 控制 MPC 求解器的健康状态判定逻辑。
+# 用户可调的阈值在平台配置中，这里是内部逻辑参数。
 # =============================================================================
 mpc:
-  horizon_change_min_interval: 1.0
+  # Horizon 调整节流 (防止频繁重新初始化求解器)
+  horizon_change_min_interval: 1.0    # Horizon 调整最小间隔 (秒)
+  
+  # 健康监控内部参数
   health_monitor:
-    recovery_multiplier: 2.0
-    consecutive_good_for_decay: 2
-    timeout_decay_rate: 2
-    middle_zone_decay_rate: 1
+    recovery_multiplier: 2.0          # 备选恢复条件的倍数
+    consecutive_good_for_decay: 2     # 连续良好次数达到此值后开始衰减
+    timeout_decay_rate: 2             # 恢复区超时计数衰减速率
+    middle_zone_decay_rate: 1         # 中间区超时计数衰减速率
+
 
 # =============================================================================
-# 算法层高级参数 - 安全模块
-# 注意: velocity_margin, accel_margin, accel_warmup_margin_max, 
-#       accel_absolute_max_multiplier 已移至 constants.py
+# 安全模块内部参数
+#
+# 加速度滤波器和状态机内部逻辑参数。
+# 基于信号处理理论和控制理论选择，修改需要深入理解算法原理。
 # =============================================================================
 safety:
-  accel_filter_window: 3
-  accel_filter_alpha: 0.3
-  accel_filter_warmup_alpha: 0.5
-  accel_filter_warmup_period: 3
-  accel_warmup_margin_multiplier: 1.5
+  # ---------------------------------------------------------------------------
+  # 加速度滤波器参数 (信号处理参数)
+  # 用于平滑加速度信号，减少传感器噪声影响
+  # ---------------------------------------------------------------------------
+  accel_filter_window: 3              # 滑动窗口大小
+  accel_filter_alpha: 0.3             # 低通滤波系数 (0-1，越小越平滑)
+  accel_filter_warmup_alpha: 0.5      # 滤波器预热期间的系数 (更激进)
+  accel_filter_warmup_period: 3       # 滤波器预热期长度 (采样数)
+  accel_warmup_margin_multiplier: 1.5 # 预热期间裕度倍数
+  
+  # ---------------------------------------------------------------------------
+  # 状态机内部参数
+  # ---------------------------------------------------------------------------
   state_machine:
-    alpha_recovery_thresh: 5
-    alpha_recovery_value: 0.3
-    mpc_fail_ratio_thresh: 0.5
-    mpc_recovery_history_min: 3
-    mpc_recovery_recent_count: 5
-    mpc_recovery_success_ratio: 0.8
-    degraded_state_timeout: 30.0
-    backup_state_timeout: 60.0
-    enable_state_timeout_stop: false
+    # Alpha 恢复逻辑参数 - 控制 soft/hard 速度混合比例的恢复
+    alpha_recovery_thresh: 5          # 连续良好 N 次后恢复 α
+    alpha_recovery_value: 0.3         # 恢复时的 α 值
+    
+    # MPC 失败检测参数
+    mpc_fail_ratio_thresh: 0.5        # 失败率阈值，超过触发降级
+    
+    # MPC 恢复检测参数
+    mpc_recovery_history_min: 3       # 最小历史记录数
+    mpc_recovery_recent_count: 5      # 检查最近 N 次
+    mpc_recovery_success_ratio: 0.8   # 整体成功率要求
+    
+    # 状态超时监控参数
+    degraded_state_timeout: 30.0      # MPC_DEGRADED 状态超时 (秒)
+    backup_state_timeout: 60.0        # BACKUP_ACTIVE 状态超时 (秒)
+    enable_state_timeout_stop: false  # 是否启用状态超时自动停止
+
 
 # =============================================================================
-# 算法层高级参数 - 备份控制器
+# 备份控制器内部参数 (Pure Pursuit)
+#
+# 控制模式切换和低速处理的内部逻辑参数。
+# 用户可调的增益和前瞻距离在平台配置中。
 # =============================================================================
 backup:
-  heading_mode: "follow_velocity"
-  low_speed_transition_factor: 0.5
-  curvature_speed_limit_thresh: 0.1
-  rear_direction_min_thresh: 0.05
-  default_turn_direction: "left"
+  # 航向模式 (内部逻辑)
+  heading_mode: "follow_velocity"     # 航向模式:
+                                      # - follow_velocity: 跟随速度方向
+                                      # - fixed: 固定航向
+                                      # - target_point: 朝向目标点
+                                      # - manual: 手动控制
+  
+  # 低速过渡参数
+  low_speed_transition_factor: 0.5    # 低速过渡区域因子
+  curvature_speed_limit_thresh: 0.1   # 曲率速度限制阈值 (1/m)
+  
+  # 正后方处理参数 - 目标点在正后方时的转向策略
+  rear_direction_min_thresh: 0.05     # 正后方转向判断最小阈值 (m)
+  default_turn_direction: "left"      # 正后方默认转向方向
+  
+  # 角速度变化率限制
+  omega_rate_limit: null              # null: 自动计算为 alpha_max * dt
+
 
 # =============================================================================
-# 算法层高级参数 - 轨迹验证
-# 注意: min_dt_sec, max_dt_sec, max_coord 已移至 constants.py
+# 轨迹处理内部参数
+#
+# 轨迹验证和速度填充的内部参数。
+# 用户可调的轨迹点数限制在平台配置中。
 # =============================================================================
 trajectory:
-  velocity_decay_threshold: 0.1
-  default_confidence: 0.9
+  # 速度填充参数 (轨迹适配器使用)
+  velocity_decay_threshold: 0.1       # 速度衰减填充阈值 (m/s)
+  
+  # 置信度参数
+  default_confidence: 0.9             # 默认置信度
+
 
 # =============================================================================
-# 算法层高级参数 - 一致性检查
-# 注意: invalid_data_confidence 已移至 constants.py
-# =============================================================================
-# consistency 模块的常量参数已全部移至 constants.py
-
-# =============================================================================
-# 算法层高级参数 - 过渡动画
-# 注意: completion_threshold 已移至 constants.py (TRANSITION_COMPLETION_THRESHOLD)
+# 状态过渡动画参数
+#
+# 控制器状态切换时的平滑过渡参数，避免控制命令突变。
 # =============================================================================
 transition:
-  type: "exponential"
-  tau: 0.1
-  max_duration: 0.5
-  duration: 0.2
+  type: "exponential"                 # 过渡类型: exponential/linear
+  tau: 0.1                            # 指数过渡时间常数 (秒)
+  max_duration: 0.5                   # 最大过渡时长 (秒)
+  duration: 0.2                       # 线性过渡时长 (秒)
+
 
 # =============================================================================
-# 算法层高级参数 - 跟踪质量评估
+# 跟踪质量评估内部参数
+#
+# Dashboard 显示用的评分权重和阈值。
+# 用户可调的误差阈值在平台配置中。
 # =============================================================================
 tracking:
-  prediction_thresh: 0.5
+  # 预测误差阈值
+  prediction_thresh: 0.5              # 预测误差阈值 (m)
+  
+  # 质量评分权重 (总和应为 1.0)
   weights:
-    lateral: 0.4
-    longitudinal: 0.4
-    heading: 0.2
+    lateral: 0.4                      # 横向误差权重
+    longitudinal: 0.4                 # 纵向误差权重
+    heading: 0.2                      # 航向误差权重
+  
+  # 评级阈值 (百分比)
   rating:
-    excellent: 90
-    good: 70
-    fair: 50
+    excellent: 90                     # >= 90% 为优秀
+    good: 70                          # >= 70% 为良好
+    fair: 50                          # >= 50% 为一般
+
 
 # =============================================================================
-# 算法层高级参数 - 诊断
+# 诊断输出内部参数
+#
+# 错误日志和诊断输出的控制参数，避免日志爆炸。
 # =============================================================================
 diagnostics:
-  max_consecutive_errors_detail: 10
-  error_summary_interval: 50
-  max_error_count: 1000
+  max_consecutive_errors_detail: 10   # 连续错误详细输出的最大次数
+  error_summary_interval: 50          # 错误摘要输出间隔
+  max_error_count: 1000               # 最大错误计数
+
 
 # =============================================================================
-# 算法层高级参数 - 系统
+# 系统内部参数
+#
+# 控制循环暂停检测和 EKF 重置的内部参数。
 # =============================================================================
 system:
-  long_pause_threshold: 0.5
-  ekf_reset_threshold: 2.0
+  long_pause_threshold: 0.5           # 长时间暂停检测阈值 (秒)
+  ekf_reset_threshold: 2.0            # EKF 重置阈值 (秒)，暂停超过此时间重置 EKF
+
 
 # =============================================================================
-# 算法层高级参数 - 姿态控制 (仅四旋翼)
-# 注意: min_thrust_factor, attitude_factor_min 已移至 constants.py
+# 姿态控制内部参数 (仅四旋翼)
+#
+# 悬停检测和姿态控制的内部逻辑参数。
+# 用户可调的增益和限制在平台配置中。
 # =============================================================================
 attitude:
-  yaw_drift_rate: 0.001
-  hover_enter_factor: 1.0
-  hover_exit_factor: 1.5
-  hover_cmd_exit_factor: 2.0
-  hover_debounce_time: 0.1
-  position_attitude_decoupled: false
-  invert_pitch_sign: true
-  dt: 0.02
+  # 悬停 yaw 漂移补偿
+  yaw_drift_rate: 0.001               # yaw 漂移率 (rad/s)
+  
+  # 悬停检测滞后参数 - 防止状态频繁切换
+  hover_enter_factor: 1.0             # 进入悬停的阈值因子
+  hover_exit_factor: 1.5              # 退出悬停的阈值因子
+  hover_cmd_exit_factor: 2.0          # 命令速度退出悬停的阈值因子
+  hover_debounce_time: 0.1            # 悬停状态切换去抖动时间 (秒)
+  
+  # 位置-姿态解耦
+  position_attitude_decoupled: false  # 是否启用位置-姿态解耦
+  
+  # 其他内部参数
+  invert_pitch_sign: true             # pitch 符号反转
+  dt: 0.02                            # 姿态控制时间步长 (秒)
 
 
 # =============================================================================
-# 算法层高级参数 - EKF 状态估计器
-# 注意: max_tilt_angle, min_velocity_for_jacobian, covariance_explosion_thresh,
-#       innovation_anomaly_thresh 已移至 constants.py
+# EKF 状态估计器内部参数
+#
+# 扩展卡尔曼滤波器的噪声模型和自适应参数。
+# 这些参数基于传感器特性和控制理论选择，通常不需要修改。
 # =============================================================================
 ekf:
-  use_odom_orientation_fallback: true
-  theta_covariance_fallback_thresh: 0.5
-  imu_motion_compensation: false
+  # ---------------------------------------------------------------------------
+  # 航向备选配置
+  # ---------------------------------------------------------------------------
+  use_odom_orientation_fallback: true       # 是否使用里程计航向作为备选
+  theta_covariance_fallback_thresh: 0.5     # 航向协方差回退阈值
+  
+  # ---------------------------------------------------------------------------
+  # IMU 配置
+  # ---------------------------------------------------------------------------
+  imu_motion_compensation: false            # IMU 运动补偿
+  accel_freshness_thresh: 0.1               # 加速度数据新鲜度阈值 (秒)
+  
+  # ---------------------------------------------------------------------------
+  # 测量噪声 (传感器特性参数)
+  # 描述传感器测量的不确定性
+  # ---------------------------------------------------------------------------
   measurement_noise:
-    odom_position: 0.01
-    odom_velocity: 0.1
-    odom_orientation: 0.01
-    odom_angular_velocity: 0.05
-    imu_accel: 0.5
-    imu_gyro: 0.01
+    odom_position: 0.01                     # 里程计位置噪声
+    odom_velocity: 0.1                      # 里程计速度噪声
+    odom_orientation: 0.01                  # 里程计航向噪声
+    odom_angular_velocity: 0.05             # 里程计角速度噪声
+    imu_accel: 0.5                          # IMU 加速度噪声
+    imu_gyro: 0.01                          # IMU 陀螺仪噪声
+  
+  # ---------------------------------------------------------------------------
+  # 过程噪声 (系统动态特性参数)
+  # 描述系统模型的不确定性
+  # ---------------------------------------------------------------------------
   process_noise:
-    position: 0.001
-    velocity: 0.1
-    orientation: 0.01
-    angular_velocity: 0.1
-    imu_bias: 0.0001
+    position: 0.001                         # 位置过程噪声
+    velocity: 0.1                           # 速度过程噪声
+    orientation: 0.01                       # 航向过程噪声
+    angular_velocity: 0.1                   # 角速度过程噪声
+    imu_bias: 0.0001                        # IMU 偏置过程噪声
+  
+  # ---------------------------------------------------------------------------
+  # 自适应参数 (打滑检测和协方差调整)
+  # 根据运动状态动态调整滤波器参数
+  # ---------------------------------------------------------------------------
   adaptive:
-    base_slip_thresh: 2.0
-    slip_velocity_factor: 0.5
-    slip_covariance_scale: 10.0
-    stationary_covariance_scale: 0.1
-    stationary_thresh: 0.05
-    slip_probability_k_factor: 5.0
-    slip_history_window: 20
-  accel_freshness_thresh: 0.1
+    base_slip_thresh: 2.0                   # 打滑检测基础阈值 (m/s²)
+    slip_velocity_factor: 0.5               # 速度相关因子
+    slip_covariance_scale: 10.0             # 打滑时协方差放大倍数
+    stationary_covariance_scale: 0.1        # 静止时协方差缩小倍数
+    stationary_thresh: 0.05                 # 静止检测阈值 (m/s)
+    slip_probability_k_factor: 5.0          # 打滑概率 sigmoid 斜率因子
+    slip_history_window: 20                 # 打滑概率计算滑动窗口大小
+  
+  # ---------------------------------------------------------------------------
+  # 异常检测参数
+  # 检测传感器数据异常
+  # ---------------------------------------------------------------------------
   anomaly_detection:
-    drift_thresh: 0.1
-    jump_thresh: 0.5
+    drift_thresh: 0.1                       # IMU 漂移检测阈值 (rad/s)
+    jump_thresh: 0.5                        # 位置跳变检测阈值 (m)

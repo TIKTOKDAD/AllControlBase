@@ -188,30 +188,47 @@ class ControllerManager:
         """
         验证配置参数
         
+        验证策略:
+        - FATAL 级别错误: 始终阻止启动（如 v_max <= 0）
+        - ERROR 级别错误: strict_mode=True 时阻止启动，否则只记录警告
+        - WARNING 级别: 只记录日志，不阻止启动
+        
         Args:
-            strict_mode: 严格模式，验证失败时抛出异常
+            strict_mode: 严格模式，ERROR 级别错误也会阻止启动
         
         Raises:
-            ConfigValidationError: 当 strict_mode=True 且验证失败时
+            ConfigValidationError: 当存在 FATAL 错误，或 strict_mode=True 且存在 ERROR 错误时
         """
         from ..config.validation import ValidationSeverity
         
         errors = validate_logical_consistency(self.config)
         
-        if errors:
-            # validate_logical_consistency 返回 (key, msg, severity) 三元组
-            # 根据严重级别过滤：严格模式下所有错误都报告，非严格模式下只报告 ERROR 和 FATAL
+        if not errors:
+            return
+        
+        # 按严重级别分类
+        fatal_errors = [(k, m, s) for k, m, s in errors if s == ValidationSeverity.FATAL]
+        error_errors = [(k, m, s) for k, m, s in errors if s == ValidationSeverity.ERROR]
+        warning_errors = [(k, m, s) for k, m, s in errors if s == ValidationSeverity.WARNING]
+        
+        # 记录所有警告
+        for key, msg, _ in warning_errors:
+            logger.warning(f'配置警告 [{key}]: {msg}')
+        
+        # FATAL 错误始终阻止启动
+        if fatal_errors:
+            fatal_msgs = '\n'.join([f'  - [FATAL] {key}: {msg}' for key, msg, _ in fatal_errors])
+            raise ConfigValidationError(f'配置存在致命错误，无法启动:\n{fatal_msgs}')
+        
+        # ERROR 错误根据 strict_mode 决定
+        if error_errors:
             if strict_mode:
-                # 严格模式：所有错误都报告
-                error_messages = '\n'.join([f'  - {key}: {msg} [{severity.name}]' for key, msg, severity in errors])
-                raise ConfigValidationError(f'配置验证失败:\n{error_messages}')
+                error_msgs = '\n'.join([f'  - [ERROR] {key}: {msg}' for key, msg, _ in error_errors])
+                raise ConfigValidationError(f'配置验证失败 (严格模式):\n{error_msgs}')
             else:
-                # 非严格模式：WARNING 只记录日志，ERROR/FATAL 也记录但不阻止启动
-                for key, msg, severity in errors:
-                    if severity == ValidationSeverity.WARNING:
-                        logger.warning(f'配置警告 [{key}]: {msg}')
-                    else:
-                        logger.warning(f'配置问题 [{key}]: {msg} [{severity.name}]')
+                # 非严格模式：记录警告但不阻止启动
+                for key, msg, _ in error_errors:
+                    logger.warning(f'配置问题 [{key}]: {msg} [ERROR]')
     
     def _init_ros_publishers(self) -> None:
         """
