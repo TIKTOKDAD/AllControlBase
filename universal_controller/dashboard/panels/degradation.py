@@ -67,11 +67,28 @@ class DegradationPanel(QGroupBox):
         # 状态机
         self.state_machine.set_state(data.controller.state)
 
-        # 恢复计数器 (目前模型中没有这些字段，显示默认值)
-        self.alpha_count_label.setText('0 / 5')
-        self.alpha_count_label.setStyleSheet('')
-        self.mpc_count_label.setText('0 / 5')
-        self.mpc_count_label.setStyleSheet('')
+        # MPC 恢复计数器 - 使用 consecutive_good 字段
+        # consecutive_good 表示连续良好的求解次数，达到阈值后可以恢复
+        consecutive_good = data.mpc_health.consecutive_good
+        recovery_limit = 5  # 恢复阈值，与 MPCHealthMonitor 配置一致
+        self.mpc_count_label.setText(f'{consecutive_good} / {recovery_limit}')
+        if consecutive_good >= recovery_limit:
+            self.mpc_count_label.setStyleSheet(f'color: {COLORS["success"]};')
+        elif consecutive_good > 0:
+            self.mpc_count_label.setStyleSheet(f'color: {COLORS["warning"]};')
+        else:
+            self.mpc_count_label.setStyleSheet('')
+
+        # Alpha 恢复计数器 - 基于 alpha_soft 值判断
+        # 当 alpha_soft > alpha_min 时，Soft Head 可用
+        alpha = data.consistency.alpha_soft
+        alpha_min = 0.1  # 禁用阈值
+        if alpha > alpha_min:
+            self.alpha_count_label.setText(f'✓ 已恢复 (α={alpha:.2f})')
+            self.alpha_count_label.setStyleSheet(f'color: {COLORS["success"]};')
+        else:
+            self.alpha_count_label.setText(f'✗ 禁用中 (α={alpha:.2f})')
+            self.alpha_count_label.setStyleSheet(f'color: {COLORS["warning"]};')
 
     def _show_unavailable(self):
         """显示数据不可用状态"""

@@ -242,8 +242,13 @@ class EstimatorPanel(QGroupBox):
         vel = traj.current_velocity
         self.vx_label.setText(f'{vel[0]:.2f} m/s')
         self.vy_label.setText(f'{vel[1]:.2f} m/s')
-        self.vz_label.setText('0.00 m/s')
-        self.omega_label.setText('0.00 rad/s')
+        
+        # vz 和 omega: 从命令数据获取 (当前架构中状态估计器不提供这些值)
+        # 注意: 这里显示的是控制命令中的值，而非估计值
+        # 如果需要真实的估计值，需要扩展 StateEstimator 的输出
+        cmd = data.command
+        self.vz_label.setText(f'{cmd.vz:.2f} m/s')
+        self.omega_label.setText(f'{cmd.omega:.2f} rad/s')
 
         # 滤波器健康 - 协方差范数
         cov_norm = est.covariance_norm

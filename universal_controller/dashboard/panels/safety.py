@@ -219,19 +219,20 @@ class SafetyPanel(QGroupBox):
         self.omega_max_current_label.setText(f'当前: {omega:.2f}')
         self.omega_max_current_label.setStyleSheet('')
 
-        # 加速度 - 从 safety 数据获取当前值
-        # 注意：当前实现中没有实时加速度数据，显示 N/A
+        # 加速度 - 当前架构不提供实时加速度数据
+        # 设计说明: 加速度约束在 SafetyChecker 中通过速度变化率计算和限制
+        # Dashboard 显示配置的约束值，但无法显示实时加速度
         self.a_max_progress.set_value(0, a_max)
-        self.a_max_current_label.setText('当前: N/A')
-        self.a_max_current_label.setStyleSheet('color: #808080;')
+        self.a_max_current_label.setText('约束生效')
+        self.a_max_current_label.setStyleSheet('color: #808080; font-style: italic;')
 
         self.az_max_progress.set_value(0, self._az_max)
-        self.az_max_current_label.setText('当前: N/A')
-        self.az_max_current_label.setStyleSheet('color: #808080;')
+        self.az_max_current_label.setText('约束生效')
+        self.az_max_current_label.setStyleSheet('color: #808080; font-style: italic;')
 
         self.alpha_max_progress.set_value(0, self._alpha_max)
-        self.alpha_max_current_label.setText('当前: N/A')
-        self.alpha_max_current_label.setStyleSheet('color: #808080;')
+        self.alpha_max_current_label.setText('约束生效')
+        self.alpha_max_current_label.setStyleSheet('color: #808080; font-style: italic;')
 
         # 低速保护
         low_speed = safety.low_speed_protection_active

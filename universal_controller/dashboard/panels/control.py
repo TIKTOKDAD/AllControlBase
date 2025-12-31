@@ -14,13 +14,31 @@ from ..widgets.progress_bar import ColorProgressBar
 from ..widgets.status_led import StatusLED
 from ..styles import COLORS, PANEL_TITLE_STYLE
 
+# 从统一配置模块导入默认值
+from ...config import CONSTRAINTS_CONFIG
+
 
 class ControlPanel(QGroupBox):
     """控制输出面板"""
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config=None):
         super().__init__('控制输出', parent)
+        self._config = config or {}
+        self._load_config()
         self._setup_ui()
+    
+    def _load_config(self):
+        """从配置加载约束参数"""
+        constraints = self._config.get('constraints', {})
+        self._v_max = constraints.get('v_max', CONSTRAINTS_CONFIG['v_max'])
+        self._vy_max = constraints.get('vy_max', CONSTRAINTS_CONFIG.get('vy_max', 1.5))
+        self._vz_max = constraints.get('vz_max', CONSTRAINTS_CONFIG.get('vz_max', 2.0))
+        self._omega_max = constraints.get('omega_max', CONSTRAINTS_CONFIG['omega_max'])
+    
+    def set_config(self, config):
+        """更新配置"""
+        self._config = config or {}
+        self._load_config()
     
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -31,10 +49,11 @@ class ControlPanel(QGroupBox):
         vel_title.setStyleSheet(PANEL_TITLE_STYLE)
         layout.addWidget(vel_title)
         
-        self.vx_progress = self._add_velocity_row(layout, 'vx', 2.0, 'm/s')
-        self.vy_progress = self._add_velocity_row(layout, 'vy', 1.5, 'm/s')
-        self.vz_progress = self._add_velocity_row(layout, 'vz', 2.0, 'm/s')
-        self.omega_progress = self._add_velocity_row(layout, 'omega', 2.0, 'rad/s')
+        # 使用配置的约束值
+        self.vx_progress = self._add_velocity_row(layout, 'vx', self._v_max, 'm/s')
+        self.vy_progress = self._add_velocity_row(layout, 'vy', self._vy_max, 'm/s')
+        self.vz_progress = self._add_velocity_row(layout, 'vz', self._vz_max, 'm/s')
+        self.omega_progress = self._add_velocity_row(layout, 'omega', self._omega_max, 'rad/s')
         
         layout.addSpacing(5)
         
@@ -156,17 +175,20 @@ class ControlPanel(QGroupBox):
         mpc = data.mpc_health
         safety = data.safety
 
-        # 速度命令
-        self.vx_progress.set_value(abs(cmd.vx), safety.v_max)
+        # 速度命令 - 使用配置的约束值
+        v_max = safety.v_max if safety.v_max > 0 else self._v_max
+        omega_max = safety.omega_max if safety.omega_max > 0 else self._omega_max
+        
+        self.vx_progress.set_value(abs(cmd.vx), v_max)
         self.vx_value_label.setText(f'{cmd.vx:.2f}')
 
-        self.vy_progress.set_value(abs(cmd.vy), 1.5)
+        self.vy_progress.set_value(abs(cmd.vy), self._vy_max)
         self.vy_value_label.setText(f'{cmd.vy:.2f}')
 
-        self.vz_progress.set_value(abs(cmd.vz), 2.0)
+        self.vz_progress.set_value(abs(cmd.vz), self._vz_max)
         self.vz_value_label.setText(f'{cmd.vz:.2f}')
 
-        self.omega_progress.set_value(abs(cmd.omega), safety.omega_max)
+        self.omega_progress.set_value(abs(cmd.omega), omega_max)
         self.omega_value_label.setText(f'{cmd.omega:.2f}')
 
         # 控制器信息
@@ -198,20 +220,20 @@ class ControlPanel(QGroupBox):
         """显示数据不可用状态"""
         unavailable_style = f'color: {COLORS["unavailable"]};'
         
-        # 速度命令显示不可用
-        self.vx_progress.set_value(0, 2.0)
+        # 速度命令显示不可用 - 使用配置的约束值
+        self.vx_progress.set_value(0, self._v_max)
         self.vx_value_label.setText('--')
         self.vx_value_label.setStyleSheet(unavailable_style)
         
-        self.vy_progress.set_value(0, 1.5)
+        self.vy_progress.set_value(0, self._vy_max)
         self.vy_value_label.setText('--')
         self.vy_value_label.setStyleSheet(unavailable_style)
         
-        self.vz_progress.set_value(0, 2.0)
+        self.vz_progress.set_value(0, self._vz_max)
         self.vz_value_label.setText('--')
         self.vz_value_label.setStyleSheet(unavailable_style)
         
-        self.omega_progress.set_value(0, 2.0)
+        self.omega_progress.set_value(0, self._omega_max)
         self.omega_value_label.setText('--')
         self.omega_value_label.setStyleSheet(unavailable_style)
         

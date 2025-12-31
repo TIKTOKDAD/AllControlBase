@@ -40,15 +40,14 @@ class ConfigGenerator:
 #
 """
     
-    # 配置节顺序（与 turtlebot1.yaml 保持一致）
-    # 只包含 turtlebot1.yaml 中实际存在的节
+    # 配置节顺序（与 turtlebot1.yaml 完全一致）
+    # 顺序必须与 controller_ros/config/platforms/turtlebot1.yaml 保持一致
     SECTION_ORDER = [
         'system',           # 系统配置
-        'topics',           # 话题配置
+        'constraints',      # 运动约束
         'watchdog',         # 超时配置
         'diagnostics',      # 诊断配置
         'mpc',              # MPC 配置
-        'constraints',      # 速度约束
         'trajectory',       # 轨迹配置
         'consistency',      # 一致性检查配置
         'tracking',         # 跟踪质量评估配置
@@ -56,6 +55,7 @@ class ConfigGenerator:
         'backup',           # 备份控制器配置
         'transform',        # 坐标变换配置
         'cmd_vel_adapter',  # cmd_vel 适配器配置
+        'topics',           # 话题配置（最后）
     ]
 
     def __init__(self, base_config: Dict[str, Any], base_config_path: str = ""):
@@ -307,21 +307,21 @@ class ConfigGenerator:
         
         CustomDumper.add_representer(str, str_representer)
         
-        # 添加分节注释（与 turtlebot1.yaml 保持一致）
+        # 添加分节注释（与 turtlebot1.yaml 完全一致）
         sections = {
             'system': '系统配置',
-            'topics': '话题配置',
-            'watchdog': '超时配置',
+            'constraints': '运动约束 - TurtleBot1 安全限制',
+            'watchdog': '超时配置 (Watchdog) - 适应 TurtleBot1 较低传感器频率',
             'diagnostics': '诊断配置',
-            'mpc': 'MPC 配置',
-            'constraints': '速度约束',
+            'mpc': 'MPC 配置 - 针对 TurtleBot1 优化',
             'trajectory': '轨迹配置',
-            'consistency': '一致性检查配置',
-            'tracking': '跟踪质量评估配置',
+            'consistency': '一致性检查配置 - TurtleBot1 优化',
+            'tracking': '跟踪质量评估配置 - TurtleBot1 差速车特性',
             'safety': '安全配置',
-            'backup': '备份控制器配置',
+            'backup': '备份控制器配置 (Pure Pursuit) - TurtleBot1 优化',
             'transform': '坐标变换配置',
-            'cmd_vel_adapter': 'cmd_vel 适配器配置'
+            'cmd_vel_adapter': 'cmd_vel 适配器配置',
+            'topics': '话题配置 - TurtleBot1 特有'
         }
         
         lines = []

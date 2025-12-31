@@ -593,6 +593,18 @@ def generate_demo_data() -> list:
                 'error_message': '' if np.random.random() > 0.02 else 'TF2 temporarily unavailable'
             },
             
+            # 状态持续时间 (用于调优 degraded_state_timeout 和 backup_state_timeout)
+            'state_duration': {
+                'degraded_duration_sec': np.random.exponential(2.0) if state == ControllerState.MPC_DEGRADED else 0,
+                'backup_duration_sec': np.random.exponential(5.0) if state == ControllerState.BACKUP_ACTIVE else 0,
+            },
+            
+            # MPC 统计 (用于调优 mpc_fail_ratio_thresh 和 mpc_recovery_success_ratio)
+            'mpc_stats': {
+                'fail_ratio': np.clip(np.random.beta(2, 10), 0, 1),  # 偏向低失败率
+                'recovery_ratio': np.clip(np.random.beta(8, 2), 0, 1),  # 偏向高恢复率
+            },
+            
             # 超时状态
             'timeout': {
                 'odom_timeout': odom_timeout,

@@ -26,6 +26,13 @@ class TrackingPanel(QGroupBox):
         super().__init__('跟踪误差', parent)
         self._config = {}
         self._load_config(config)
+        
+        # 误差历史记录 (用于趋势计算)
+        self._history_size = 10
+        self._lateral_history = []
+        self._longitudinal_history = []
+        self._heading_history = []
+        
         self._setup_ui()
     
     def _load_config(self, config=None):
@@ -201,6 +208,56 @@ class TrackingPanel(QGroupBox):
         
         self.rating_label.setText(rating)
         self.rating_label.setStyleSheet(f'color: {color}; font-weight: bold;')
+        
+        # 更新趋势显示
+        self._update_trend(self.lateral_trend, self._lateral_history, lat_error)
+        self._update_trend(self.longitudinal_trend, self._longitudinal_history, lon_error)
+        self._update_trend(self.heading_trend, self._heading_history, head_error)
+    
+    def _update_trend(self, label, history: list, current_value: float):
+        """更新趋势标签
+        
+        趋势计算逻辑:
+        - 比较当前值与历史平均值
+        - 差异 > 10%: 上升/下降趋势
+        - 差异 <= 10%: 稳定
+        """
+        # 更新历史记录
+        history.append(current_value)
+        if len(history) > self._history_size:
+            history.pop(0)
+        
+        # 需要至少 3 个数据点才能计算趋势
+        if len(history) < 3:
+            label.setText('→ 稳定')
+            label.setStyleSheet('color: #B0B0B0;')
+            return
+        
+        # 计算历史平均值 (不包括当前值)
+        avg = sum(history[:-1]) / len(history[:-1])
+        
+        # 避免除零
+        if avg < 1e-6:
+            if current_value < 1e-6:
+                label.setText('→ 稳定')
+                label.setStyleSheet('color: #B0B0B0;')
+            else:
+                label.setText('↑ 上升')
+                label.setStyleSheet(f'color: {COLORS["warning"]};')
+            return
+        
+        # 计算变化率
+        change_rate = (current_value - avg) / avg
+        
+        if change_rate > 0.1:
+            label.setText('↑ 上升')
+            label.setStyleSheet(f'color: {COLORS["warning"]};')
+        elif change_rate < -0.1:
+            label.setText('↓ 下降')
+            label.setStyleSheet(f'color: {COLORS["success"]};')
+        else:
+            label.setText('→ 稳定')
+            label.setStyleSheet('color: #B0B0B0;')
 
     def _show_unavailable(self):
         """显示数据不可用状态"""

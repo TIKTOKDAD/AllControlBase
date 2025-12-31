@@ -625,7 +625,21 @@ class MPCController(ITrajectoryTracker):
         self._last_kkt_residual = 0.0
         self._last_condition_number = 1.0
         self._last_cmd = result
-        self._last_predicted_next_state = None  # fallback 求解器不提供预测状态
+        
+        # 基于简单运动学模型估计下一步状态
+        # 使用控制器的 dt 作为预测步长
+        # 这提供了一个粗略的预测，用于跟踪质量评估
+        predicted_state = state.copy()
+        predicted_state[0] += result.vx * self.dt  # px
+        predicted_state[1] += result.vy * self.dt  # py
+        predicted_state[2] += result.vz * self.dt  # pz
+        predicted_state[3] = result.vx  # vx
+        predicted_state[4] = result.vy  # vy
+        predicted_state[5] = result.vz  # vz
+        predicted_state[6] += result.omega * self.dt  # theta
+        predicted_state[6] = normalize_angle(predicted_state[6])
+        predicted_state[7] = result.omega  # omega
+        self._last_predicted_next_state = predicted_state
         
         return result
     

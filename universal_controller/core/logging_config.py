@@ -167,22 +167,22 @@ class ThrottledLogger:
             return True
         return False
     
-    def debug(self, msg: str, key: str = None, *args, **kwargs):
+    def debug(self, msg: str, key: str = None, *args, **kwargs) -> None:
         """记录 DEBUG 级别日志（带节流）"""
         if key is None or self._should_log(key):
             self._logger.debug(msg, *args, **kwargs)
     
-    def info(self, msg: str, key: str = None, *args, **kwargs):
+    def info(self, msg: str, key: str = None, *args, **kwargs) -> None:
         """记录 INFO 级别日志（带节流）"""
         if key is None or self._should_log(key):
             self._logger.info(msg, *args, **kwargs)
     
-    def warning(self, msg: str, key: str = None, *args, **kwargs):
+    def warning(self, msg: str, key: str = None, *args, **kwargs) -> None:
         """记录 WARNING 级别日志（带节流）"""
         if key is None or self._should_log(key):
             self._logger.warning(msg, *args, **kwargs)
     
-    def error(self, msg: str, key: str = None, *args, **kwargs):
+    def error(self, msg: str, key: str = None, *args, **kwargs) -> None:
         """记录 ERROR 级别日志（带节流）"""
         if key is None or self._should_log(key):
             self._logger.error(msg, *args, **kwargs)

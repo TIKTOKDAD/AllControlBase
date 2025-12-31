@@ -61,158 +61,226 @@ class AnalysisResult:
 # - turtlebot1.yaml 只覆盖与默认值不同的配置项
 # - 未在 turtlebot1.yaml 中定义的参数使用 universal_controller/config/*.py 的默认值
 # - 调优工具可以分析所有参数，如果需要调整会在生成的配置中添加
+#
+# 参数标记说明:
+# - [turtlebot1.yaml] 表示该参数在 turtlebot1.yaml 中有定义
+# - [controller_params.yaml] 表示该参数在 controller_params.yaml 中定义
+# - [internal_params.yaml] 表示该参数在 internal_params.yaml 中定义
+# - [默认值] 表示该参数使用 universal_controller 的默认值
 
 # 可调优参数：基于运行数据可以安全调整
 TUNABLE_PARAMS = {
     # =========================================================================
     # 超时配置 - 基于实际延迟统计
-    # 默认值: universal_controller/config/system_config.py WATCHDOG_CONFIG
-    # turtlebot1.yaml 覆盖: traj_grace_ms
+    # 默认值来源: universal_controller/config/system_config.py WATCHDOG_CONFIG
     # =========================================================================
-    'watchdog.odom_timeout_ms',      # 默认 500
-    'watchdog.traj_timeout_ms',      # 默认 1000
-    'watchdog.traj_grace_ms',        # 默认 500, turtlebot1: 600
-    'watchdog.imu_timeout_ms',       # 默认 -1 (禁用)
-    'watchdog.startup_grace_ms',     # 默认 5000
-    'watchdog.absolute_startup_timeout_ms',  # 默认 -1 (禁用)
+    'watchdog.odom_timeout_ms',      # [turtlebot1.yaml] 500
+    'watchdog.traj_timeout_ms',      # [turtlebot1.yaml] 1000
+    'watchdog.traj_grace_ms',        # [turtlebot1.yaml] 600
+    'watchdog.imu_timeout_ms',       # [turtlebot1.yaml] -1 (禁用)
+    'watchdog.startup_grace_ms',     # [turtlebot1.yaml] 5000
+    'watchdog.absolute_startup_timeout_ms',  # [turtlebot1.yaml] -1 (禁用)
     
     # =========================================================================
     # MPC 健康监控阈值 - 基于求解时间统计
-    # 默认值: universal_controller/config/mpc_config.py MPC_CONFIG['health_monitor']
-    # turtlebot1.yaml 覆盖: 全部
+    # 默认值来源: universal_controller/config/mpc_config.py MPC_CONFIG['health_monitor']
     # =========================================================================
-    'mpc.health_monitor.time_warning_thresh_ms',   # 默认 8, turtlebot1: 20
-    'mpc.health_monitor.time_critical_thresh_ms',  # 默认 15, turtlebot1: 40
-    'mpc.health_monitor.time_recovery_thresh_ms',  # 默认 6, turtlebot1: 15
-    'mpc.health_monitor.consecutive_warning_limit', # 默认 3, turtlebot1: 10
+    'mpc.health_monitor.time_warning_thresh_ms',   # [turtlebot1.yaml] 20
+    'mpc.health_monitor.time_critical_thresh_ms',  # [turtlebot1.yaml] 40
+    'mpc.health_monitor.time_recovery_thresh_ms',  # [turtlebot1.yaml] 15
+    'mpc.health_monitor.consecutive_warning_limit', # [turtlebot1.yaml] 10
+    'mpc.health_monitor.consecutive_recovery_limit', # [turtlebot1.yaml] 5
     
     # =========================================================================
     # MPC 预测时域 - 基于求解时间与控制周期关系
-    # 默认值: universal_controller/config/mpc_config.py MPC_CONFIG
-    # turtlebot1.yaml 覆盖: horizon, horizon_degraded
+    # 默认值来源: universal_controller/config/mpc_config.py MPC_CONFIG
     # =========================================================================
-    'mpc.horizon',           # 默认 20, turtlebot1: 7
-    'mpc.horizon_degraded',  # 默认 10, turtlebot1: 4
-    'mpc.dt',                # 默认 0.1
+    'mpc.horizon',           # [turtlebot1.yaml] 7
+    'mpc.horizon_degraded',  # [turtlebot1.yaml] 4
+    'mpc.dt',                # [turtlebot1.yaml] 0.1
     
     # =========================================================================
     # MPC 权重 - 基于跟踪误差统计
-    # 默认值: universal_controller/config/mpc_config.py MPC_CONFIG['weights']
-    # turtlebot1.yaml 覆盖: position, velocity, heading
+    # 默认值来源: universal_controller/config/mpc_config.py MPC_CONFIG['weights']
     # =========================================================================
-    'mpc.weights.position',  # 默认 10.0, turtlebot1: 15.0
-    'mpc.weights.velocity',  # 默认 1.0, turtlebot1: 6.0
-    'mpc.weights.heading',   # 默认 5.0, turtlebot1: 8.0
+    'mpc.weights.position',  # [turtlebot1.yaml] 15.0
+    'mpc.weights.velocity',  # [turtlebot1.yaml] 6.0
+    'mpc.weights.heading',   # [turtlebot1.yaml] 8.0
+    
+    # =========================================================================
+    # MPC Fallback 配置
+    # =========================================================================
+    'mpc.fallback.lookahead_steps',  # [turtlebot1.yaml] 3
     
     # =========================================================================
     # 状态机参数 - 基于状态转换统计
-    # 默认值: universal_controller/config/safety_config.py SAFETY_CONFIG['state_machine']
-    # turtlebot1.yaml 覆盖: mpc_recovery_tolerance
+    # 默认值来源: universal_controller/config/safety_config.py SAFETY_CONFIG['state_machine']
     # =========================================================================
-    'safety.state_machine.mpc_fail_thresh',          # 默认 3
-    'safety.state_machine.mpc_fail_ratio_thresh',    # 默认 0.5
-    'safety.state_machine.mpc_recovery_thresh',      # 默认 5
-    'safety.state_machine.mpc_recovery_tolerance',   # 默认 0, turtlebot1: 1
-    'safety.state_machine.mpc_recovery_success_ratio', # 默认 0.8
+    'safety.state_machine.mpc_fail_thresh',          # [turtlebot1.yaml] 3
+    'safety.state_machine.mpc_fail_window_size',     # [turtlebot1.yaml] 10
+    'safety.state_machine.mpc_recovery_thresh',      # [turtlebot1.yaml] 5
+    'safety.state_machine.mpc_recovery_tolerance',   # [turtlebot1.yaml] 1
     
     # =========================================================================
     # 跟踪质量阈值 - 仅影响 Dashboard 显示，不影响控制
-    # 默认值: universal_controller/config/system_config.py TRACKING_CONFIG
-    # turtlebot1.yaml 覆盖: lateral_thresh, longitudinal_thresh
+    # 默认值来源: universal_controller/config/system_config.py TRACKING_CONFIG
     # =========================================================================
-    'tracking.lateral_thresh',       # 默认 0.3, turtlebot1: 0.25
-    'tracking.longitudinal_thresh',  # 默认 0.5, turtlebot1: 0.6
-    'tracking.heading_thresh',       # 默认 0.5 (rad)
-    'tracking.prediction_thresh',    # 默认 0.5
+    'tracking.lateral_thresh',       # [turtlebot1.yaml] 0.25
+    'tracking.longitudinal_thresh',  # [turtlebot1.yaml] 0.6
+    'tracking.heading_thresh',       # [turtlebot1.yaml] 0.5
     
     # =========================================================================
     # 坐标变换配置
-    # 默认值: universal_controller/config/transform_config.py
-    # turtlebot1.yaml 覆盖: timeout_ms, buffer_warmup_*
+    # 默认值来源: universal_controller/config/transform_config.py
     # =========================================================================
-    'transform.timeout_ms',                  # 默认 10, turtlebot1: 50
-    'transform.buffer_warmup_timeout_sec',   # 默认 2.0, turtlebot1: 5.0
-    'transform.buffer_warmup_interval_sec',  # 默认 0.1, turtlebot1: 0.2
+    'transform.timeout_ms',          # [turtlebot1.yaml] 50
     
     # =========================================================================
     # 备份控制器参数 - 基于备份激活时的表现
-    # 默认值: universal_controller/config/backup_config.py
-    # turtlebot1.yaml 覆盖: 全部
+    # 默认值来源: universal_controller/config/backup_config.py
     # =========================================================================
-    'backup.lookahead_dist',  # 默认 1.0, turtlebot1: 0.5
-    'backup.min_lookahead',   # 默认 0.5, turtlebot1: 0.3
-    'backup.max_lookahead',   # 默认 3.0, turtlebot1: 1.5
-    'backup.kp_heading',      # 默认 1.5, turtlebot1: 2.0
+    'backup.lookahead_dist',         # [turtlebot1.yaml] 0.5
+    'backup.min_lookahead',          # [turtlebot1.yaml] 0.3
+    'backup.max_lookahead',          # [turtlebot1.yaml] 1.5
+    'backup.lookahead_ratio',        # [turtlebot1.yaml] 0.5
+    'backup.kp_heading',             # [turtlebot1.yaml] 2.0
+    'backup.heading_error_thresh',   # [turtlebot1.yaml] 1.047
+    'backup.max_curvature',          # [turtlebot1.yaml] 5.0
+    'backup.default_speed_ratio',    # [turtlebot1.yaml] 0.5
+    'backup.min_distance_thresh',    # [turtlebot1.yaml] 0.1
     
     # =========================================================================
     # 轨迹配置
-    # 默认值: universal_controller/config/trajectory_config.py
-    # turtlebot1.yaml 覆盖: low_speed_thresh
+    # 默认值来源: universal_controller/config/trajectory_config.py
     # =========================================================================
-    'trajectory.low_speed_thresh',  # 默认 0.1, turtlebot1: 0.05
+    'trajectory.low_speed_thresh',   # [turtlebot1.yaml] 0.05
+    'trajectory.min_points',         # [turtlebot1.yaml] 2
+    'trajectory.max_points',         # [turtlebot1.yaml] 100
+    'trajectory.max_point_distance', # [turtlebot1.yaml] 10.0
+    'trajectory.default_dt_sec',     # [turtlebot1.yaml] 0.1
     
     # =========================================================================
     # 诊断配置
-    # 默认值: universal_controller/config/system_config.py DIAGNOSTICS_CONFIG
-    # turtlebot1.yaml 覆盖: publish_rate
+    # 默认值来源: universal_controller/config/system_config.py DIAGNOSTICS_CONFIG
     # =========================================================================
-    'diagnostics.publish_rate',  # 默认 10, turtlebot1: 5
+    'diagnostics.publish_rate',      # [turtlebot1.yaml] 5
     
     # =========================================================================
     # 低速保护阈值 - 影响角速度限制的过渡
-    # 默认值: universal_controller/config/safety_config.py CONSTRAINTS_CONFIG
-    # turtlebot1.yaml 未覆盖
+    # 默认值来源: universal_controller/config/safety_config.py CONSTRAINTS_CONFIG
     # =========================================================================
-    'constraints.v_low_thresh',  # 默认 0.1
+    'constraints.v_low_thresh',      # [turtlebot1.yaml] 0.1
+    
+    # =========================================================================
+    # controller_params.yaml 中的可调优参数 (ROS 层)
+    # 基于 TF2 降级统计可靠调优
+    # =========================================================================
+    'transform.fallback_duration_limit_ms',   # [controller_params.yaml] 500
+    'transform.fallback_critical_limit_ms',   # [controller_params.yaml] 1000
+    
+    # =========================================================================
+    # internal_params.yaml 中的可调优参数 (算法层)
+    # 基于运行数据可靠调优
+    # =========================================================================
+    # 状态机内部参数 - 基于 MPC 失败/恢复统计
+    'safety.state_machine.mpc_fail_ratio_thresh',      # [internal_params.yaml] 0.5
+    'safety.state_machine.mpc_recovery_success_ratio', # [internal_params.yaml] 0.8
+    'safety.state_machine.degraded_state_timeout',     # [internal_params.yaml] 30.0
+    'safety.state_machine.backup_state_timeout',       # [internal_params.yaml] 60.0
+    
+    # 跟踪质量评估 - 基于预测误差统计
+    'tracking.prediction_thresh',    # [internal_params.yaml] 0.5
 }
 
 # 设计参数：需要系统辨识或专业知识，不应自动调整
 DESIGN_PARAMS = {
     # =========================================================================
-    # 一致性检查权重 - 是设计参数，不应根据运行数据调整
-    # 默认值: universal_controller/config/consistency_config.py
-    # turtlebot1.yaml 覆盖: 全部
+    # 一致性检查参数 - 是设计参数，不应根据运行数据调整
+    # 默认值来源: universal_controller/config/consistency_config.py
     # =========================================================================
-    'consistency.weights.kappa',     # 默认 1.0, turtlebot1: 0.3
-    'consistency.weights.velocity',  # 默认 1.5, turtlebot1: 0.3
-    'consistency.weights.temporal',  # 默认 0.8, turtlebot1: 0.4
+    'consistency.alpha_min',             # [turtlebot1.yaml] 0.1
+    'consistency.kappa_thresh',          # [turtlebot1.yaml] 0.5
+    'consistency.v_dir_thresh',          # [turtlebot1.yaml] 0.8
+    'consistency.temporal_smooth_thresh', # [turtlebot1.yaml] 0.5
+    'consistency.max_curvature',         # [turtlebot1.yaml] 10.0
+    'consistency.temporal_window_size',  # [turtlebot1.yaml] 10
+    'consistency.weights.kappa',         # [turtlebot1.yaml] 0.3
+    'consistency.weights.velocity',      # [turtlebot1.yaml] 0.3
+    'consistency.weights.temporal',      # [turtlebot1.yaml] 0.4
     
     # =========================================================================
     # MPC 控制输入权重 - 需要控制理论知识
-    # 默认值: universal_controller/config/mpc_config.py MPC_CONFIG['weights']
-    # turtlebot1.yaml 未覆盖
+    # 默认值来源: universal_controller/config/mpc_config.py MPC_CONFIG['weights']
     # =========================================================================
-    'mpc.weights.control_accel',  # 默认 0.1
-    'mpc.weights.control_alpha',  # 默认 0.1
+    'mpc.weights.control_accel',         # [turtlebot1.yaml] 0.1
+    'mpc.weights.control_alpha',         # [turtlebot1.yaml] 0.1
+    
+    # =========================================================================
+    # 安全状态机设计参数
+    # =========================================================================
+    'safety.state_machine.alpha_disable_thresh',  # [turtlebot1.yaml] 0.0
 }
 
 # 安全参数：不应自动放宽，只检测配置错误
 SAFETY_PARAMS = {
     # =========================================================================
     # 速度/加速度约束 - 安全限制
-    # 默认值: universal_controller/config/safety_config.py CONSTRAINTS_CONFIG
-    # turtlebot1.yaml 覆盖: 全部
+    # 默认值来源: universal_controller/config/safety_config.py CONSTRAINTS_CONFIG
     # =========================================================================
-    'constraints.v_max',        # 默认 2.0, turtlebot1: 0.5
-    'constraints.v_min',        # 默认 0.0, turtlebot1: -0.2
-    'constraints.omega_max',    # 默认 2.0, turtlebot1: 1.0
-    'constraints.omega_max_low', # 默认 1.0, turtlebot1: 0.5
-    'constraints.a_max',        # 默认 1.5, turtlebot1: 0.5
-    'constraints.alpha_max',    # 默认 3.0, turtlebot1: 1.5
+    'constraints.v_max',         # [turtlebot1.yaml] 0.5
+    'constraints.v_min',         # [turtlebot1.yaml] -0.2
+    'constraints.omega_max',     # [turtlebot1.yaml] 1.0
+    'constraints.omega_max_low', # [turtlebot1.yaml] 0.5
+    'constraints.a_max',         # [turtlebot1.yaml] 0.5
+    'constraints.alpha_max',     # [turtlebot1.yaml] 1.5
     
     # =========================================================================
     # 安全配置
-    # 默认值: universal_controller/config/safety_config.py SAFETY_CONFIG
-    # turtlebot1.yaml 覆盖: emergency_decel
+    # 默认值来源: universal_controller/config/safety_config.py SAFETY_CONFIG
     # =========================================================================
-    'safety.emergency_decel',  # 默认 3.0, turtlebot1: 1.0
+    'safety.emergency_decel',    # [turtlebot1.yaml] 1.0
+    'safety.v_stop_thresh',      # [turtlebot1.yaml] 0.05
+    'safety.stopping_timeout',   # [turtlebot1.yaml] 5.0
 }
 
-# 差速车平台不使用的参数
+# 差速车平台不使用的参数（四旋翼/全向车专用）
 NON_DIFFERENTIAL_PARAMS = {
+    'constraints.vx_max', 'constraints.vx_min',
     'constraints.vy_max', 'constraints.vy_min',
     'constraints.vz_max', 'constraints.az_max',
     'backup.kp_z',
+    'safety.vz_stop_thresh',
+}
+
+# cmd_vel_adapter 参数（不在调优范围内，但需要保持格式一致）
+CMD_VEL_ADAPTER_PARAMS = {
+    'cmd_vel_adapter.publish_rate',
+    'cmd_vel_adapter.cmd_timeout',
+    'cmd_vel_adapter.enable_rate_limit',
+    'cmd_vel_adapter.joy_topic',
+    'cmd_vel_adapter.mode_topic',
+    'cmd_vel_adapter.output_topic',
+}
+
+# 话题配置参数（不在调优范围内，但需要保持格式一致）
+TOPICS_PARAMS = {
+    'topics.odom',
+    'topics.imu',
+    'topics.trajectory',
+    'topics.cmd_unified',
+}
+
+# 系统配置参数（不在调优范围内）
+SYSTEM_PARAMS = {
+    'system.platform',
+    'system.ctrl_freq',
+}
+
+# 坐标变换配置参数（部分可调优）
+TRANSFORM_PARAMS = {
+    'transform.source_frame',    # 不可调优
+    'transform.target_frame',    # 不可调优
+    'transform.timeout_ms',      # 可调优
 }
 
 
@@ -297,6 +365,16 @@ class DiagnosticsStats:
     transform_source_frames: List[str] = field(default_factory=list)
     transform_target_frames: List[str] = field(default_factory=list)
     transform_error_messages: List[str] = field(default_factory=list)
+    
+    # 状态持续时间统计 (用于调优 degraded_state_timeout 和 backup_state_timeout)
+    # 记录每次进入状态到离开状态的持续时间
+    degraded_state_durations: List[float] = field(default_factory=list)
+    backup_state_durations: List[float] = field(default_factory=list)
+    
+    # MPC 失败/恢复比率统计 (用于调优 mpc_fail_ratio_thresh 和 mpc_recovery_success_ratio)
+    # 滑动窗口内的失败率
+    mpc_fail_ratios: List[float] = field(default_factory=list)
+    mpc_recovery_ratios: List[float] = field(default_factory=list)
     
     # 安全状态
     safety_check_failed_count: int = 0
@@ -547,6 +625,26 @@ class DiagnosticsAnalyzer:
                 self.stats.transform_target_frames.append(target_frame)
             if error_message:
                 self.stats.transform_error_messages.append(error_message)
+        
+        # 状态持续时间统计 (从诊断消息中提取)
+        state_duration = diagnostics.get('state_duration', {})
+        if isinstance(state_duration, dict):
+            if 'degraded_duration_sec' in state_duration:
+                dur = state_duration['degraded_duration_sec']
+                if dur > 0:
+                    self.stats.degraded_state_durations.append(dur)
+            if 'backup_duration_sec' in state_duration:
+                dur = state_duration['backup_duration_sec']
+                if dur > 0:
+                    self.stats.backup_state_durations.append(dur)
+        
+        # MPC 失败/恢复比率统计 (从诊断消息中提取)
+        mpc_stats = diagnostics.get('mpc_stats', {})
+        if isinstance(mpc_stats, dict):
+            if 'fail_ratio' in mpc_stats:
+                self.stats.mpc_fail_ratios.append(mpc_stats['fail_ratio'])
+            if 'recovery_ratio' in mpc_stats:
+                self.stats.mpc_recovery_ratios.append(mpc_stats['recovery_ratio'])
         
         # 安全状态
         if not diagnostics.get('safety_check_passed', True):
@@ -943,10 +1041,12 @@ class DiagnosticsAnalyzer:
         - 只在误差明显超过阈值时才建议调整
         - 保持权重之间的相对比例
         
-        只分析 turtlebot1.yaml 中实际存在的参数:
-        - tracking.lateral_thresh
-        - tracking.longitudinal_thresh
-        - mpc.weights.position/velocity/heading
+        turtlebot1.yaml 中定义的参数:
+        - tracking.lateral_thresh, tracking.longitudinal_thresh, tracking.heading_thresh
+        - mpc.weights.position, mpc.weights.velocity, mpc.weights.heading
+        
+        注意: tracking.prediction_thresh 在 universal_controller 中使用，
+        但 turtlebot1.yaml 中未定义，使用 TRACKING_CONFIG 默认值。
         """
         tracking_config = self.config.get('tracking', {})
         mpc_config = self.config.get('mpc', {})
@@ -1137,12 +1237,16 @@ class DiagnosticsAnalyzer:
     def _analyze_state_machine(self):
         """分析状态机配置
         
-        可调优参数:
-        - safety.state_machine.mpc_recovery_tolerance (turtlebot1.yaml 覆盖)
-        - safety.state_machine.mpc_fail_thresh (使用默认值)
-        - safety.state_machine.mpc_recovery_thresh (使用默认值)
-        - safety.state_machine.mpc_fail_ratio_thresh (使用默认值)
-        - safety.state_machine.mpc_recovery_success_ratio (使用默认值)
+        可调优参数 (turtlebot1.yaml):
+        - safety.state_machine.mpc_recovery_tolerance
+        - safety.state_machine.mpc_fail_thresh
+        - safety.state_machine.mpc_recovery_thresh
+        
+        可调优参数 (internal_params.yaml):
+        - safety.state_machine.mpc_fail_ratio_thresh
+        - safety.state_machine.mpc_recovery_success_ratio
+        - safety.state_machine.degraded_state_timeout
+        - safety.state_machine.backup_state_timeout
         """
         safety_config = self.config.get('safety', {})
         state_machine = safety_config.get('state_machine', {})
@@ -1183,15 +1287,196 @@ class DiagnosticsAnalyzer:
                 confidence=0.0,
                 tuning_category=TuningCategory.DIAGNOSTIC
             ))
+        
+        # 3. 分析 MPC 失败/恢复比率阈值 (internal_params.yaml 参数)
+        self._analyze_mpc_ratios()
+        
+        # 4. 分析状态超时参数 (internal_params.yaml 参数)
+        self._analyze_state_timeouts()
+    
+    def _analyze_mpc_ratios(self):
+        """分析 MPC 失败/恢复比率阈值
+        
+        基于实际 MPC 失败/恢复统计，调优以下参数:
+        - safety.state_machine.mpc_fail_ratio_thresh: 失败率阈值
+        - safety.state_machine.mpc_recovery_success_ratio: 恢复成功率要求
+        
+        这些参数在 internal_params.yaml 中定义。
+        """
+        safety_config = self.config.get('safety', {})
+        state_machine = safety_config.get('state_machine', {})
+        
+        # 分析 MPC 失败率阈值
+        if self.stats.mpc_fail_ratios:
+            fail_ratio_arr = np.array(self.stats.mpc_fail_ratios)
+            avg_fail_ratio = np.mean(fail_ratio_arr)
+            p95_fail_ratio = np.percentile(fail_ratio_arr, 95)
+            
+            current_thresh = state_machine.get('mpc_fail_ratio_thresh', 0.5)
+            
+            # 如果实际失败率经常超过阈值，可能需要放宽
+            if p95_fail_ratio > current_thresh and self.stats.mpc_degraded_state_count > self.stats.total_samples * 0.2:
+                # 降级过于频繁，考虑放宽阈值
+                suggested_thresh = min(p95_fail_ratio * 1.1, 0.7)  # 最大 0.7
+                self.results.append(AnalysisResult(
+                    category="state_machine",
+                    severity="warning",
+                    parameter="safety.state_machine.mpc_fail_ratio_thresh",
+                    current_value=current_thresh,
+                    suggested_value=round(suggested_thresh, 2),
+                    reason=f"MPC失败率({p95_fail_ratio*100:.1f}%)经常超过阈值({current_thresh*100:.0f}%)，降级过于频繁。",
+                    confidence=0.7,
+                    tuning_category=TuningCategory.TUNABLE
+                ))
+            elif avg_fail_ratio < current_thresh * 0.3 and self.stats.mpc_degraded_state_count < self.stats.total_samples * 0.01:
+                # 失败率很低，可以收紧阈值以更早检测问题
+                suggested_thresh = max(avg_fail_ratio * 2.0, 0.3)  # 最小 0.3
+                self.results.append(AnalysisResult(
+                    category="state_machine",
+                    severity="info",
+                    parameter="safety.state_machine.mpc_fail_ratio_thresh",
+                    current_value=current_thresh,
+                    suggested_value=round(suggested_thresh, 2),
+                    reason=f"MPC失败率({avg_fail_ratio*100:.1f}%)很低，可收紧阈值以更早检测问题。",
+                    confidence=0.5,
+                    tuning_category=TuningCategory.TUNABLE
+                ))
+        
+        # 分析 MPC 恢复成功率要求
+        if self.stats.mpc_recovery_ratios:
+            recovery_ratio_arr = np.array(self.stats.mpc_recovery_ratios)
+            avg_recovery_ratio = np.mean(recovery_ratio_arr)
+            p10_recovery_ratio = np.percentile(recovery_ratio_arr, 10)
+            
+            current_ratio = state_machine.get('mpc_recovery_success_ratio', 0.8)
+            
+            # 如果恢复成功率经常低于要求，可能需要放宽
+            if p10_recovery_ratio < current_ratio and self.stats.backup_active_state_count > self.stats.total_samples * 0.1:
+                # 恢复困难，考虑放宽要求
+                suggested_ratio = max(p10_recovery_ratio * 0.9, 0.6)  # 最小 0.6
+                self.results.append(AnalysisResult(
+                    category="state_machine",
+                    severity="warning",
+                    parameter="safety.state_machine.mpc_recovery_success_ratio",
+                    current_value=current_ratio,
+                    suggested_value=round(suggested_ratio, 2),
+                    reason=f"MPC恢复成功率({p10_recovery_ratio*100:.1f}%)经常低于要求({current_ratio*100:.0f}%)，恢复困难。",
+                    confidence=0.7,
+                    tuning_category=TuningCategory.TUNABLE
+                ))
+            elif avg_recovery_ratio > current_ratio * 1.1:
+                # 恢复成功率很高，可以收紧要求
+                suggested_ratio = min(avg_recovery_ratio * 0.95, 0.95)  # 最大 0.95
+                self.results.append(AnalysisResult(
+                    category="state_machine",
+                    severity="info",
+                    parameter="safety.state_machine.mpc_recovery_success_ratio",
+                    current_value=current_ratio,
+                    suggested_value=round(suggested_ratio, 2),
+                    reason=f"MPC恢复成功率({avg_recovery_ratio*100:.1f}%)很高，可收紧要求以提高稳定性。",
+                    confidence=0.5,
+                    tuning_category=TuningCategory.TUNABLE
+                ))
+    
+    def _analyze_state_timeouts(self):
+        """分析状态超时参数
+        
+        基于实际状态持续时间统计，调优以下参数:
+        - safety.state_machine.degraded_state_timeout: MPC_DEGRADED 状态超时
+        - safety.state_machine.backup_state_timeout: BACKUP_ACTIVE 状态超时
+        
+        这些参数在 internal_params.yaml 中定义。
+        """
+        safety_config = self.config.get('safety', {})
+        state_machine = safety_config.get('state_machine', {})
+        
+        # 分析 MPC_DEGRADED 状态超时
+        if self.stats.degraded_state_durations:
+            degraded_arr = np.array(self.stats.degraded_state_durations)
+            avg_degraded = np.mean(degraded_arr)
+            p95_degraded = np.percentile(degraded_arr, 95)
+            max_degraded = np.max(degraded_arr)
+            
+            current_timeout = state_machine.get('degraded_state_timeout', 30.0)
+            
+            if max_degraded > current_timeout * 0.8:
+                # 最大持续时间接近超时，可能需要放宽
+                suggested_timeout = max_degraded * 1.3
+                self.results.append(AnalysisResult(
+                    category="state_machine",
+                    severity="warning",
+                    parameter="safety.state_machine.degraded_state_timeout",
+                    current_value=current_timeout,
+                    suggested_value=round(suggested_timeout, 1),
+                    reason=f"MPC_DEGRADED最大持续时间({max_degraded:.1f}s)接近超时({current_timeout}s)。",
+                    confidence=0.7,
+                    tuning_category=TuningCategory.TUNABLE
+                ))
+            elif p95_degraded < current_timeout * 0.2:
+                # 95% 分位数远低于超时，可以收紧
+                suggested_timeout = max(p95_degraded * 3.0, 10.0)  # 最小 10s
+                self.results.append(AnalysisResult(
+                    category="state_machine",
+                    severity="info",
+                    parameter="safety.state_machine.degraded_state_timeout",
+                    current_value=current_timeout,
+                    suggested_value=round(suggested_timeout, 1),
+                    reason=f"MPC_DEGRADED 95%分位持续时间({p95_degraded:.1f}s)远低于超时({current_timeout}s)，可收紧。",
+                    confidence=0.5,
+                    tuning_category=TuningCategory.TUNABLE
+                ))
+        
+        # 分析 BACKUP_ACTIVE 状态超时
+        if self.stats.backup_state_durations:
+            backup_arr = np.array(self.stats.backup_state_durations)
+            avg_backup = np.mean(backup_arr)
+            p95_backup = np.percentile(backup_arr, 95)
+            max_backup = np.max(backup_arr)
+            
+            current_timeout = state_machine.get('backup_state_timeout', 60.0)
+            
+            if max_backup > current_timeout * 0.8:
+                # 最大持续时间接近超时
+                suggested_timeout = max_backup * 1.3
+                self.results.append(AnalysisResult(
+                    category="state_machine",
+                    severity="warning",
+                    parameter="safety.state_machine.backup_state_timeout",
+                    current_value=current_timeout,
+                    suggested_value=round(suggested_timeout, 1),
+                    reason=f"BACKUP_ACTIVE最大持续时间({max_backup:.1f}s)接近超时({current_timeout}s)。",
+                    confidence=0.7,
+                    tuning_category=TuningCategory.TUNABLE
+                ))
+            elif p95_backup < current_timeout * 0.2:
+                # 95% 分位数远低于超时，可以收紧
+                suggested_timeout = max(p95_backup * 3.0, 20.0)  # 最小 20s
+                self.results.append(AnalysisResult(
+                    category="state_machine",
+                    severity="info",
+                    parameter="safety.state_machine.backup_state_timeout",
+                    current_value=current_timeout,
+                    suggested_value=round(suggested_timeout, 1),
+                    reason=f"BACKUP_ACTIVE 95%分位持续时间({p95_backup:.1f}s)远低于超时({current_timeout}s)，可收紧。",
+                    confidence=0.5,
+                    tuning_category=TuningCategory.TUNABLE
+                ))
 
 
     def _analyze_transform(self):
         """分析坐标变换配置
         
-        只分析 turtlebot1.yaml 中实际存在的参数:
-        - transform.timeout_ms
-        - transform.buffer_warmup_timeout_sec
-        - transform.buffer_warmup_interval_sec
+        turtlebot1.yaml 中定义的参数:
+        - transform.timeout_ms (可调优)
+        - transform.source_frame (不可调优)
+        - transform.target_frame (不可调优)
+        
+        controller_params.yaml 中定义的参数:
+        - transform.fallback_duration_limit_ms (可调优)
+        - transform.fallback_critical_limit_ms (可调优)
+        
+        注意: buffer_warmup_* 参数在 controller_ros 的 ROS 层使用，
+        但 turtlebot1.yaml 中未定义，使用 TRANSFORM_ROS_DEFAULTS 默认值。
         """
         transform_config = self.config.get('transform', {})
         
@@ -1229,11 +1514,90 @@ class DiagnosticsAnalyzer:
                     tuning_category=TuningCategory.DIAGNOSTIC
                 ))
         
+        # 分析 TF2 降级持续时间限制 (controller_params.yaml 参数)
+        self._analyze_tf2_fallback_limits()
+        
         # 分析坐标系配置一致性
         self._analyze_transform_frames()
         
         # 分析变换错误信息
         self._analyze_transform_errors()
+    
+    def _analyze_tf2_fallback_limits(self):
+        """分析 TF2 降级持续时间限制
+        
+        基于实际降级持续时间统计，调优以下参数:
+        - transform.fallback_duration_limit_ms: 降级警告阈值
+        - transform.fallback_critical_limit_ms: 降级临界阈值
+        
+        这些参数在 controller_params.yaml 中定义。
+        """
+        if not self.stats.tf2_fallback_durations:
+            return
+        
+        transform_config = self.config.get('transform', {})
+        fallback_arr = np.array(self.stats.tf2_fallback_durations)
+        
+        p95_fallback = np.percentile(fallback_arr, 95)
+        p99_fallback = np.percentile(fallback_arr, 99)
+        max_fallback = np.max(fallback_arr)
+        
+        # 分析警告阈值
+        current_limit = transform_config.get('fallback_duration_limit_ms', 500)
+        if p95_fallback > current_limit:
+            # 95% 分位数超过当前限制，建议放宽
+            suggested_limit = int(p95_fallback * 1.3)
+            self.results.append(AnalysisResult(
+                category="transform",
+                severity="warning",
+                parameter="transform.fallback_duration_limit_ms",
+                current_value=current_limit,
+                suggested_value=suggested_limit,
+                reason=f"95%分位降级持续时间({p95_fallback:.0f}ms)超过警告阈值({current_limit}ms)。",
+                confidence=0.8,
+                tuning_category=TuningCategory.TUNABLE
+            ))
+        elif p95_fallback < current_limit * 0.3:
+            # 95% 分位数远低于当前限制，可以收紧以更早发现问题
+            suggested_limit = int(p95_fallback * 2.0)
+            self.results.append(AnalysisResult(
+                category="transform",
+                severity="info",
+                parameter="transform.fallback_duration_limit_ms",
+                current_value=current_limit,
+                suggested_value=max(suggested_limit, 100),  # 最小 100ms
+                reason=f"95%分位降级持续时间({p95_fallback:.0f}ms)远低于警告阈值({current_limit}ms)，可收紧以更早发现问题。",
+                confidence=0.6,
+                tuning_category=TuningCategory.TUNABLE
+            ))
+        
+        # 分析临界阈值
+        current_critical = transform_config.get('fallback_critical_limit_ms', 1000)
+        if p99_fallback > current_critical:
+            # 99% 分位数超过临界限制
+            suggested_critical = int(p99_fallback * 1.2)
+            self.results.append(AnalysisResult(
+                category="transform",
+                severity="critical",
+                parameter="transform.fallback_critical_limit_ms",
+                current_value=current_critical,
+                suggested_value=suggested_critical,
+                reason=f"99%分位降级持续时间({p99_fallback:.0f}ms)超过临界阈值({current_critical}ms)，可能触发安全停止。",
+                confidence=0.85,
+                tuning_category=TuningCategory.TUNABLE
+            ))
+        elif max_fallback > current_critical * 0.8:
+            # 最大值接近临界限制
+            self.results.append(AnalysisResult(
+                category="transform",
+                severity="warning",
+                parameter="transform.fallback_critical_limit_ms",
+                current_value=current_critical,
+                suggested_value=int(max_fallback * 1.3),
+                reason=f"最大降级持续时间({max_fallback:.0f}ms)接近临界阈值({current_critical}ms)。",
+                confidence=0.7,
+                tuning_category=TuningCategory.TUNABLE
+            ))
     
     def _analyze_transform_frames(self):
         """分析坐标系配置
@@ -1672,6 +2036,7 @@ class DiagnosticsAnalyzer:
         if self.stats.tf2_fallback_durations:
             summary['transform']['avg_fallback_duration_ms'] = float(round(np.mean(self.stats.tf2_fallback_durations), 1))
             summary['transform']['max_fallback_duration_ms'] = float(round(np.max(self.stats.tf2_fallback_durations), 1))
+            summary['transform']['p95_fallback_duration_ms'] = float(round(np.percentile(self.stats.tf2_fallback_durations, 95), 1))
         if self.stats.accumulated_drifts:
             summary['transform']['max_accumulated_drift_m'] = float(round(np.max(self.stats.accumulated_drifts), 4))
         # 坐标系信息
@@ -1685,6 +2050,36 @@ class DiagnosticsAnalyzer:
             error_count = len([m for m in self.stats.transform_error_messages if m])
             summary['transform']['error_count'] = error_count
             summary['transform']['error_rate'] = float(round(error_count / self.stats.total_samples * 100, 2)) if self.stats.total_samples > 0 else 0
+        
+        # 状态持续时间摘要
+        if self.stats.degraded_state_durations:
+            summary['state_machine']['degraded_duration'] = {
+                'avg_sec': float(round(np.mean(self.stats.degraded_state_durations), 2)),
+                'max_sec': float(round(np.max(self.stats.degraded_state_durations), 2)),
+                'p95_sec': float(round(np.percentile(self.stats.degraded_state_durations, 95), 2)),
+                'count': len(self.stats.degraded_state_durations)
+            }
+        if self.stats.backup_state_durations:
+            summary['state_machine']['backup_duration'] = {
+                'avg_sec': float(round(np.mean(self.stats.backup_state_durations), 2)),
+                'max_sec': float(round(np.max(self.stats.backup_state_durations), 2)),
+                'p95_sec': float(round(np.percentile(self.stats.backup_state_durations, 95), 2)),
+                'count': len(self.stats.backup_state_durations)
+            }
+        
+        # MPC 失败/恢复比率摘要
+        if self.stats.mpc_fail_ratios:
+            summary['state_machine']['mpc_fail_ratio'] = {
+                'avg': float(round(np.mean(self.stats.mpc_fail_ratios), 3)),
+                'max': float(round(np.max(self.stats.mpc_fail_ratios), 3)),
+                'p95': float(round(np.percentile(self.stats.mpc_fail_ratios, 95), 3))
+            }
+        if self.stats.mpc_recovery_ratios:
+            summary['state_machine']['mpc_recovery_ratio'] = {
+                'avg': float(round(np.mean(self.stats.mpc_recovery_ratios), 3)),
+                'min': float(round(np.min(self.stats.mpc_recovery_ratios), 3)),
+                'p10': float(round(np.percentile(self.stats.mpc_recovery_ratios, 10), 3))
+            }
         
         # 安全状态摘要
         summary['safety'] = {

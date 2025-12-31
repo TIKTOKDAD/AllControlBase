@@ -1,4 +1,4 @@
-# TurtleBot1 配置诊断与调优工具 v3.3
+# TurtleBot1 配置诊断与调优工具 v3.5
 
 自动分析控制器诊断数据，识别性能问题并生成优化后的配置文件。
 
@@ -16,35 +16,66 @@
 
 ### 可调优参数
 
-以下参数可以基于运行数据安全调整（括号内为默认值来源）：
+以下参数可以基于运行数据安全调整：
 
-- **超时配置** (system_config.py WATCHDOG_CONFIG):
+#### turtlebot1.yaml 中定义的参数
+
+- **超时配置** (watchdog):
   - `watchdog.odom_timeout_ms`, `watchdog.traj_timeout_ms`, `watchdog.traj_grace_ms`
-  - `watchdog.imu_timeout_ms`, `watchdog.startup_grace_ms`
-- **MPC 健康监控** (mpc_config.py):
+  - `watchdog.imu_timeout_ms`, `watchdog.startup_grace_ms`, `watchdog.absolute_startup_timeout_ms`
+- **MPC 健康监控** (mpc.health_monitor):
   - `mpc.health_monitor.time_warning_thresh_ms`, `mpc.health_monitor.time_critical_thresh_ms`
   - `mpc.health_monitor.time_recovery_thresh_ms`, `mpc.health_monitor.consecutive_warning_limit`
+  - `mpc.health_monitor.consecutive_recovery_limit`
 - **MPC 预测时域**: `mpc.horizon`, `mpc.horizon_degraded`, `mpc.dt`
 - **MPC 跟踪权重**: `mpc.weights.position`, `mpc.weights.velocity`, `mpc.weights.heading`
-- **状态机参数** (safety_config.py):
-  - `safety.state_machine.mpc_fail_thresh`, `safety.state_machine.mpc_fail_ratio_thresh`
+- **MPC Fallback**: `mpc.fallback.lookahead_steps`
+- **状态机参数** (safety.state_machine):
+  - `safety.state_machine.mpc_fail_thresh`, `safety.state_machine.mpc_fail_window_size`
   - `safety.state_machine.mpc_recovery_thresh`, `safety.state_machine.mpc_recovery_tolerance`
-  - `safety.state_machine.mpc_recovery_success_ratio`
-- **跟踪质量阈值** (system_config.py TRACKING_CONFIG):
-  - `tracking.lateral_thresh`, `tracking.longitudinal_thresh`
-  - `tracking.heading_thresh`, `tracking.prediction_thresh`
-- **坐标变换配置**: `transform.timeout_ms`, `transform.buffer_warmup_timeout_sec`, `transform.buffer_warmup_interval_sec`
-- **备份控制器**: `backup.lookahead_dist`, `backup.min_lookahead`, `backup.max_lookahead`, `backup.kp_heading`
-- **轨迹配置**: `trajectory.low_speed_thresh`
+- **跟踪质量阈值** (tracking):
+  - `tracking.lateral_thresh`, `tracking.longitudinal_thresh`, `tracking.heading_thresh`
+- **坐标变换配置**: `transform.timeout_ms`
+- **备份控制器** (backup):
+  - `backup.lookahead_dist`, `backup.min_lookahead`, `backup.max_lookahead`
+  - `backup.lookahead_ratio`, `backup.kp_heading`, `backup.heading_error_thresh`
+  - `backup.max_curvature`, `backup.default_speed_ratio`, `backup.min_distance_thresh`
+- **轨迹配置** (trajectory):
+  - `trajectory.low_speed_thresh`, `trajectory.min_points`, `trajectory.max_points`
+  - `trajectory.max_point_distance`, `trajectory.default_dt_sec`
 - **诊断配置**: `diagnostics.publish_rate`
 - **低速保护**: `constraints.v_low_thresh`
+
+#### controller_params.yaml 中定义的参数 (ROS 层)
+
+基于 TF2 降级统计可靠调优：
+
+- **TF2 降级限制** (transform):
+  - `transform.fallback_duration_limit_ms`: 降级警告阈值，基于 95% 分位降级持续时间调优
+  - `transform.fallback_critical_limit_ms`: 降级临界阈值，基于 99% 分位降级持续时间调优
+
+#### internal_params.yaml 中定义的参数 (算法层)
+
+基于运行数据可靠调优：
+
+- **状态机内部参数** (safety.state_machine):
+  - `safety.state_machine.mpc_fail_ratio_thresh`: MPC 失败率阈值，基于实际失败率统计调优
+  - `safety.state_machine.mpc_recovery_success_ratio`: MPC 恢复成功率要求，基于实际恢复率统计调优
+  - `safety.state_machine.degraded_state_timeout`: MPC_DEGRADED 状态超时，基于状态持续时间统计调优
+  - `safety.state_machine.backup_state_timeout`: BACKUP_ACTIVE 状态超时，基于状态持续时间统计调优
+- **跟踪质量评估** (tracking):
+  - `tracking.prediction_thresh`: 预测误差阈值，基于预测误差统计调优
 
 ### 设计参数（不自动调优）
 
 以下参数需要系统辨识或专业知识，工具仅报告状态：
 
-- **一致性检查权重**: `consistency.weights.kappa`, `consistency.weights.velocity`, `consistency.weights.temporal`
+- **一致性检查参数** (consistency):
+  - `consistency.alpha_min`, `consistency.kappa_thresh`, `consistency.v_dir_thresh`
+  - `consistency.temporal_smooth_thresh`, `consistency.max_curvature`, `consistency.temporal_window_size`
+  - `consistency.weights.kappa`, `consistency.weights.velocity`, `consistency.weights.temporal`
 - **MPC 控制输入权重**: `mpc.weights.control_accel`, `mpc.weights.control_alpha`
+- **状态机设计参数**: `safety.state_machine.alpha_disable_thresh`
 
 ### 安全参数（不自动放宽）
 
@@ -52,15 +83,15 @@
 
 - **速度约束**: `constraints.v_max`, `constraints.v_min`, `constraints.omega_max`, `constraints.omega_max_low`
 - **加速度约束**: `constraints.a_max`, `constraints.alpha_max`
-- **安全配置**: `safety.emergency_decel`
+- **安全配置**: `safety.emergency_decel`, `safety.v_stop_thresh`, `safety.stopping_timeout`
 
 
 ## 功能特性
 
-- 📊 **全面诊断分析**: 覆盖所有可调优参数（包括使用默认值的参数）
+- 📊 **全面诊断分析**: 覆盖所有 turtlebot1.yaml 中定义的可调优参数
 - 🔧 **智能调优**: 只对可调优参数生成建议
 - 🛡️ **安全保护**: 不自动放宽安全参数
-- 📝 **配置生成**: 生成与原始 YAML 结构完全一致的优化配置
+- 📝 **配置生成**: 生成与 turtlebot1.yaml 结构完全一致的优化配置
 - 📈 **详细报告**: 诊断报告、分析摘要、变更日志
 
 ## 前提条件
@@ -238,6 +269,46 @@ MPC 性能:
 3. **配置验证**: 生成的配置需要在实际环境中验证
 4. **渐进调优**: 建议逐步应用优化建议，而非一次性全部应用
 5. **安全参数**: 安全相关参数不会自动放宽，如需调整请手动修改
+
+## v3.5 更新内容
+
+- **扩展支持 controller_params.yaml 和 internal_params.yaml 参数**:
+  - 新增 TF2 降级限制参数调优 (`transform.fallback_duration_limit_ms`, `transform.fallback_critical_limit_ms`)
+  - 新增状态机内部参数调优 (`mpc_fail_ratio_thresh`, `mpc_recovery_success_ratio`, `degraded_state_timeout`, `backup_state_timeout`)
+  - 新增跟踪预测误差阈值调优 (`tracking.prediction_thresh`)
+- **新增统计字段**:
+  - `degraded_state_durations`: 记录 MPC_DEGRADED 状态持续时间
+  - `backup_state_durations`: 记录 BACKUP_ACTIVE 状态持续时间
+  - `mpc_fail_ratios`: 记录滑动窗口内的 MPC 失败率
+  - `mpc_recovery_ratios`: 记录 MPC 恢复成功率
+- **新增分析方法**:
+  - `_analyze_tf2_fallback_limits()`: 分析 TF2 降级持续时间限制
+  - `_analyze_mpc_ratios()`: 分析 MPC 失败/恢复比率阈值
+  - `_analyze_state_timeouts()`: 分析状态超时参数
+- **摘要输出增强**:
+  - 添加状态持续时间统计 (avg, max, p95)
+  - 添加 MPC 失败/恢复比率统计
+  - 添加 TF2 降级持续时间 p95 分位数
+
+## v3.4 更新内容
+
+- **参数与 turtlebot1.yaml 完全同步**:
+  - 移除不存在于 turtlebot1.yaml 的参数（`tracking.prediction_thresh`, `transform.buffer_warmup_*`）
+  - 添加 turtlebot1.yaml 中存在但之前遗漏的参数（`mpc.health_monitor.consecutive_recovery_limit`, `mpc.fallback.lookahead_steps` 等）
+  - 添加完整的 backup 参数（`lookahead_ratio`, `heading_error_thresh`, `max_curvature` 等）
+  - 添加完整的 trajectory 参数（`min_points`, `max_points`, `max_point_distance`, `default_dt_sec`）
+- **ConfigGenerator SECTION_ORDER 修复**:
+  - 节顺序与 turtlebot1.yaml 完全一致
+  - `topics` 移至最后（原来错误地放在第二位）
+  - 添加 `constraints` 节（原来遗漏）
+- **设计参数分类完善**:
+  - 添加完整的 consistency 参数到 DESIGN_PARAMS
+  - 添加 `safety.state_machine.alpha_disable_thresh` 到 DESIGN_PARAMS
+- **安全参数分类完善**:
+  - 添加 `safety.v_stop_thresh` 和 `safety.stopping_timeout`
+- **注释格式统一**:
+  - 使用 `[turtlebot1.yaml]` 标记所有参数来源
+  - 移除混乱的"默认值"和"turtlebot1"混合注释
 
 ## v3.3 更新内容
 

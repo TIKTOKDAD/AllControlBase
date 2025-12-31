@@ -18,7 +18,7 @@ ROS 兼容层
 """
 import time
 import numpy as np
-from typing import Tuple
+from typing import Any, Tuple
 
 # ============================================================================
 # 数值常量和基础数学函数 (从 constants 模块导入，保持向后兼容)
@@ -223,7 +223,7 @@ def get_monotonic_time() -> float:
     return time.monotonic()
 
 
-def create_time(sec: float):
+def create_time(sec: float) -> Any:
     """创建时间对象"""
     if ROS_AVAILABLE:
         return rospy.Time.from_sec(sec)
@@ -231,7 +231,7 @@ def create_time(sec: float):
     return StandaloneRospy.Time.from_sec(sec)
 
 
-def create_duration(sec: float):
+def create_duration(sec: float) -> Any:
     """创建时长对象"""
     if ROS_AVAILABLE:
         return rospy.Duration.from_sec(sec)

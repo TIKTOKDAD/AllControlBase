@@ -363,6 +363,16 @@ class DashboardDataSource:
         # 检查 dt 是否匹配（允许 10% 误差）
         dt_mismatch = abs(mpc_dt - control_period) / control_period > 0.1 if control_period > 0 else False
 
+        # 从 MPCHealthMonitor 获取 consecutive_good
+        # 注意: 诊断数据中的 mpc_health 来自 MPCHealthMonitor.update() 返回的 MPCHealthStatus
+        # 但 MPCHealthStatus 数据类没有 consecutive_good 字段，需要从 monitor 实例获取
+        # 这里通过 manager 获取，如果不可用则使用 0
+        consecutive_good = 0
+        if self.manager and hasattr(self.manager, 'mpc_health_monitor'):
+            monitor = self.manager.mpc_health_monitor
+            if monitor and hasattr(monitor, 'consecutive_good'):
+                consecutive_good = monitor.consecutive_good
+
         return MPCHealthStatus(
             kkt_residual=health.get('kkt_residual', 0),
             condition_number=health.get('condition_number', 0),
@@ -374,7 +384,7 @@ class DashboardDataSource:
             dt_mismatch=dt_mismatch,
             mpc_dt=mpc_dt,
             control_period=control_period,
-            consecutive_good=health.get('consecutive_good', 0),
+            consecutive_good=consecutive_good,
         )
 
     def _build_consistency(self, diag: Dict) -> ConsistencyStatus:
