@@ -52,7 +52,7 @@
 topics:
   # 输入话题
   odom: "/controller/input/odom"
-  imu: ""                                     # 默认禁用，平台配置中启用
+  imu: "/mobile_base/sensors/imu_data"                                     # 默认禁用，平台配置中启用
   trajectory: "/controller/input/trajectory"
   emergency_stop: "/controller/emergency_stop"
   

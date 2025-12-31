@@ -40,7 +40,7 @@ watchdog:
   odom_timeout_ms: 500            # 里程计超时 (ms)
   traj_timeout_ms: 1000           # 轨迹超时 (ms)
   traj_grace_ms: 600              # 轨迹宽限期 (ms) - 适应实际延迟 300-600ms
-  imu_timeout_ms: -1              # IMU 超时，禁用 (TurtleBot1 没有 IMU)
+  imu_timeout_ms: 100             # IMU 超时 (ms) - 启用 IMU
   startup_grace_ms: 5000          # 启动宽限期 (ms)
   absolute_startup_timeout_ms: -1 # 绝对启动超时，禁用
 
@@ -173,6 +173,6 @@ cmd_vel_adapter:
 # =============================================================================
 topics:
   odom: "/odom"                   # TurtleBot1 里程计
-  imu: ""                         # 禁用 IMU (TurtleBot1 没有)
-  trajectory: "/nn/local_trajectory"  # 神经网络轨迹输入
+  imu: "/mobile_base/sensors/imu_data"  # TurtleBot1 IMU
+  trajectory: "/controller/input/trajectory"  # 轨迹输入
   cmd_unified: "/cmd_unified"     # 统一控制命令输出
