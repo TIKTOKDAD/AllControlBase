@@ -391,9 +391,17 @@ pip3 install --user -e .
 # 验证安装
 print_info "验证 universal_controller 安装..."
 python3 -c "
-from universal_controller import ControllerManager, DEFAULT_CONFIG
-from universal_controller.core.enums import ControllerState
-print('universal_controller 导入成功')
+from universal_controller import (
+    ControllerManager, DEFAULT_CONFIG, __version__,
+    ControllerState, PlatformType, HeadingMode,
+    Trajectory, ControlOutput, DiagnosticsInput,
+    EPSILON, ControllerError
+)
+print(f'universal_controller v{__version__} 导入成功')
+print(f'  - ControllerManager: OK')
+print(f'  - 枚举类型: ControllerState, PlatformType, HeadingMode')
+print(f'  - 数据类型: Trajectory, ControlOutput, DiagnosticsInput')
+print(f'  - 常量/异常: EPSILON, ControllerError')
 " && print_success "universal_controller 安装验证通过 ✓" || {
     print_error "universal_controller 安装验证失败"
     exit 1
@@ -665,8 +673,10 @@ except ImportError as e:
 # 完整验证
 print_info "完整功能验证..."
 python3 -c "
-from universal_controller import ControllerManager, DEFAULT_CONFIG
-from universal_controller.core.enums import ControllerState
+from universal_controller import (
+    ControllerManager, DEFAULT_CONFIG, __version__,
+    ControllerState, PlatformType
+)
 from universal_controller.core.ros_compat import ROS_AVAILABLE, TF2_AVAILABLE
 
 config = DEFAULT_CONFIG.copy()
@@ -676,6 +686,7 @@ config['system']['ctrl_freq'] = 20
 manager = ControllerManager(config)
 manager.initialize_default_components()
 
+print(f'版本: v{__version__}')
 print(f'平台: {config[\"system\"][\"platform\"]}')
 print(f'控制频率: {config[\"system\"][\"ctrl_freq\"]} Hz')
 print(f'ROS 可用: {ROS_AVAILABLE}')

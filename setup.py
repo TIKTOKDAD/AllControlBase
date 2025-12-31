@@ -15,7 +15,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='universal-controller',
-    version='3.18.0',
+    version='3.19.0',
     author='Universal Controller Team',
     description='基于 MPC 的通用轨迹跟踪控制器，支持多平台部署',
     

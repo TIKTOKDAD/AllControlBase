@@ -51,6 +51,7 @@ catkin_install_python(PROGRAMS
   scripts/trajectory_publisher.py
   scripts/trajectory_visualizer.py
   scripts/visualizer_node.py
+  scripts/enhanced_diagnostics.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
