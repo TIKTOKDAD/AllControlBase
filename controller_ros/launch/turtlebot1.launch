@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!-- 
+  TurtleBot1 启动入口
+  
+  使用方法:
+    roslaunch controller_ros turtlebot1.launch
+    roslaunch controller_ros turtlebot1.launch dashboard:=true
+-->
+<launch>
+  <!-- 转发所有参数到实际的 launch 文件 -->
+  <arg name="use_sim_time" default="false"/>
+  <arg name="dashboard" default="false"/>
+  <arg name="visualizer" default="false"/>
+  <arg name="camera_image" default=""/>
+  <arg name="calibration_file" default=""/>
+  
+  <include file="$(find controller_ros)/launch/platforms/turtlebot1.launch">
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="dashboard" value="$(arg dashboard)"/>
+    <arg name="visualizer" value="$(arg visualizer)"/>
+    <arg name="camera_image" value="$(arg camera_image)"/>
+    <arg name="calibration_file" value="$(arg calibration_file)"/>
+  </include>
+</launch>
