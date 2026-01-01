@@ -259,7 +259,7 @@ class AutoTuner:
         
         # 尝试导入自定义消息
         try:
-            from controller_ros.msg import Trajectory, DiagnosticsV2
+            from controller_ros.msg import LocalTrajectoryV4, DiagnosticsV2
             has_custom_msgs = True
             self._log("✓ controller_ros 消息已加载")
         except ImportError as e:
@@ -292,7 +292,7 @@ class AutoTuner:
         subs.append(rospy.Subscriber('/mobile_base/sensors/imu_data', Imu, imu_cb))
         
         if has_custom_msgs:
-            subs.append(rospy.Subscriber('/controller/input/trajectory', Trajectory, traj_cb))
+            subs.append(rospy.Subscriber('/controller/input/trajectory', LocalTrajectoryV4, traj_cb))
             subs.append(rospy.Subscriber('/controller/diagnostics', DiagnosticsV2, diag_cb))
         
         # TF2 监听
