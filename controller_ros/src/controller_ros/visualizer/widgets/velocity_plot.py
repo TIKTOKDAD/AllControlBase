@@ -53,11 +53,11 @@ class VelocityPlot(QWidget):
         legend_layout = QVBoxLayout()
         legend_layout.setSpacing(2)
         
-        linear_legend = QLabel("── vx (线速度)")
+        linear_legend = QLabel("── vx (命令线速度)")
         linear_legend.setStyleSheet("color: #00ff88; font-size: 10px;")
         legend_layout.addWidget(linear_legend)
         
-        angular_legend = QLabel("── ω (角速度)")
+        angular_legend = QLabel("── ω (命令角速度)")
         angular_legend.setStyleSheet("color: #ffaa00; font-size: 10px;")
         legend_layout.addWidget(angular_legend)
         
@@ -127,31 +127,35 @@ class VelocityPlot(QWidget):
         """
         更新曲线数据
         
+        显示策略:
+        - 实线: 命令速度 (target) - 控制器输出
+        - 虚线: 反馈速度 (actual) - 底盘里程计反馈
+        
         Args:
-            history: 包含 'timestamps', 'linear_x', 'angular_z' 的字典
+            history: 包含 'timestamps', 'linear_x', 'angular_z',
+                    'target_timestamps', 'target_linear_x', 'target_angular_z' 的字典
         """
         if not PYQTGRAPH_AVAILABLE or self._plot_widget is None:
             return
         
-        timestamps = history.get('timestamps', [])
-        linear_x = history.get('linear_x', [])
-        angular_z = history.get('angular_z', [])
+        # 命令速度数据 (主要显示)
+        target_timestamps = history.get('target_timestamps', [])
+        target_linear_x = history.get('target_linear_x', [])
+        target_angular_z = history.get('target_angular_z', [])
         
-        if not timestamps:
-            return
-        
-        # 转换为相对时间 (最新时间为 0)
-        t0 = timestamps[-1]
-        rel_times = [t - t0 for t in timestamps]
-        
-        # 更新曲线 (使用最小长度确保数据对齐)
-        n_linear = min(len(rel_times), len(linear_x))
-        if n_linear > 0:
-            self._linear_curve.setData(rel_times[:n_linear], linear_x[:n_linear])
-        
-        n_angular = min(len(rel_times), len(angular_z))
-        if n_angular > 0:
-            self._angular_curve.setData(rel_times[:n_angular], angular_z[:n_angular])
+        if target_timestamps:
+            # 转换为相对时间 (最新时间为 0)
+            t0 = target_timestamps[-1]
+            rel_times = [t - t0 for t in target_timestamps]
+            
+            # 更新命令速度曲线
+            n_linear = min(len(rel_times), len(target_linear_x))
+            if n_linear > 0:
+                self._linear_curve.setData(rel_times[:n_linear], target_linear_x[:n_linear])
+            
+            n_angular = min(len(rel_times), len(target_angular_z))
+            if n_angular > 0:
+                self._angular_curve.setData(rel_times[:n_angular], target_angular_z[:n_angular])
         
         # 设置 X 轴范围
         self._plot_widget.setXRange(-self._history_sec, 0)

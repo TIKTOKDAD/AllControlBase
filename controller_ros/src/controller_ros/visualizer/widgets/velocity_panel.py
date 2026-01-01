@@ -16,7 +16,12 @@ from ..models import VelocityData
 
 
 class VelocityGauge(QWidget):
-    """速度仪表组件"""
+    """速度仪表组件
+    
+    显示:
+    - 主数值 (大字): 命令速度
+    - 参考值 (小字): 反馈速度
+    """
     
     def __init__(self, title: str, unit: str, min_val: float, max_val: float, 
                  color: str = "#00ff00", parent=None):
@@ -28,7 +33,7 @@ class VelocityGauge(QWidget):
         self._max_val = max_val
         self._color = color
         self._current_val = 0.0
-        self._target_val = 0.0
+        self._feedback_val = 0.0
         
         self._init_ui()
     
@@ -75,17 +80,22 @@ class VelocityGauge(QWidget):
         
         value_layout.addStretch()
         
-        self._target_label = QLabel("目标: 0.00")
-        self._target_label.setStyleSheet("color: #888888; font-size: 10px;")
-        value_layout.addWidget(self._target_label)
+        self._feedback_label = QLabel("反馈: 0.00")
+        self._feedback_label.setStyleSheet("color: #888888; font-size: 10px;")
+        value_layout.addWidget(self._feedback_label)
         
         layout.addLayout(value_layout)
     
-    def set_value(self, current: float, target: float = None):
-        """设置当前值和目标值"""
+    def set_value(self, current: float, feedback: float = None):
+        """设置命令值和反馈值
+        
+        Args:
+            current: 命令速度 (主显示)
+            feedback: 反馈速度 (参考显示)
+        """
         self._current_val = current
-        if target is not None:
-            self._target_val = target
+        if feedback is not None:
+            self._feedback_val = feedback
         
         # 更新进度条 (将值映射到 0-100)
         range_val = self._max_val - self._min_val
@@ -99,8 +109,8 @@ class VelocityGauge(QWidget):
         
         # 更新标签
         self._current_label.setText(f"{current:.2f}")
-        if target is not None:
-            self._target_label.setText(f"目标: {target:.2f}")
+        if feedback is not None:
+            self._feedback_label.setText(f"反馈: {feedback:.2f}")
 
 
 class VelocityPanel(QWidget):
@@ -167,12 +177,22 @@ class VelocityPanel(QWidget):
         """
         更新速度显示
         
-        Args:
-            actual: 实际速度
-            target: 目标速度 (可选)
-        """
-        target_vx = target.linear_x if target else None
-        target_omega = target.angular_z if target else None
+        显示策略:
+        - 主数值: 命令速度 (target) - 控制器输出的目标速度
+        - 小字: 反馈速度 (actual) - 底盘里程计反馈的实际速度
         
-        self._linear_gauge.set_value(actual.linear_x, target_vx)
-        self._angular_gauge.set_value(actual.angular_z, target_omega)
+        原因: TurtleBot1 的 /odom 话题中角速度反馈不准确（几乎为0），
+        显示命令速度更能反映控制器的实际输出。
+        
+        Args:
+            actual: 实际速度 (来自 /odom)
+            target: 目标速度 (来自 /cmd_unified)
+        """
+        # 命令速度作为主显示，反馈速度作为参考
+        cmd_vx = target.linear_x if target else 0.0
+        cmd_omega = target.angular_z if target else 0.0
+        feedback_vx = actual.linear_x if actual else None
+        feedback_omega = actual.angular_z if actual else None
+        
+        self._linear_gauge.set_value(cmd_vx, feedback_vx)
+        self._angular_gauge.set_value(cmd_omega, feedback_omega)
