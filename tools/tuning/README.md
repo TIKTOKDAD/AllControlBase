@@ -1,6 +1,70 @@
-# TurtleBot1 配置诊断与调优工具 v3.5
+# TurtleBot1 配置诊断与调优工具 v4.0
 
 自动分析控制器诊断数据，识别性能问题并生成优化后的配置文件。
+
+## 功能特性
+
+- 📊 **全面诊断分析**: 覆盖所有 turtlebot1.yaml 中定义的可调优参数
+- 🔧 **智能调优**: 只对可调优参数生成建议
+- 🛡️ **安全保护**: 不自动放宽安全参数
+- 📝 **配置生成**: 生成与 turtlebot1.yaml 结构完全一致的优化配置
+- 📈 **详细报告**: 诊断报告、分析摘要、变更日志
+- 🆕 **一键调优**: 自动收集、分析、生成配置 (v4.0 新增)
+- 🆕 **帧率分析**: 分析话题帧率、MPC 降级原因 (v3.6 新增)
+
+## 快速开始
+
+### 🚀 一键自动调优 (推荐)
+
+```bash
+# 一键完成: 收集数据 → 分析 → 生成调优配置
+python -m tools.tuning.auto_tune --duration 30
+
+# 直接应用到配置文件
+python -m tools.tuning.auto_tune --duration 30 --apply
+```
+
+输出示例:
+```
+============================================================
+一键自动调优工具 v1.0
+============================================================
+
+开始收集数据 (30秒)...
+监控话题:
+  - /odom
+  - /controller/input/trajectory
+  - /mobile_base/sensors/imu_data
+  - /controller/diagnostics
+  - TF2: base_footprint → odom
+
+============================================================
+调优建议
+============================================================
+
+🟡 watchdog.traj_timeout_ms
+    当前值: 1500 → 建议值: 2000
+    原因: 轨迹帧率 2.3Hz, p95间隔 850ms
+
+✅ 调优配置已保存到: tuning_output/tuned_turtlebot1.yaml
+```
+
+### 帧率分析
+
+```bash
+# 分析话题帧率和 MPC 降级原因
+python -m tools.tuning.analyze_frame_rate --json tuning_output/collected_diagnostics.json
+```
+
+### 参数调优
+
+```bash
+# 从 JSON 诊断数据分析
+python -m tools.tuning.run_diagnostics --json /path/to/diagnostics.json
+
+# 实时收集并分析
+python -m tools.tuning.run_diagnostics --live --duration 60
+```
 
 ## 设计原则
 
@@ -86,14 +150,6 @@
 - **安全配置**: `safety.emergency_decel`, `safety.v_stop_thresh`, `safety.stopping_timeout`
 
 
-## 功能特性
-
-- 📊 **全面诊断分析**: 覆盖所有 turtlebot1.yaml 中定义的可调优参数
-- 🔧 **智能调优**: 只对可调优参数生成建议
-- 🛡️ **安全保护**: 不自动放宽安全参数
-- 📝 **配置生成**: 生成与 turtlebot1.yaml 结构完全一致的优化配置
-- 📈 **详细报告**: 诊断报告、分析摘要、变更日志
-
 ## 前提条件
 
 ### 必需依赖
@@ -112,9 +168,73 @@ pip install rosbag bagpy
 source /opt/ros/noetic/setup.bash
 ```
 
+## 工具说明
+
+本工具包含四个分析脚本：
+
+| 工具 | 用途 | 数据源 |
+|------|------|--------|
+| `auto_tune.py` | **🚀 一键自动调优** | 话题 + 诊断消息 |
+| `run_diagnostics.py` | 参数调优 | 诊断消息 |
+| `analyze_frame_rate.py` | MPC 降级原因分析 | 诊断消息 |
+| `analyze_topic_rates.py` | 话题帧率分析 | 直接订阅话题 |
+
+### 话题与参数对应关系
+
+```
+话题帧率 → 超时参数调优:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+输入话题:
+  /odom                         → watchdog.odom_timeout_ms
+  /controller/input/trajectory  → watchdog.traj_timeout_ms, traj_grace_ms
+  /mobile_base/sensors/imu_data → watchdog.imu_timeout_ms
+  TF2 (base_footprint → odom)   → transform.timeout_ms
+
+输出话题:
+  /controller/diagnostics       → diagnostics.publish_rate
+  /cmd_unified                  → cmd_vel_adapter.publish_rate
+
+调优公式:
+  timeout_ms >= (1000 / 实际帧率) × 2
+  grace_ms   >= (1000 / 实际帧率) × 1.5
+```
+
 ## 使用方法
 
-### 1. 从 ROS bag 文件分析
+### 0. 一键自动调优 (推荐)
+
+```bash
+# 收集 30 秒数据并生成调优配置
+python -m tools.tuning.auto_tune --duration 30
+
+# 指定输出文件
+python -m tools.tuning.auto_tune --duration 30 --output my_tuned.yaml
+
+# 直接应用到配置文件 (会自动备份原文件)
+python -m tools.tuning.auto_tune --duration 30 --apply
+
+# 使用自定义配置文件
+python -m tools.tuning.auto_tune --config path/to/config.yaml --duration 30
+```
+
+### 1. 话题帧率分析 (推荐先运行)
+
+```bash
+# 实时分析话题帧率 (需要 ROS 环境)
+python -m tools.tuning.analyze_topic_rates --live --duration 30
+
+# 从 ROS bag 分析
+python -m tools.tuning.analyze_topic_rates --bag /path/to/recording.bag
+```
+
+### 2. MPC 降级原因分析
+
+```bash
+python -m tools.tuning.analyze_frame_rate --json tuning_output/collected_diagnostics.json
+```
+
+### 3. 从 ROS bag 文件分析
 
 ```bash
 python -m tools.tuning.run_diagnostics --bag /path/to/recording.bag
@@ -269,6 +389,47 @@ MPC 性能:
 3. **配置验证**: 生成的配置需要在实际环境中验证
 4. **渐进调优**: 建议逐步应用优化建议，而非一次性全部应用
 5. **安全参数**: 安全相关参数不会自动放宽，如需调整请手动修改
+
+## v4.0 更新内容
+
+- **新增一键自动调优工具 `auto_tune.py`**:
+  - 一个命令完成: 数据收集 → 分析 → 生成调优配置
+  - 自动订阅话题收集帧率数据
+  - 自动收集诊断消息分析 MPC 性能
+  - 基于实际数据自动计算最优超时参数
+  - 支持 `--apply` 直接应用到配置文件
+  - 自动备份原配置文件
+- **调优公式**:
+  - `timeout_ms = max(p95间隔, 平均周期) × 2`
+  - `grace_ms = max(p95间隔, 平均周期) × 1.5`
+- **智能权重调优**:
+  - 基于跟踪误差自动调整 MPC 权重
+  - 纵向误差 > 50cm → 增加 velocity 权重
+  - 横向误差 > 15cm → 增加 position 权重
+  - 航向误差 > 11° → 增加 heading 权重
+
+## v4.1 更新内容
+
+- **扩展诊断数据收集**:
+  - 新增 MPC 健康监控数据: `mpc_health_consecutive_near_timeout`, `mpc_health_degradation_warning`, `mpc_health_kkt_residual`
+  - 新增坐标变换数据: `transform_fallback_duration_ms`, `transform_tf2_available`
+  - 新增跟踪预测误差: `tracking_prediction_error`
+  - 新增备份控制器统计: `backup_active`
+  - 新增紧急停止统计: `emergency_stop`
+- **新增调优参数**:
+  - `mpc.health_monitor.time_critical_thresh_ms`: 基于 p99 求解时间调优
+  - `mpc.health_monitor.consecutive_warning_limit`: 基于连续超时统计调优
+  - `mpc.horizon`: 基于 MPC 成功率调优
+  - `tracking.lateral_thresh`, `tracking.longitudinal_thresh`, `tracking.heading_thresh`: 基于跟踪误差 p95 调优
+  - `tracking.prediction_thresh`: 基于预测误差 p95 调优
+  - `transform.fallback_duration_limit_ms`, `transform.fallback_critical_limit_ms`: 基于 TF 降级持续时间调优
+  - `safety.state_machine.mpc_fail_ratio_thresh`: 基于 MPC 失败率调优
+  - `safety.state_machine.mpc_recovery_thresh`: 基于备份控制器激活率调优
+- **改进诊断报告**:
+  - 显示 MPC 成功率和降级警告次数
+  - 显示 TF 降级持续时间统计
+  - 显示备份控制器激活率
+  - 显示紧急停止次数
 
 ## v3.5 更新内容
 
