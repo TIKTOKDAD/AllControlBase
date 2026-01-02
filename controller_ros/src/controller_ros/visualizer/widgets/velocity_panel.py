@@ -61,11 +61,11 @@ class CenterProgressBar(QWidget):
             
             bar_width = int(abs(self._value) * (w // 2 - 4))
             if self._value > 0:
-                # 正值: 从中间向右
-                painter.drawRoundedRect(center_x + 2, 3, bar_width, h - 6, 2, 2)
-            else:
-                # 负值: 从中间向左
+                # 正值 (左转): 从中间向左延伸
                 painter.drawRoundedRect(center_x - 2 - bar_width, 3, bar_width, h - 6, 2, 2)
+            else:
+                # 负值 (右转): 从中间向右延伸
+                painter.drawRoundedRect(center_x + 2, 3, bar_width, h - 6, 2, 2)
 
 
 class VelocityGauge(QWidget):
