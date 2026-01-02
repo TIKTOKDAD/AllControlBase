@@ -73,7 +73,7 @@ SHARED_TOPICS = ['odom', 'trajectory', 'cmd_unified', 'diagnostics', 'emergency_
 # 共享话题的回退默认值 (仅当全局配置不存在时使用)
 SHARED_TOPICS_FALLBACK = {
     'odom': '/odom',
-    'trajectory': '/nn/local_trajectory',
+    'trajectory': '/controller/input/trajectory',
     'cmd_unified': '/cmd_unified',
     'diagnostics': '/controller/diagnostics',
     'emergency_stop': '/controller/emergency_stop',

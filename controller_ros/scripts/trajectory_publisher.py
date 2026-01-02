@@ -244,7 +244,11 @@ class TrajectoryPublisher(LifecycleMixin):
         self._republish_count += 1
     
     def _waypoint_callback(self, msg: Float32MultiArray):
-        """Waypoint topic callback"""
+        """Waypoint topic callback
+        
+        Key optimization: Detect trajectory changes and publish immediately
+        to minimize turn response delay.
+        """
         self._receive_count += 1
         
         data = list(msg.data)
@@ -272,9 +276,21 @@ class TrajectoryPublisher(LifecycleMixin):
             rospy.logwarn_throttle(1.0, f"Trajectory coordinates exceed {max_coord}m")
             return
         
+        # Detect significant trajectory change (turn detection)
+        # If trajectory changed significantly, publish multiple times immediately
+        is_significant_change = self._detect_significant_change(positions)
+        
         # Create and publish message
         traj_msg = self._create_trajectory_msg(positions)
         self._pub.publish(traj_msg)
+        
+        # If significant change detected, publish again immediately to ensure
+        # controller receives new trajectory before next republish cycle
+        if is_significant_change:
+            rospy.sleep(0.01)  # Small delay to avoid message drop
+            traj_msg.header.stamp = rospy.Time.now()
+            self._pub.publish(traj_msg)
+            self._publish_count += 1
         
         self._publish_count += 1
         self._last_waypoint = positions
@@ -282,6 +298,38 @@ class TrajectoryPublisher(LifecycleMixin):
         
         if self._publish_count % 50 == 0:
             rospy.loginfo(f"Published {self._publish_count} trajectories ({num_points} points), republished {self._republish_count}")
+    
+    def _detect_significant_change(self, new_positions: np.ndarray) -> bool:
+        """Detect if trajectory changed significantly (e.g., turn direction change)
+        
+        Uses heading change of first few points to detect turns.
+        
+        Returns:
+            True if significant change detected (should publish immediately)
+        """
+        if self._last_waypoint is None or len(self._last_waypoint) < 2:
+            return False
+        
+        if len(new_positions) < 2:
+            return False
+        
+        # Calculate heading of first segment for old and new trajectory
+        old_dx = self._last_waypoint[1, 0] - self._last_waypoint[0, 0]
+        old_dy = self._last_waypoint[1, 1] - self._last_waypoint[0, 1]
+        old_heading = np.arctan2(old_dy, old_dx)
+        
+        new_dx = new_positions[1, 0] - new_positions[0, 0]
+        new_dy = new_positions[1, 1] - new_positions[0, 1]
+        new_heading = np.arctan2(new_dy, new_dx)
+        
+        # Calculate heading difference
+        heading_diff = abs(new_heading - old_heading)
+        if heading_diff > np.pi:
+            heading_diff = 2 * np.pi - heading_diff
+        
+        # Threshold: 15 degrees = 0.26 rad
+        # If heading changed more than 15 degrees, consider it significant
+        return heading_diff > 0.26
     
     def _create_trajectory_msg(self, positions: np.ndarray, 
                                velocities: np.ndarray = None,

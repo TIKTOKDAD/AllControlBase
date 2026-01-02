@@ -42,7 +42,8 @@ class TrajectoryVisualizer:
         
         # 参数
         self.image_topic = rospy.get_param('~image_topic', '/usb_cam/image_raw')
-        self.trajectory_topic = rospy.get_param('~trajectory_topic', '/nn/local_trajectory')
+        # [修复] 默认订阅控制器输入话题，确保可视化与控制器看到相同轨迹
+        self.trajectory_topic = rospy.get_param('~trajectory_topic', '/controller/input/trajectory')
         self.output_topic = rospy.get_param('~output_topic', '/trajectory_overlay/image')
         
         # 标定文件路径

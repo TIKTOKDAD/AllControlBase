@@ -30,7 +30,7 @@
 <launch>
   <!-- ========== 参数 ========== -->
   <arg name="image_topic" default="/usb_cam/image_raw" doc="相机图像话题"/>
-  <arg name="trajectory_topic" default="/nn/local_trajectory" doc="轨迹话题"/>
+  <arg name="trajectory_topic" default="/controller/input/trajectory" doc="轨迹话题"/>
   <arg name="output_topic" default="/trajectory_overlay/image" doc="输出图像话题"/>
   <arg name="show_window" default="true" doc="是否显示 OpenCV 窗口"/>
   <arg name="calibration_mode" default="false" doc="是否进入标定模式"/>

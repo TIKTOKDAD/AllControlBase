@@ -92,7 +92,7 @@ class VisualizerNode:
         # 话题配置
         topics = self._config.get('topics', {})
         self._odom_topic = topics.get('odom', '/odom')
-        self._traj_topic = topics.get('trajectory', '/nn/local_trajectory')
+        self._traj_topic = topics.get('trajectory', '/controller/input/trajectory')
         self._cmd_topic = topics.get('cmd_unified', '/cmd_unified')
         self._diag_topic = topics.get('diagnostics', '/controller/diagnostics')
         self._camera_topic = topics.get('camera_image', '')
@@ -202,7 +202,7 @@ class VisualizerNode:
         return {
             'topics': {
                 'odom': '/odom',
-                'trajectory': '/nn/local_trajectory',
+                'trajectory': '/controller/input/trajectory',
                 'cmd_unified': '/cmd_unified',
                 'diagnostics': '/controller/diagnostics',
                 'camera_image': '',

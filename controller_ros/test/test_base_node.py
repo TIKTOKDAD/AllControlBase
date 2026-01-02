@@ -70,7 +70,7 @@ class MockControllerNode:
         self.node._topics = {
             'odom': '/odom',
             'imu': '/imu',
-            'trajectory': '/nn/local_trajectory',
+            'trajectory': '/controller/input/trajectory',
         }
         self.node._initialize()
         # 在测试中，假设轨迹消息类型可用
