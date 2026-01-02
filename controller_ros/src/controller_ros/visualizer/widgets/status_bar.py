@@ -100,30 +100,24 @@ class VisualizerStatusBar(QWidget):
         
         layout.addStretch()
         
-        # 恢复按钮 (初始隐藏)
+        # 恢复按钮 (始终显示，根据状态变色)
         self._resume_button = QPushButton("恢复控制")
         self._resume_button.setStyleSheet("""
             QPushButton {
-                background-color: #007700;
-                color: white;
+                background-color: #444444;
+                color: #888888;
                 font-weight: bold;
                 font-size: 12px;
                 padding: 8px 20px;
                 border: none;
                 border-radius: 4px;
             }
-            QPushButton:hover {
-                background-color: #009900;
-            }
-            QPushButton:pressed {
-                background-color: #005500;
-            }
         """)
         self._resume_button.clicked.connect(self._on_resume_clicked)
-        self._resume_button.hide()  # 初始隐藏
+        self._resume_button.setEnabled(False)  # 初始禁用
         layout.addWidget(self._resume_button)
         
-        # 紧急停止按钮
+        # 紧急停止按钮 (始终显示，根据状态变色)
         self._stop_button = QPushButton("紧急停止")
         self._stop_button.setStyleSheet("""
             QPushButton {
@@ -191,12 +185,18 @@ class VisualizerStatusBar(QWidget):
         self._traj_status.set_status("✓" if traj_ok else "✗", traj_ok)
     
     def set_emergency_stop_state(self, stopped: bool):
-        """设置紧急停止状态"""
+        """
+        设置紧急停止状态，更新按钮颜色
+        
+        - stopped=True: 恢复按钮高亮(绿色可点击)，停止按钮灰色
+        - stopped=False: 停止按钮高亮(红色可点击)，恢复按钮灰色
+        """
         if stopped:
-            self._stop_button.setText("已停止")
-            self._stop_button.setStyleSheet("""
+            # 已停止状态：恢复按钮可用，停止按钮禁用
+            self._resume_button.setEnabled(True)
+            self._resume_button.setStyleSheet("""
                 QPushButton {
-                    background-color: #666666;
+                    background-color: #007700;
                     color: white;
                     font-weight: bold;
                     font-size: 12px;
@@ -204,10 +204,43 @@ class VisualizerStatusBar(QWidget):
                     border: none;
                     border-radius: 4px;
                 }
+                QPushButton:hover {
+                    background-color: #009900;
+                }
+                QPushButton:pressed {
+                    background-color: #005500;
+                }
             """)
+            
             self._stop_button.setEnabled(False)
-            self._resume_button.show()  # 显示恢复按钮
+            self._stop_button.setText("已停止")
+            self._stop_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #444444;
+                    color: #888888;
+                    font-weight: bold;
+                    font-size: 12px;
+                    padding: 8px 20px;
+                    border: none;
+                    border-radius: 4px;
+                }
+            """)
         else:
+            # 正常状态：停止按钮可用，恢复按钮禁用
+            self._resume_button.setEnabled(False)
+            self._resume_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #444444;
+                    color: #888888;
+                    font-weight: bold;
+                    font-size: 12px;
+                    padding: 8px 20px;
+                    border: none;
+                    border-radius: 4px;
+                }
+            """)
+            
+            self._stop_button.setEnabled(True)
             self._stop_button.setText("紧急停止")
             self._stop_button.setStyleSheet("""
                 QPushButton {
@@ -226,5 +259,3 @@ class VisualizerStatusBar(QWidget):
                     background-color: #990000;
                 }
             """)
-            self._stop_button.setEnabled(True)
-            self._resume_button.hide()  # 隐藏恢复按钮
