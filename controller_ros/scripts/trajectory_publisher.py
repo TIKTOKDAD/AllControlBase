@@ -60,6 +60,11 @@ class TrajectoryPublisher(LifecycleMixin):
     
     Subscribe /waypoint topic and convert to LocalTrajectoryV4 format.
     
+    Features:
+    - High-frequency republishing: Cache trajectory and republish at fixed rate
+      to maintain stable output frequency even with low-frequency input (~2Hz)
+    - Configurable via ~republish_rate and ~enable_republish params
+    
     Configuration:
     - All trajectory parameters are read from TrajectoryDefaults
     - TrajectoryDefaults.configure() is called during initialization
@@ -104,6 +109,17 @@ class TrajectoryPublisher(LifecycleMixin):
             topics.get('trajectory', TOPICS_DEFAULTS['trajectory'])
         )
         
+        # High-frequency republish configuration
+        # Enable by default to solve low-frequency trajectory issue
+        self._enable_republish = rospy.get_param('~enable_republish', True)
+        self._republish_rate = rospy.get_param('~republish_rate', 10.0)  # Hz
+        self._republish_timer = None
+        self._republish_count = 0
+        
+        # Trajectory cache expiry (stop republishing if no new data for this duration)
+        self._cache_expiry_sec = rospy.get_param('~cache_expiry_sec', 3.0)
+        self._last_receive_time = None
+        
         # State
         self._last_waypoint = None
         self._publish_count = 0
@@ -125,6 +141,14 @@ class TrajectoryPublisher(LifecycleMixin):
             self._pub = rospy.Publisher(self._output_topic, LocalTrajectoryV4, queue_size=1)
             self._sub = rospy.Subscriber(self._input_topic, Float32MultiArray, self._waypoint_callback)
             
+            # Start high-frequency republish timer
+            if self._enable_republish and self._republish_rate > 0:
+                period = 1.0 / self._republish_rate
+                self._republish_timer = rospy.Timer(
+                    rospy.Duration(period), 
+                    self._republish_callback
+                )
+            
             rospy.loginfo("=" * 50)
             rospy.loginfo("TrajectoryPublisher initialized")
             rospy.loginfo(f"  Subscribe: {self._input_topic} (Float32MultiArray)")
@@ -132,6 +156,10 @@ class TrajectoryPublisher(LifecycleMixin):
             rospy.loginfo(f"  dt: {self._dt} s")
             rospy.loginfo(f"  Frame: {self._frame_id}")
             rospy.loginfo(f"  Soft constraint: {'enabled' if self._soft_enabled else 'disabled'}")
+            if self._enable_republish:
+                rospy.loginfo(f"  Republish: {self._republish_rate} Hz (cache expiry: {self._cache_expiry_sec}s)")
+            else:
+                rospy.loginfo("  Republish: disabled")
             rospy.loginfo("=" * 50)
             return True
         except Exception as e:
@@ -141,6 +169,11 @@ class TrajectoryPublisher(LifecycleMixin):
     def _do_shutdown(self) -> None:
         """Shutdown and publish stop trajectory"""
         rospy.loginfo("TrajectoryPublisher shutting down...")
+        
+        # Stop republish timer
+        if self._republish_timer is not None:
+            self._republish_timer.shutdown()
+            self._republish_timer = None
         
         # Publish stop trajectory for safety
         try:
@@ -158,9 +191,11 @@ class TrajectoryPublisher(LifecycleMixin):
     def _do_reset(self) -> None:
         """Reset statistics"""
         self._last_waypoint = None
+        self._last_receive_time = None
         self._publish_count = 0
         self._receive_count = 0
         self._invalid_count = 0
+        self._republish_count = 0
         rospy.loginfo("TrajectoryPublisher state reset")
     
     def _get_health_details(self) -> Dict[str, Any]:
@@ -169,8 +204,44 @@ class TrajectoryPublisher(LifecycleMixin):
             'publish_count': self._publish_count,
             'receive_count': self._receive_count,
             'invalid_count': self._invalid_count,
+            'republish_count': self._republish_count,
             'has_waypoint': self._last_waypoint is not None,
+            'republish_enabled': self._enable_republish,
+            'republish_rate': self._republish_rate,
         }
+    
+    def _republish_callback(self, event):
+        """Timer callback for high-frequency trajectory republishing
+        
+        Features:
+        - Republish cached trajectory with updated timestamp
+        - Confidence decay: older trajectory gets lower confidence
+          to make MPC more conservative (slower speed)
+        """
+        # Skip if no cached trajectory
+        if self._last_waypoint is None:
+            return
+        
+        # Skip if cache expired (no new data for too long)
+        if self._last_receive_time is not None:
+            elapsed = (rospy.Time.now() - self._last_receive_time).to_sec()
+            if elapsed > self._cache_expiry_sec:
+                return
+            
+            # Confidence decay: older trajectory → lower confidence → slower speed
+            # Fresh (0s): confidence = 1.0
+            # Half expired: confidence = 0.65
+            # Near expired: confidence = 0.3 (minimum)
+            age_ratio = elapsed / self._cache_expiry_sec
+            confidence = max(0.3, 1.0 - age_ratio * 0.7)
+        else:
+            confidence = self._confidence
+        
+        # Republish cached trajectory with updated timestamp and decayed confidence
+        traj_msg = self._create_trajectory_msg(self._last_waypoint)
+        traj_msg.confidence = confidence
+        self._pub.publish(traj_msg)
+        self._republish_count += 1
     
     def _waypoint_callback(self, msg: Float32MultiArray):
         """Waypoint topic callback"""
@@ -207,9 +278,10 @@ class TrajectoryPublisher(LifecycleMixin):
         
         self._publish_count += 1
         self._last_waypoint = positions
+        self._last_receive_time = rospy.Time.now()
         
         if self._publish_count % 50 == 0:
-            rospy.loginfo(f"Published {self._publish_count} trajectories ({num_points} points)")
+            rospy.loginfo(f"Published {self._publish_count} trajectories ({num_points} points), republished {self._republish_count}")
     
     def _create_trajectory_msg(self, positions: np.ndarray, 
                                velocities: np.ndarray = None,
