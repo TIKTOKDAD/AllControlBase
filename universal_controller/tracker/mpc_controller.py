@@ -109,6 +109,17 @@ class MPCController(ITrajectoryTracker):
         # 尝试初始化
         if ACADOS_AVAILABLE:
             self._initialize_solver(self.horizon)
+            
+            # Pre-warm commonly used horizons to avoid runtime compile overhead
+            # This is critical for performance when switching modes in the state machine
+            prewarm_horizons = mpc_config.get('prewarm_horizons', [10, 20])
+            for h in prewarm_horizons:
+                if h != self.horizon:
+                    try:
+                        self._get_solver(h)
+                        logger.info(f"Pre-warmed MPC solver for horizon {h}")
+                    except Exception as e:
+                        logger.warning(f"Failed to pre-warm solver for horizon {h}: {e}")
         else:
             logger.warning("ACADOS library not installed. MPC Controller will not function.")
         
@@ -281,10 +292,7 @@ class MPCController(ITrajectoryTracker):
             self._solver = None
             self._is_initialized = False
             self._acados_creation_failed = True
-            # Check if this was a new solver creation failure
-            if target_horizon not in self._solver_cache:
-                 if target_horizon in self._solver_cache:
-                      del self._solver_cache[target_horizon]
+            # 强制垃圾回收以清理可能的部分初始化资源
             gc.collect()
 
     def _solve_with_acados(self, state: np.ndarray, trajectory: Trajectory,
@@ -310,7 +318,9 @@ class MPCController(ITrajectoryTracker):
         if len(blended_vels) < self.horizon:
              pad_len = self.horizon - len(blended_vels)
              if len(blended_vels) > 0:
-                 blended_vels = np.pad(blended_vels, ((0, pad_len), (0, 0)), 'edge')
+                 # Use constant 0 padding for velocity to ensure kinematic consistency
+                 # (Position stays constant at end, so velocity should be 0)
+                 blended_vels = np.pad(blended_vels, ((0, pad_len), (0, 0)), 'constant', constant_values=0)
              else:
                  blended_vels = np.zeros((self.horizon, 4))
         
@@ -354,10 +364,21 @@ class MPCController(ITrajectoryTracker):
         if status == 0:
             x1 = self._solver.get(1, "x")
             self._last_predicted_next_state = x1
+            
+            # Extract full predicted trajectory for visualization
+            # This allows RViz to show exactly what the MPC plans to do
+            pred_states = []
+            try:
+                for i in range(self.horizon + 1):
+                    pred_states.append(self._solver.get(i, "x"))
+            except Exception as e:
+                logger.warning(f"Failed to extract predicted trajectory: {e}")
+            
             result = ControlOutput(
                 vx=x1[3], vy=x1[4], vz=x1[5], omega=x1[7],
                 frame_id=self.output_frame, success=True,
-                health_metrics={'kkt_residual': self._last_kkt_residual}
+                health_metrics={'kkt_residual': self._last_kkt_residual},
+                extras={'predicted_trajectory': pred_states}
             )
         else:
             logger.warning(f"ACADOS solve failed with status {status}")
@@ -407,8 +428,10 @@ class MPCController(ITrajectoryTracker):
         """释放 ACADOS 资源"""
         if self._solver is not None:
             self._solver = None
-        if self._ocp is not None:
-            self._ocp = None
+        
+        # 清理缓存的求解器
+        if hasattr(self, '_solver_cache') and self._solver_cache:
+            self._solver_cache.clear()
         
         # 强制 GC 以清理 C 资源
         gc.collect()

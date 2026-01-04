@@ -155,19 +155,18 @@ def test_platform_specific_output():
         print(f"✓ Platform {platform} output verified")
 
 
-def test_velocity_padding_integration():
-    """测试速度填充在完整管道中的行为
+def test_velocity_strict_mode():
+    """测试速度点数量严格校验模式
     
-    设计说明：
-    - 当速度点少于位置点时，使用线性衰减填充
-    - 衰减公式: decay_factor = (padding_count - i) / (padding_count + 1)
-    - 这确保从最后一个速度点平滑过渡到接近零（但不为零）
-    - 避免轨迹末端高速运动
+    设计说明 (Refactored - Strict Mode):
+    - 速度点数量必须与位置点数量完全一致
+    - 如果数量不匹配，适配器会拒绝速度数据并禁用 soft 模式
+    - 这是安全设计，避免隐式行为导致的歧义
     """
     from controller_ros.adapters import TrajectoryAdapter
     import numpy as np
     
-    # 使用共享的 Mock 类，20 个位置点但只有 5 个速度点
+    # 测试1: 速度点少于位置点 - 应被拒绝
     ros_msg = MockRosTrajectory(num_points=20, frame_id='base_link')
     ros_msg.set_velocities([
         1.0, 0.1, 0.0, 0.01,
@@ -175,36 +174,32 @@ def test_velocity_padding_integration():
         2.0, 0.2, 0.0, 0.02,
         2.5, 0.25, 0.0, 0.025,
         3.0, 0.3, 0.0, 0.03,
-    ])
+    ])  # 只有 5 个速度点，但有 20 个位置点
     
     adapter = TrajectoryAdapter()
     uc_traj = adapter.to_uc(ros_msg)
     
-    # 验证填充
-    assert uc_traj.velocities.shape == (20, 4)
+    # 严格模式下，数量不匹配应导致 velocities 为 None
+    assert uc_traj.velocities is None, "Mismatched velocity count should result in None velocities"
+    assert uc_traj.soft_enabled == False, "Mismatched velocity count should disable soft mode"
     
-    # 前 5 个应该是原始值
-    assert uc_traj.velocities[0, 0] == 1.0
-    assert uc_traj.velocities[4, 0] == 3.0
+    # 测试2: 速度点等于位置点 - 应被接受
+    ros_msg2 = MockRosTrajectory(num_points=5, frame_id='base_link')
+    ros_msg2.set_velocities([
+        1.0, 0.1, 0.0, 0.01,
+        1.5, 0.15, 0.0, 0.015,
+        2.0, 0.2, 0.0, 0.02,
+        2.5, 0.25, 0.0, 0.025,
+        3.0, 0.3, 0.0, 0.03,
+    ])  # 5 个速度点匹配 5 个位置点
     
-    # 后 15 个应该线性衰减
-    # 最后一个速度点是 [3.0, 0.3, 0.0, 0.03]
-    # 填充 15 个点，衰减因子: (padding_count - i) / (padding_count + 1)
-    # - i=0: decay = 15/16 = 0.9375
-    # - i=14: decay = 1/16 = 0.0625 (接近零但不为零)
-    padding_count = 15
-    last_vel = np.array([3.0, 0.3, 0.0, 0.03])
-    for i in range(padding_count):
-        expected_decay = (padding_count - i) / (padding_count + 1)
-        expected_vel = last_vel * expected_decay
-        actual_vel = uc_traj.velocities[5 + i]
-        assert np.allclose(actual_vel, expected_vel, atol=0.001), \
-            f"Point {5+i} should have decayed velocity {expected_vel}, got {actual_vel}"
+    uc_traj2 = adapter.to_uc(ros_msg2)
     
-    # 最后一个填充点应该接近零（但不完全为零）
-    # decay = 1/16 = 0.0625, 所以 last_vel * 0.0625 = [0.1875, 0.01875, 0, 0.001875]
-    expected_last = last_vel * (1 / (padding_count + 1))
-    assert np.allclose(uc_traj.velocities[19], expected_last, atol=0.001)
+    assert uc_traj2.velocities is not None, "Matching velocity count should preserve velocities"
+    assert uc_traj2.velocities.shape == (5, 4), "Velocities should have correct shape"
+    assert uc_traj2.soft_enabled == True, "Matching velocity count should enable soft mode"
+    assert uc_traj2.velocities[0, 0] == 1.0
+    assert uc_traj2.velocities[4, 0] == 3.0
 
 
 def test_empty_frame_id_handling():

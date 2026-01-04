@@ -1,8 +1,8 @@
 """
 通用控制器 (Universal Controller)
 
-版本: v3.19.0
-日期: 2024-12-25
+版本: v3.19.1
+日期: 2026-01-04
 
 基于 MPC 的通用轨迹跟踪控制器，支持多平台部署。
 
@@ -34,7 +34,7 @@
     cmd = manager.update(odom, trajectory)
 """
 
-__version__ = "3.19.0"
+__version__ = "3.19.1"
 __author__ = "Universal Controller Team"
 
 # 导出主要类和配置

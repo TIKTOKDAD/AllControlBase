@@ -4,6 +4,7 @@
 管理所有 ROS2 发布器。
 """
 from typing import Dict, Any, Optional
+import numpy as np
 
 from rclpy.node import Node
 from nav_msgs.msg import Path
@@ -100,6 +101,12 @@ class PublisherManager:
         debug_path_topic = self._topics.get('debug_path', TOPICS_DEFAULTS['debug_path'])
         self._path_pub = self._node.create_publisher(
             Path, debug_path_topic, 1
+        )
+        
+        # MPC 预测路径发布
+        mpc_path_topic = self._topics.get('mpc_path', '/controller/mpc_path')
+        self._mpc_path_pub = self._node.create_publisher(
+            Path, mpc_path_topic, 1
         )
         
         # 姿态命令发布器 (四旋翼平台)
@@ -203,6 +210,45 @@ class PublisherManager:
             path.poses.append(pose)
         
         self._path_pub.publish(path)
+    
+    def publish_predicted_path(self, predicted_states: list, frame_id: str = 'odom'):
+        """发布 MPC 预测路径"""
+        if self._mpc_path_pub is None:
+            return
+            
+        if not predicted_states:
+            return
+            
+        path = Path()
+        path.header.stamp = self._node.get_clock().now().to_msg()
+        # MPC output is usually in base_link if local local trajectory, or odom if global
+        # But here the states are typically [x, y, z, ...] in the frame specific to the MPC implementation
+        # Assuming typical setup where MPC operates in map/odom or tracks local trajectory in base_link
+        # We use the passed frame_id which should come from ControlOutput
+        path.header.frame_id = frame_id
+        
+        for state in predicted_states:
+            # ACADOS state: [px, py, pz, vx, vy, vz, theta, omega]
+            if len(state) < 3:
+                continue
+                
+            pose = PoseStamped()
+            pose.header = path.header
+            pose.pose.position.x = float(state[0])
+            pose.pose.position.y = float(state[1])
+            pose.pose.position.z = float(state[2])
+            
+            # Simple orientation from theta if available (state[6])
+            if len(state) > 6:
+                theta = float(state[6])
+                pose.pose.orientation.z = np.sin(theta / 2.0)
+                pose.pose.orientation.w = np.cos(theta / 2.0)
+            else:
+                pose.pose.orientation.w = 1.0
+                
+            path.poses.append(pose)
+            
+        self._mpc_path_pub.publish(path)
     
     def publish_attitude_cmd(self, attitude_cmd: AttitudeCommand,
                              yaw_mode: int = 0, is_hovering: bool = False):

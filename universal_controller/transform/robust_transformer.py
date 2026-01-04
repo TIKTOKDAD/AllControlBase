@@ -53,6 +53,9 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         # 用于缓存上一次成功的变换，用于极短时间的平滑（可选）
         self._last_successful_transform = None
         self._lock = Lock()
+        
+        # 存储静态变换（用于测试和简单场景）
+        self._stored_transforms = {}
 
     def set_tf2_lookup_callback(self, callback):
         """注入 TF2 查找回调"""
@@ -174,6 +177,13 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         # 确定状态级别
         if fallback_duration > self.fallback_critical_limit:
             status = TransformStatus.FALLBACK_CRITICAL
+            # CRITICAL: 时间过长，强制返回空轨迹以触发安全停止
+            # 不要返回原始轨迹，因为坐标系错误会导致严重事故
+            logger.error(f"Transform fallback critical limit exceeded ({fallback_duration:.2f}s > {self.fallback_critical_limit:.2f}s). Returning EMPTY trajectory.")
+            # 返回空 points 表示无效
+            safe_traj = Trajectory(header=traj.header, points=[], velocities=None, dt_sec=traj.dt_sec)
+            return safe_traj, status
+
         elif fallback_duration > self.fallback_duration_limit:
             status = TransformStatus.FALLBACK_WARNING
         else:
@@ -218,8 +228,11 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         else:
             # 严重错误：既没有 TF2 也没有 Estimator
             if fallback_duration > 1.0: # 稍微节流日志
-                logger.error("TF2 fallback active but no state estimator available. Unable to transform trajectory correctly.")
-            return traj, TransformStatus.FALLBACK_CRITICAL
+                logger.error("TF2 fallback active but no state estimator available. Returning EMPTY trajectory.")
+            
+            # 返回空轨迹，安全第一
+            safe_traj = Trajectory(header=traj.header, points=[], velocities=None, dt_sec=traj.dt_sec)
+            return safe_traj, TransformStatus.FALLBACK_CRITICAL
 
     def get_status(self) -> Dict[str, Any]:
         """获取状态信息"""

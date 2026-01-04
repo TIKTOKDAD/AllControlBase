@@ -24,7 +24,13 @@ from controller_ros.utils.msg_availability import (
 )
 
 # 导入 universal_controller
-from universal_controller.core.data_types import ControlOutput, AttitudeCommand
+try:
+    from universal_controller.core.data_types import ControlOutput, AttitudeCommand
+except ImportError as e:
+    raise ImportError(
+        f"Critical Dependency Missing: universal_controller. "
+        f"Please install it or add it to PYTHONPATH. Error: {e}"
+    )
 
 # 导入共享模块
 from controller_ros.node.base_node import ControllerNodeBase

@@ -191,7 +191,26 @@ rostopic pub /controller/emergency_stop std_msgs/Empty "{}"
 2. 请求进入 STOPPING 状态
 3. 在诊断信息中标记 `emergency_stop=true`
 
-通过 `/controller/reset` 服务可以清除紧急停止状态。
+#### 从紧急停止恢复
+
+**重要**: 出于安全考虑，`/controller/reset` 服务**不会**清除紧急停止状态。
+
+要从紧急停止恢复，必须显式调用 `set_state` 服务：
+
+```bash
+# 恢复到正常状态 (NORMAL = 1)
+rosservice call /controller/set_state "target_state: 1"
+```
+
+恢复流程：
+1. 服务调用会记录警告日志，提醒操作员确认紧急情况已解除
+2. 控制器进入"等待数据"状态
+3. 收到新的传感器数据后才会恢复正常控制
+
+这种设计确保：
+- 紧急停止不会被意外清除（如自动重置脚本）
+- 恢复操作需要明确的人为决策
+- 恢复前有安全延迟，等待最新传感器数据
 
 ## TF2 集成
 

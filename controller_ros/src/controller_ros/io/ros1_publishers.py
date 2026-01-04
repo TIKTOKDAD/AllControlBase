@@ -3,8 +3,9 @@ ROS1 发布管理器
 
 管理所有 ROS1 发布器，与 ROS2 的 PublisherManager 接口对齐。
 """
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 import logging
+import numpy as np
 
 try:
     import rospy
@@ -108,8 +109,13 @@ class ROS1PublisherManager:
         
         # 调试路径发布器
         debug_path_topic = self._topics.get('debug_path', TOPICS_DEFAULTS['debug_path'])
-        self._path_pub = rospy.Publisher(debug_path_topic, Path, queue_size=1)
+        self._debug_path_pub = rospy.Publisher(debug_path_topic, Path, queue_size=1)
         rospy.loginfo(f"Publishing debug_path to: {debug_path_topic}")
+        
+        # MPC 预测路径发布器
+        mpc_path_topic = self._topics.get('mpc_path', '/controller/mpc_path')
+        self._mpc_path_pub = rospy.Publisher(mpc_path_topic, Path, queue_size=1)
+        rospy.loginfo(f"Publishing mpc_path to: {mpc_path_topic}")
         
         # 姿态命令发布器 (四旋翼平台)
         if self._is_quadrotor:
@@ -193,7 +199,7 @@ class ROS1PublisherManager:
         Args:
             trajectory: UC 轨迹数据
         """
-        if self._path_pub is None:
+        if self._debug_path_pub is None:
             return
         
         # 检查轨迹点是否有效
@@ -213,7 +219,47 @@ class ROS1PublisherManager:
             pose.pose.orientation.w = 1.0
             path.poses.append(pose)
         
-        self._path_pub.publish(path)
+        self._debug_path_pub.publish(path)
+    
+    def publish_predicted_path(self, predicted_states: List, frame_id: str = 'odom'):
+        """发布 MPC 预测路径
+        
+        Args:
+            predicted_states: MPC 预测的状态序列
+            frame_id: 坐标系
+        """
+        if self._mpc_path_pub is None:
+            return
+            
+        if not predicted_states:
+            return
+            
+        path = Path()
+        path.header.stamp = rospy.Time.now()
+        path.header.frame_id = frame_id
+        
+        for state in predicted_states:
+            # ACADOS state: [px, py, pz, vx, vy, vz, theta, omega]
+            if len(state) < 3:
+                continue
+                
+            pose = PoseStamped()
+            pose.header = path.header
+            pose.pose.position.x = float(state[0])
+            pose.pose.position.y = float(state[1])
+            pose.pose.position.z = float(state[2])
+            
+            # Simple orientation from theta if available (state[6])
+            if len(state) > 6:
+                theta = float(state[6])
+                pose.pose.orientation.z = np.sin(theta / 2.0)
+                pose.pose.orientation.w = np.cos(theta / 2.0)
+            else:
+                pose.pose.orientation.w = 1.0
+                
+            path.poses.append(pose)
+            
+        self._mpc_path_pub.publish(path)
     
     @property
     def output_adapter(self) -> OutputAdapter:
@@ -245,9 +291,13 @@ class ROS1PublisherManager:
             self._state_pub.unregister()
             self._state_pub = None
         
-        if self._path_pub is not None:
-            self._path_pub.unregister()
-            self._path_pub = None
+        if self._debug_path_pub is not None:
+            self._debug_path_pub.unregister()
+            self._debug_path_pub = None
+        
+        if self._mpc_path_pub is not None:
+            self._mpc_path_pub.unregister()
+            self._mpc_path_pub = None
         
         if self._attitude_pub is not None:
             self._attitude_pub.unregister()

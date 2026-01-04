@@ -147,6 +147,9 @@ class VisualizerNode:
         self._image_logged = False
         self._image_error_logged = False
         
+        # 调试计数器 (在 __init__ 中初始化，避免 hasattr 动态添加)
+        self._odom_count = 0
+        
         # 创建订阅和发布
         self._create_subscriptions()
         self._create_publishers()
@@ -195,6 +198,10 @@ class VisualizerNode:
         # 重置首次日志标志，允许重新记录
         self._image_logged = False
         self._image_error_logged = False
+        
+        # 重置调试计数器
+        self._odom_count = 0
+        
         self._ros.log_info("Visualizer node reset")
     
     def _load_default_config(self) -> Dict[str, Any]:
@@ -362,8 +369,6 @@ class VisualizerNode:
         velocity = self._velocity_adapter.from_odom(msg, timestamp)
         
         # 调试日志 - 每 50 次打印一次，显示原始值和转换后的值
-        if not hasattr(self, '_odom_count'):
-            self._odom_count = 0
         self._odom_count += 1
         if self._odom_count % 50 == 0:
             self._ros.log_info(
@@ -507,9 +512,20 @@ class VisualizerNode:
                     request = SetControllerState.Request()
                     request.target_state = 1  # NORMAL = 1
                     future = client.call_async(request)
-                    # 注意: 这是异步调用，不会阻塞
-                    # 乐观更新本地状态（假设服务调用会成功）
-                    self._data_aggregator.set_emergency_stop(False)
+                    
+                    # 添加回调处理服务响应，避免乐观更新导致状态不一致
+                    def handle_response(future_result):
+                        try:
+                            response = future_result.result()
+                            if response.success:
+                                self._ros.log_info("Resume control: success")
+                                self._data_aggregator.set_emergency_stop(False)
+                            else:
+                                self._ros.log_warn(f"Resume control failed: {response.message}")
+                        except Exception as e:
+                            self._ros.log_error(f"Resume control service error: {e}")
+                    
+                    future.add_done_callback(handle_response)
                     self._ros.log_info("Resume control request sent (async)")
                 else:
                     self._ros.log_warn(f"Service {service_name} not available")

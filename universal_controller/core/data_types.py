@@ -138,9 +138,13 @@ class Trajectory:
     # 缓存字段（不参与比较和 repr）
     _hard_velocities_cache: Optional[np.ndarray] = field(default=None, repr=False, compare=False, init=False)
     _points_matrix_cache: Optional[np.ndarray] = field(default=None, repr=False, compare=False, init=False)
-    _cache_key: Optional[tuple] = field(default=None, repr=False, compare=False, init=False)
+    _version: int = field(default=0, repr=False, compare=False, init=False)
     
     def __post_init__(self):
+        # 初始化 version 和 cache_key
+        object.__setattr__(self, '_version', 0)
+        object.__setattr__(self, '_cache_key', None)
+        
         # 验证 confidence
         if self.confidence is None or not np.isfinite(self.confidence):
             self.confidence = 0.9
@@ -159,6 +163,34 @@ class Trajectory:
                 else:
                     pad_len = len(self.points) - len(self.velocities)
                     self.velocities = np.pad(self.velocities, ((0, pad_len), (0, 0)), 'constant')
+    
+    def __setattr__(self, name: str, value: Any) -> None:
+        """
+        重写 __setattr__ 以自动处理缓存失效
+        
+        当关键属性被修改时，自动递增 version，从而使缓存失效。
+        注意: 这无法捕获 list 的原地修改 (e.g. traj.points.append)。
+        对于原地修改，用户必须手动调用 mark_dirty()。
+        """
+        if name in ('points', 'dt_sec', 'confidence', 'velocities', 'soft_enabled', 'low_speed_thresh'):
+            # 使用 object.__setattr__ 避免无限递归
+            # 安全地获取当前 version，如果尚未初始化则为 0
+            try:
+                current_ver = object.__getattribute__(self, '_version')
+            except AttributeError:
+                current_ver = 0
+            object.__setattr__(self, '_version', current_ver + 1)
+        
+        super().__setattr__(name, value)
+
+    def mark_dirty(self) -> None:
+        """
+        手动标记轨迹数据已修改
+        
+        用于在使用原地修改操作（如 points.append, points[i]=...）后
+        通知 Trajectory 更新版本号，从而使缓存失效。
+        """
+        object.__setattr__(self, '_version', self._version + 1)
     
     def validate(self, config: 'TrajectoryConfig') -> None:
         """
@@ -184,19 +216,12 @@ class Trajectory:
         return len(self.points)
     
     def _compute_cache_key(self) -> tuple:
-        """高效计算缓存键"""
-        n = len(self.points)
-        if n == 0:
-            return (0, self.dt_sec)
+        """
+        基于版本号的高效缓存键计算
         
-        p0 = self.points[0]
-        p_last = self.points[-1]
-        
-        if n > 2:
-            p_mid = self.points[n // 2]
-            return (n, p0.x, p0.y, p0.z, p_mid.x, p_mid.y, p_mid.z, p_last.x, p_last.y, p_last.z, self.dt_sec)
-        else:
-            return (n, p0.x, p0.y, p0.z, p_last.x, p_last.y, p_last.z, self.dt_sec)
+        现在基于 _version 字段，它是 O(1) 的，比原来的 O(N) 或采样方法更有性能且更健壮。
+        """
+        return (self._version, self.dt_sec)
             
     def get_points_matrix(self) -> np.ndarray:
         """获取点坐标矩阵 [N, 3]"""
@@ -234,6 +259,7 @@ class Trajectory:
         
         # 获取点矩阵 (会自动更新 _points_matrix_cache 和 _cache_key)
         points_mat = self.get_points_matrix()
+        self._cache_key = current_key # 确保 key 同步
         n_points = len(points_mat)
         
         if n_points < 2:

@@ -381,9 +381,16 @@ class ControllerNodeBase(LifecycleMixin, ABC):
                 
                 self._publishers.publish_attitude_cmd(
                     attitude_cmd,
-                    yaw_mode=self._attribute_yaw_mode if hasattr(self, '_attribute_yaw_mode') else 'velocity',
+                    yaw_mode=self._attitude_yaw_mode if hasattr(self, '_attitude_yaw_mode') else 0,
                     is_hovering=is_hovering
                 )
+        
+        # Publish MPC predicted trajectory if available
+        if 'predicted_trajectory' in cmd.extras:
+            predicted_traj = cmd.extras['predicted_trajectory']
+            if predicted_traj and self._publishers is not None:
+                # The MPC state is typically in the odom frame
+                self._publishers.publish_predicted_path(predicted_traj, frame_id='odom')
     
     def _get_yaw_mode_string(self) -> str:
         """将航向模式整数转换为字符串"""
@@ -541,7 +548,7 @@ class ControllerNodeBase(LifecycleMixin, ABC):
           捕获并记录，尝试降级或安全停止。
         """
         # Critical structural errors: Do not catch, let it crash!
-        if isinstance(error, (TypeError, AttributeError, NameError)):
+        if isinstance(error, (TypeError, AttributeError, NameError, SystemError)):
             logger.critical(f"Critical configuration or logic error detected: {error}. Crashing immediately.")
             raise error
 

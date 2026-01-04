@@ -13,7 +13,13 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 
-from universal_controller.core.data_types import ControlOutput, AttitudeCommand
+try:
+    from universal_controller.core.data_types import ControlOutput, AttitudeCommand
+except ImportError as e:
+    raise ImportError(
+        f"Critical Dependency Missing: universal_controller. "
+        f"Please install it or add it to PYTHONPATH. Error: {e}"
+    )
 
 from .base_node import ControllerNodeBase
 from ..bridge import TFBridge
@@ -151,7 +157,7 @@ class ControllerNode(ControllerNodeBase, Node):
             self._traj_msg_available = True
             self.get_logger().info(f"Subscribed to trajectory: {traj_topic}")
         except ImportError:
-            self.get_logger().error(
+            self.get_logger().fatal(
                 "=" * 60 + "\n"
                 "CRITICAL: LocalTrajectoryV4 message type not available!\n"
                 "Controller cannot work without trajectory data.\n"
@@ -162,14 +168,9 @@ class ControllerNode(ControllerNodeBase, Node):
                 "2. Source the workspace:\n"
                 "   source ~/your_ws/install/setup.bash\n"
                 "3. Restart the controller node\n"
-                "\n"
-                "If the problem persists, check:\n"
-                "- CMakeLists.txt has rosidl_generate_interfaces() for msg files\n"
-                "- package.xml has rosidl_default_generators dependency\n"
                 "=" * 60
             )
-            self._traj_sub = None
-            self._traj_msg_available = False
+            raise RuntimeError("LocalTrajectoryV4 message type not available. Node cannot start.")
         
         # 紧急停止话题订阅
         emergency_stop_topic = self._topics.get('emergency_stop', TOPICS_DEFAULTS['emergency_stop'])

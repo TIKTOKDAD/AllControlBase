@@ -22,7 +22,7 @@ def test_diagnostics_input_defaults():
     assert diag.safety_failed == False
     assert diag.current_state == ControllerState.INIT
     
-    print("✓ test_diagnostics_input_defaults passed")
+    print("[PASS] test_diagnostics_input_defaults passed")
 
 
 def test_diagnostics_input_to_dict():
@@ -58,7 +58,7 @@ def test_diagnostics_input_to_dict():
     assert d['has_valid_data'] == True
     assert d['current_state'] == ControllerState.NORMAL
     
-    print("✓ test_diagnostics_input_to_dict passed")
+    print("[PASS] test_diagnostics_input_to_dict passed")
 
 
 def test_diagnostics_input_from_dict():
@@ -93,7 +93,7 @@ def test_diagnostics_input_from_dict():
     assert diag.safety_failed == True
     assert diag.current_state == ControllerState.STOPPING
     
-    print("✓ test_diagnostics_input_from_dict passed")
+    print("[PASS] test_diagnostics_input_from_dict passed")
 
 
 def test_diagnostics_input_from_dict_with_defaults():
@@ -114,7 +114,7 @@ def test_diagnostics_input_from_dict_with_defaults():
     assert diag2.data_valid == True  # 默认值
     assert diag2.odom_timeout == False  # 默认值
     
-    print("✓ test_diagnostics_input_from_dict_with_defaults passed")
+    print("[PASS] test_diagnostics_input_from_dict_with_defaults passed")
 
 
 def test_diagnostics_input_roundtrip():
@@ -149,7 +149,7 @@ def test_diagnostics_input_roundtrip():
     assert restored.safety_failed == original.safety_failed
     assert restored.current_state == original.current_state
     
-    print("✓ test_diagnostics_input_roundtrip passed")
+    print("[PASS] test_diagnostics_input_roundtrip passed")
 
 
 if __name__ == '__main__':

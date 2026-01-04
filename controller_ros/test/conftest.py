@@ -11,8 +11,8 @@ import pytest
 import sys
 import os
 
-# 使用统一的路径管理器
-
+# 获取当前测试目录
+_test_dir = os.path.dirname(os.path.abspath(__file__))
 
 # 添加 fixtures 目录
 _fixtures_dir = os.path.join(_test_dir, 'fixtures')

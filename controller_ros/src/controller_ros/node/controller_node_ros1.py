@@ -1,13 +1,24 @@
 """
 Controller ROS1 Node
 
+.. deprecated::
+    This module is deprecated. Use scripts/controller_node.py instead.
+    This file is kept for backward compatibility but is no longer maintained.
+    The scripts/controller_node.py implementation is more complete and correct.
+
 Main node implementation for ROS1 (Noetic).
 Inherits from ControllerNodeBase for shared logic.
 
 Usage:
-    rosrun controller_ros controller_node_ros1.py
-    roslaunch controller_ros core/controller.launch
+    rosrun controller_ros controller_node.py  # Use scripts/controller_node.py instead
 """
+import warnings
+warnings.warn(
+    "controller_ros.node.controller_node_ros1 is deprecated. "
+    "Use scripts/controller_node.py instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
 from typing import Dict, Any, Optional
 import threading
 
@@ -161,17 +172,14 @@ class ControllerNodeROS1(ControllerNodeBase):
     def _odom_callback(self, msg):
         """Odometry callback"""
         self._data_manager.update_odom(msg)
-        self._notify_odom_received()
     
     def _imu_callback(self, msg):
         """IMU callback"""
         self._data_manager.update_imu(msg)
-        self._notify_imu_received()
     
     def _traj_callback(self, msg):
         """Trajectory callback"""
         self._data_manager.update_trajectory(msg)
-        self._notify_trajectory_received()
     
     def _emergency_stop_callback(self, msg):
         """Emergency stop callback"""

@@ -273,9 +273,9 @@ class CmdVelAdapter(LifecycleMixin):
             
             if is_timeout:
                 self._timeout_count += 1
-                if self._timeout_count % 100 == 1:
-                    mode = "joystick" if self._joystick_mode else "controller"
-                    rospy.logwarn_throttle(5.0, f"Command timeout ({mode} mode)")
+                # 使用 logwarn_throttle 统一节流，避免双重节流导致日志频率难以预测
+                mode = "joystick" if self._joystick_mode else "controller"
+                rospy.logwarn_throttle(5.0, f"Command timeout ({mode} mode), count={self._timeout_count}")
             
             self._publish_twist(linear_x, angular_z)
         except Exception as e:
@@ -311,8 +311,11 @@ class CmdVelAdapter(LifecycleMixin):
         
         if abs(linear_x - original_linear) > 0.001 or abs(angular_z - original_angular) > 0.001:
             self._velocity_clamped_count += 1
-            if self._velocity_clamped_count % 100 == 1:
-                rospy.logwarn(f"Velocity clamped: vx {original_linear:.2f}->{linear_x:.2f}")
+            # 使用 logwarn_throttle 统一节流，与 timeout 日志保持一致
+            rospy.logwarn_throttle(
+                5.0,
+                f"Velocity clamped: vx {original_linear:.2f}->{linear_x:.2f}, count={self._velocity_clamped_count}"
+            )
         
         with self._lock:
             self._last_linear_x = linear_x

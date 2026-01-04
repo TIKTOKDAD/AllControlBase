@@ -42,7 +42,7 @@ def test_mpc_basic_compute():
     assert cmd.frame_id == 'base_link'
     
     mpc.shutdown()
-    print("✓ test_mpc_basic_compute passed")
+    print("[PASS] test_mpc_basic_compute passed")
 
 
 def test_mpc_velocity_constraints():
@@ -67,7 +67,7 @@ def test_mpc_velocity_constraints():
     assert v_horizontal <= 1.5, f"Velocity should be limited, got {v_horizontal}"
     
     mpc.shutdown()
-    print("✓ test_mpc_velocity_constraints passed")
+    print("[PASS] test_mpc_velocity_constraints passed")
 
 
 def test_mpc_horizon_adjustment():
@@ -95,7 +95,7 @@ def test_mpc_horizon_adjustment():
     assert mpc.horizon == 20
     
     mpc.shutdown()
-    print("✓ test_mpc_horizon_adjustment passed")
+    print("[PASS] test_mpc_horizon_adjustment passed")
 
 
 def test_mpc_health_metrics():
@@ -121,7 +121,7 @@ def test_mpc_health_metrics():
     assert 'last_solve_time_ms' in metrics
     
     mpc.shutdown()
-    print("✓ test_mpc_health_metrics passed")
+    print("[PASS] test_mpc_health_metrics passed")
 
 
 def test_mpc_fallback_solver():
@@ -146,7 +146,7 @@ def test_mpc_fallback_solver():
     assert cmd.success == False
     
     mpc.shutdown()
-    print("✓ test_mpc_fallback_solver passed")
+    print("[PASS] test_mpc_fallback_solver passed")
 
 
 def test_pure_pursuit_basic():
@@ -170,7 +170,7 @@ def test_pure_pursuit_basic():
     assert cmd.frame_id == 'base_link'
     
     pp.shutdown()
-    print("✓ test_pure_pursuit_basic passed")
+    print("[PASS] test_pure_pursuit_basic passed")
 
 
 def test_pure_pursuit_lookahead():
@@ -194,7 +194,7 @@ def test_pure_pursuit_lookahead():
     assert lookahead_high <= 3.0  # max_lookahead
     
     pp.shutdown()
-    print("✓ test_pure_pursuit_lookahead passed")
+    print("[PASS] test_pure_pursuit_lookahead passed")
 
 
 def test_pure_pursuit_omni():
@@ -217,7 +217,7 @@ def test_pure_pursuit_omni():
     # 全向车可以有 vy
     
     pp.shutdown()
-    print("✓ test_pure_pursuit_omni passed")
+    print("[PASS] test_pure_pursuit_omni passed")
 
 
 def test_pure_pursuit_3d():
@@ -240,7 +240,7 @@ def test_pure_pursuit_3d():
     # 3D 控制器可以有 vz
     
     pp.shutdown()
-    print("✓ test_pure_pursuit_3d passed")
+    print("[PASS] test_pure_pursuit_3d passed")
 
 
 def test_pure_pursuit_heading_modes():
@@ -277,7 +277,7 @@ def test_pure_pursuit_heading_modes():
     assert cmd2 is not None
     
     pp2.shutdown()
-    print("✓ test_pure_pursuit_heading_modes passed")
+    print("[PASS] test_pure_pursuit_heading_modes passed")
 
 
 def test_tracker_velocity_smoothing():
@@ -304,7 +304,7 @@ def test_tracker_velocity_smoothing():
     assert cmd2 is not None
     
     pp.shutdown()
-    print("✓ test_tracker_velocity_smoothing passed")
+    print("[PASS] test_tracker_velocity_smoothing passed")
 
 
 def test_tracker_empty_trajectory():
@@ -342,7 +342,7 @@ def test_tracker_empty_trajectory():
     
     mpc.shutdown()
     pp.shutdown()
-    print("✓ test_tracker_empty_trajectory passed")
+    print("[PASS] test_tracker_empty_trajectory passed")
 
 
 def test_tracker_performance():
@@ -379,14 +379,15 @@ def test_tracker_performance():
     
     mpc.shutdown()
     pp.shutdown()
-    print(f"✓ test_tracker_performance passed (MPC={mpc_time:.2f}ms, PP={pp_time:.2f}ms)")
+    print(f"[PASS] test_tracker_performance passed (MPC={mpc_time:.2f}ms, PP={pp_time:.2f}ms)")
+    return mpc_time, pp_time
 
 
 if __name__ == '__main__':
     print("=" * 60)
     print("Trajectory Tracker Tests")
     print("=" * 60)
-    
+
     print("\n[MPC Controller Tests]")
     print("-" * 40)
     test_mpc_basic_compute()
@@ -394,7 +395,7 @@ if __name__ == '__main__':
     test_mpc_horizon_adjustment()
     test_mpc_health_metrics()
     test_mpc_fallback_solver()
-    
+
     print("\n[Pure Pursuit Controller Tests]")
     print("-" * 40)
     test_pure_pursuit_basic()
@@ -402,13 +403,13 @@ if __name__ == '__main__':
     test_pure_pursuit_omni()
     test_pure_pursuit_3d()
     test_pure_pursuit_heading_modes()
-    
+
     print("\n[Common Tests]")
     print("-" * 40)
     test_tracker_velocity_smoothing()
     test_tracker_empty_trajectory()
-    test_tracker_performance()
-    
+    mpc_time, pp_time = test_tracker_performance()
+
     print("\n" + "=" * 60)
-    print("✅ ALL TRACKER TESTS PASSED")
+    print("[PASS] ALL TRACKER TESTS PASSED")
     print("=" * 60)

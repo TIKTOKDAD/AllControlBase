@@ -171,7 +171,6 @@ def main():
   from universal_controller import ControllerManager, DEFAULT_CONFIG
   manager = ControllerManager(DEFAULT_CONFIG.copy())
   manager.initialize_default_components()
-  manager.initialize_default_components()
   data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
   cmd = manager.update(odom, trajectory, data_ages)
         """

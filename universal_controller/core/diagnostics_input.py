@@ -9,7 +9,7 @@ from .data_types import MPCHealthStatus
 from .enums import ControllerState
 
 
-@dataclass
+@dataclass(slots=True)
 class DiagnosticsInput:
     """
     诊断输入数据类

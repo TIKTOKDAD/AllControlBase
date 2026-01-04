@@ -1,6 +1,6 @@
 # 通用控制器 (Universal Controller)
 
-> 版本: v3.18.1 | 日期: 2024-12-25
+> 版本: v3.19.1 | 日期: 2026-01-04
 
 基于 MPC 的通用轨迹跟踪控制器，支持多平台部署。
 
@@ -300,6 +300,9 @@ Dashboard 提供实时监控界面，显示：
 
 ## 版本历史
 
+- **v3.19.1** - Bug 修复:
+  - 修复 `VelocitySmoother.smooth()` 方法缺少 `extras` 字段复制的问题
+  - 使用速度平滑时 MPC 的 `predicted_trajectory` 和姿态控制器的 `yaw_mode` 不再丢失
 - **v3.18.1** - 架构清理与模块职责统一:
   - 删除空的 `visualization/` 目录，避免与 `dashboard/` 和 `controller_ros/visualizer/` 混淆
   - 简化 `mock/` 模块，仅保留最小向后兼容层，标注将在 v4.0 移除

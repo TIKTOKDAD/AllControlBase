@@ -124,6 +124,7 @@ class PurePursuitController(ITrajectoryTracker):
         self._current_position: Optional[np.ndarray] = None
         self._manual_heading: Optional[float] = None
         self._is_shutdown = False
+        self._last_closest_idx = 0
         
         # 速度平滑器
         self._velocity_smoother = VelocitySmoother(
@@ -149,6 +150,7 @@ class PurePursuitController(ITrajectoryTracker):
         self._last_turn_direction = None
         self._current_position = None
         self._manual_heading = None
+        self._last_closest_idx = 0
         # 注意：不重置 _is_shutdown，因为 reset 不应该改变关闭状态
     
     def shutdown(self) -> None:
@@ -491,23 +493,75 @@ class PurePursuitController(ITrajectoryTracker):
     
     def _find_lookahead_point(self, points: List[Point3D], px: float, py: float, 
                               lookahead: float) -> Tuple[Optional[Point3D], int]:
-        min_dist = float('inf')
-        closest_idx = 0
-        for i, p in enumerate(points):
-            dist = np.sqrt((p.x - px)**2 + (p.y - py)**2)
-            if dist < min_dist:
-                min_dist = dist
-                closest_idx = i
+        n_points = len(points)
+        if n_points == 0:
+            return None, 0
         
-        for i in range(closest_idx, len(points)):
+        # 优化策略：基于上一次的索引进行局部搜索
+        # 假设机器人通常沿着轨迹向前移动，或者进行小的倒车
+        
+        # 1. 索引边界检查与重置
+        if self._last_closest_idx >= n_points:
+            self._last_closest_idx = 0
+            
+        start_idx = self._last_closest_idx
+        
+        # 2. 启发式检查：如果当前最优索引对应的点距离机器人过远（> 5m），
+        # 或者 0 号点比当前点明显更近（重置），则回退到 0 开始
+        # 这种启发式有助于处理轨迹重置或跳变
+        dist_current = (points[start_idx].x - px)**2 + (points[start_idx].y - py)**2
+        dist_start = (points[0].x - px)**2 + (points[0].y - py)**2
+        
+        # 如果起点显著更近 (bias factor 0.8)，或者当前点太远 (> 25m^2)，重置搜索
+        if dist_start < dist_current * 0.8 or dist_current > 25.0:
+            start_idx = 0
+            dist_current = dist_start
+        
+        best_idx = start_idx
+        min_dist_sq = dist_current
+        
+        # 3. 局部双向搜索 (Local Bidirectional Search)
+        # 向前搜索
+        curr = start_idx + 1
+        while curr < n_points:
+            d_sq = (points[curr].x - px)**2 + (points[curr].y - py)**2
+            if d_sq < min_dist_sq:
+                min_dist_sq = d_sq
+                best_idx = curr
+                curr += 1
+            else:
+                # 距离开始增加，停止搜索 (凸性假设)
+                # 为了鲁棒性，多看几个点？这里假设轨迹平滑，直接停止通常足够
+                break
+        
+        # 只有在没有向前搜索或者向前搜索立即停止时，才尝试向后搜索
+        # 如果向前也没找到更好的，可能是已经在局部最小值，或者需要向后
+        if best_idx == start_idx and start_idx > 0:
+            curr = start_idx - 1
+            while curr >= 0:
+                d_sq = (points[curr].x - px)**2 + (points[curr].y - py)**2
+                if d_sq < min_dist_sq:
+                    min_dist_sq = d_sq
+                    best_idx = curr
+                    curr -= 1
+                else:
+                    break
+        
+        # 更新状态
+        self.closest_idx = best_idx # Store for debug/vis if needed
+        self._last_closest_idx = best_idx
+        
+        # 4. 查找 Lookahead Point (从最近点开始向前)
+        lookahead_sq = lookahead * lookahead
+        
+        # 通常 lookahead point 就在最近点前面几个点
+        for i in range(best_idx, n_points):
             p = points[i]
-            dist = np.sqrt((p.x - px)**2 + (p.y - py)**2)
-            if dist >= lookahead:
+            d_sq = (p.x - px)**2 + (p.y - py)**2
+            if d_sq >= lookahead_sq:
                 return p, i
         
-        if len(points) > 0:
-            return points[-1], len(points) - 1
-        return None, 0
+        return points[-1], n_points - 1
     
     def _compute_target_velocity(self, trajectory: Trajectory, target_idx: int, 
                                   alpha: float = 1.0) -> float:

@@ -46,7 +46,8 @@ from ..core.interfaces import (
 )
 from ..core.data_types import (
     Trajectory, ControlOutput, ConsistencyResult, EstimatorOutput,
-    TimeoutStatus, DiagnosticsV2, Header, Odometry, Imu, AttitudeCommand
+    TimeoutStatus, DiagnosticsV2, Header, Odometry, Imu, AttitudeCommand,
+    TrajectoryConfig
 )
 from ..core.enums import ControllerState, PlatformType
 from ..core.diagnostics_input import DiagnosticsInput
@@ -110,6 +111,12 @@ class ControllerManager:
         
         # 配置验证
         if validate_config:
+            # 1. 结构验证 (Schema Validation) - 确保类型正确
+            # 这通常是致命错误，因此默认抛出异常 (Crash Early)
+            from .config_validator import ConfigValidator
+            ConfigValidator.validate(self.config)
+            
+            # 2. 逻辑验证 (Logical Validation) - 确保数值合理
             self._validate_config(strict_mode)
         
         # 加载 TrajectoryConfig (不再使用全局 TrajectoryDefaults)
@@ -469,8 +476,7 @@ class ControllerManager:
             state, transformed_traj, consistency, mpc_cmd)
         
         # 9. 计算跟踪误差和质量评估
-        self._last_tracking_error = self._compute_tracking_error(state, transformed_traj)
-        self._last_tracking_quality = self._compute_tracking_quality(self._last_tracking_error)
+        self._update_tracking_metrics(state, transformed_traj)
         
         # 10. 安全检查
         cmd = self._apply_safety_check(state, cmd, diagnostics)
@@ -486,6 +492,17 @@ class ControllerManager:
             state_output, current_timeout_status, tf2_critical, cmd)
         
         # 14. 运行额外处理器 (Processors)
+        self._run_processors(state, cmd)
+        
+        return cmd
+
+    def _update_tracking_metrics(self, state: np.ndarray, transformed_traj: Trajectory) -> None:
+        """更新跟踪误差和质量评估指标"""
+        self._last_tracking_error = self._compute_tracking_error(state, transformed_traj)
+        self._last_tracking_quality = self._compute_tracking_quality(self._last_tracking_error)
+
+    def _run_processors(self, state: np.ndarray, cmd: ControlOutput) -> None:
+        """运行额外处理器"""
         # 将解耦的平台特定逻辑（如姿态控制）作为处理器运行
         for processor in self.processors:
             try:
@@ -494,8 +511,6 @@ class ControllerManager:
                     cmd.extras.update(extra_result)
             except Exception as e:
                 logger.error(f"Processor {processor.__class__.__name__} failed: {e}")
-        
-        return cmd
 
     def get_timeout_status(self) -> TimeoutStatus:
         """获取当前超时状态 (供外部查询)"""
@@ -980,10 +995,6 @@ class ControllerManager:
     def get_tracking_quality(self) -> Optional[Dict[str, Any]]:
         """获取最新的跟踪质量评估结果"""
         return self._last_tracking_quality
-    
-    def get_timeout_status(self) -> TimeoutStatus:
-        """获取超时状态"""
-        return self.timeout_monitor.check()
     
     def get_state(self) -> ControllerState:
         return self._last_state

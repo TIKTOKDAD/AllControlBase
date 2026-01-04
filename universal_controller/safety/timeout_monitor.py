@@ -50,9 +50,6 @@ class TimeoutMonitor:
         # 记录监控器创建时间，用于绝对启动超时检测
         self._creation_time: float = get_monotonic_time()
         self._startup_time: Optional[float] = None
-        self._last_odom_time: Optional[float] = None
-        self._last_traj_time: Optional[float] = None
-        self._last_imu_time: Optional[float] = None
         self._traj_timeout_start: Optional[float] = None
     
     @property

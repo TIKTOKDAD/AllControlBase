@@ -94,7 +94,8 @@ class VelocitySmoother:
             frame_id=cmd.frame_id,
             success=cmd.success,
             solve_time_ms=cmd.solve_time_ms,
-            health_metrics=cmd.health_metrics.copy() if cmd.health_metrics else {}
+            health_metrics=cmd.health_metrics.copy() if cmd.health_metrics else {},
+            extras=cmd.extras.copy() if cmd.extras else {}
         )
     
     def smooth_to_stop(self, last_cmd: Optional[ControlOutput], 
