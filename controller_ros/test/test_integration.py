@@ -56,6 +56,7 @@ def test_import_controller_ros_bridge():
 
 def test_full_integration_pipeline():
     """测试完整的集成管道"""
+    import time
     from universal_controller.config.default_config import DEFAULT_CONFIG
     from universal_controller.tests.fixtures import create_test_odom, create_test_trajectory
     from controller_ros.bridge.controller_bridge import ControllerBridge
@@ -71,7 +72,9 @@ def test_full_integration_pipeline():
     trajectory = create_test_trajectory(soft_enabled=True)
     
     # 3. 执行控制更新
-    cmd = bridge.update(odom, trajectory)
+    current_time = time.time()
+    data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+    cmd = bridge.update(current_time, odom, trajectory, data_ages)
     
     assert cmd is not None
     assert hasattr(cmd, 'vx')
@@ -121,6 +124,7 @@ def test_adapter_data_flow():
 
 def test_platform_specific_output():
     """测试不同平台的输出"""
+    import time
     from universal_controller.config.default_config import DEFAULT_CONFIG
     from universal_controller.tests.fixtures import create_test_odom, create_test_trajectory
     from controller_ros.bridge.controller_bridge import ControllerBridge
@@ -141,8 +145,10 @@ def test_platform_specific_output():
         
         odom = create_test_odom(vx=1.0, vy=0.5)
         trajectory = create_test_trajectory()
-        
-        cmd = bridge.update(odom, trajectory)
+
+        current_time = time.time()
+        data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+        cmd = bridge.update(current_time, odom, trajectory, data_ages)
         
         assert cmd.frame_id == expected['expected_frame'], \
             f"Platform {platform}: expected frame {expected['expected_frame']}, got {cmd.frame_id}"
@@ -251,6 +257,7 @@ def test_trajectory_mode_mapping():
 
 def test_diagnostics_callback():
     """测试诊断回调功能"""
+    import time
     from universal_controller.config.default_config import DEFAULT_CONFIG
     from universal_controller.tests.fixtures import create_test_odom, create_test_trajectory
     from controller_ros.bridge.controller_bridge import ControllerBridge
@@ -267,9 +274,11 @@ def test_diagnostics_callback():
     
     odom = create_test_odom(vx=1.0)
     trajectory = create_test_trajectory()
+    current_time = time.time()
     
-    for _ in range(5):
-        bridge.update(odom, trajectory)
+    for i in range(5):
+        data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+        bridge.update(current_time + i * 0.02, odom, trajectory, data_ages)
     
     # 验证回调被调用
     assert len(callback_data) >= 5, f"Callback should be called at least 5 times, got {len(callback_data)}"
@@ -314,9 +323,9 @@ def test_tf2_injection_mechanism():
     # 注入回调
     bridge.manager.coord_transformer.set_tf2_lookup_callback(mock_tf2_lookup)
     
-    # 验证回调已设置
+    # 验证回调已设置 - 检查 tf2_available 而不是 tf2_injected
     status = bridge.manager.coord_transformer.get_status()
-    assert status['tf2_injected'] == True
+    assert status['tf2_available'] == True, f"TF2 should be available after injection, got {status}"
     
     bridge.shutdown()
     print("✓ TF2 injection mechanism verified")

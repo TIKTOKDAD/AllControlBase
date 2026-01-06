@@ -115,6 +115,7 @@ class TestTrajectoryAdapterEdgeCases:
     def test_single_point_trajectory(self):
         """测试单点轨迹"""
         from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+        import numpy as np
         
         adapter = TrajectoryAdapter(DEFAULT_CONFIG)
         
@@ -124,7 +125,13 @@ class TestTrajectoryAdapterEdgeCases:
         uc_traj = adapter.to_uc(ros_msg)
         
         assert len(uc_traj.points) == 1
-        assert uc_traj.points[0].x == 1.0
+        # points 现在是 numpy 数组，使用索引访问
+        if isinstance(uc_traj.points, np.ndarray):
+            assert uc_traj.points[0, 0] == 1.0  # x
+            assert uc_traj.points[0, 1] == 2.0  # y
+        else:
+            # Legacy Point3D 列表格式
+            assert uc_traj.points[0].x == 1.0
     
     def test_velocity_dimension_mismatch(self):
         """测试速度维度不匹配"""
@@ -145,7 +152,7 @@ class TestTrajectoryAdapterEdgeCases:
         assert uc_traj is not None
     
     def test_more_velocities_than_points(self):
-        """测试速度点多于位置点"""
+        """测试速度点多于位置点 - 严格校验策略下丢弃速度数据"""
         from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
         
         adapter = TrajectoryAdapter(DEFAULT_CONFIG)
@@ -157,11 +164,11 @@ class TestTrajectoryAdapterEdgeCases:
         
         uc_traj = adapter.to_uc(ros_msg)
         
-        # 速度应该被截断到与位置点数相同
-        assert uc_traj.velocities.shape[0] == 3
+        # 严格校验: 数量不匹配时丢弃速度数据
+        assert uc_traj.velocities is None or not uc_traj.soft_enabled
     
     def test_fewer_velocities_than_points(self):
-        """测试速度点少于位置点"""
+        """测试速度点少于位置点 - 严格校验策略下丢弃速度数据"""
         from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
         
         adapter = TrajectoryAdapter(DEFAULT_CONFIG)
@@ -173,8 +180,26 @@ class TestTrajectoryAdapterEdgeCases:
         
         uc_traj = adapter.to_uc(ros_msg)
         
-        # 速度应该被填充到与位置点数相同
-        assert uc_traj.velocities.shape[0] == 10
+        # 严格校验: 数量不匹配时丢弃速度数据，禁用 soft 模式
+        assert uc_traj.velocities is None or not uc_traj.soft_enabled
+    
+    def test_exact_velocity_count_match(self):
+        """测试速度点数与位置点数完全匹配"""
+        from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+        
+        adapter = TrajectoryAdapter(DEFAULT_CONFIG)
+        
+        ros_msg = MockTrajectory()
+        ros_msg.points = [MockPoint(i * 0.1, 0, 0) for i in range(5)]
+        ros_msg.velocities_flat = [0.5, 0.0, 0.0, 0.0] * 5  # 正好 5 个速度点
+        ros_msg.soft_enabled = True
+        
+        uc_traj = adapter.to_uc(ros_msg)
+        
+        # 数量匹配时保留速度数据
+        assert uc_traj.velocities is not None
+        assert uc_traj.velocities.shape[0] == 5
+        assert uc_traj.soft_enabled
     
     def test_empty_frame_id(self):
         """测试空 frame_id 会抛出异常 (安全性改进)"""
@@ -374,143 +399,71 @@ class TestOutputAdapterEdgeCases:
         assert 'attitude_cmd' in uc_cmd.extras
 
 
-class TestVelocityDecayFilling:
-    """测试速度衰减填充 (问题 8 补充测试)"""
+class TestStrictVelocityValidation:
+    """测试严格速度校验策略"""
     
-    def test_velocity_decay_with_large_padding(self):
-        """测试大量填充点时的速度衰减行为"""
+    def test_velocity_mismatch_disables_soft(self):
+        """速度数量不匹配时禁用 soft 模式"""
         from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
         
         adapter = TrajectoryAdapter(DEFAULT_CONFIG)
         
-        ros_msg = MockTrajectory()
-        # 100 个位置点，但只有 5 个速度点
-        ros_msg.points = [MockPoint(i * 0.1, 0, 0) for i in range(100)]
-        ros_msg.velocities_flat = [1.0, 0.0, 0.0, 0.0] * 5  # 只有 5 个速度点
-        ros_msg.soft_enabled = True
-        ros_msg.mode = 0  # MODE_TRACK
-        
-        uc_traj = adapter.to_uc(ros_msg)
-        
-        # 验证填充后的速度数组维度正确
-        assert uc_traj.velocities is not None
-        assert uc_traj.velocities.shape == (100, 4)
-        
-        # 验证前 5 个速度点保持原值
-        for i in range(5):
-            assert np.isclose(uc_traj.velocities[i, 0], 1.0)
-        
-        # 验证填充点的速度是衰减的
-        # 第 6 个点 (index 5) 应该接近原速度
-        assert uc_traj.velocities[5, 0] > 0.9
-        
-        # 最后一个点的速度应该接近零但不为零
-        last_vel_magnitude = np.sqrt(np.sum(uc_traj.velocities[-1, :3]**2))
-        assert last_vel_magnitude > 0  # 不为零
-        assert last_vel_magnitude < 0.1  # 接近零
-    
-    def test_velocity_decay_is_monotonic(self):
-        """测试速度衰减是单调递减的"""
-        from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
-        
-        adapter = TrajectoryAdapter(DEFAULT_CONFIG)
-        
-        ros_msg = MockTrajectory()
-        ros_msg.points = [MockPoint(i * 0.1, 0, 0) for i in range(50)]
-        ros_msg.velocities_flat = [2.0, 0.0, 0.0, 0.0] * 10  # 10 个速度点
-        ros_msg.soft_enabled = True
-        ros_msg.mode = 0
-        
-        uc_traj = adapter.to_uc(ros_msg)
-        
-        # 验证填充部分的速度是单调递减的
-        for i in range(10, 49):  # 从第 11 个点到倒数第二个点
-            current_speed = np.sqrt(np.sum(uc_traj.velocities[i, :3]**2))
-            next_speed = np.sqrt(np.sum(uc_traj.velocities[i+1, :3]**2))
-            assert current_speed >= next_speed, f"Speed at {i} ({current_speed}) < speed at {i+1} ({next_speed})"
-    
-    def test_velocity_decay_with_small_velocity(self):
-        """测试小速度时使用零填充"""
-        from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
-        from universal_controller.core.data_types import TrajectoryDefaults
-        
-        adapter = TrajectoryAdapter(DEFAULT_CONFIG)
-        
-        # 使用小于阈值的速度
-        small_vel = TrajectoryDefaults.velocity_decay_threshold * 0.5
-        
-        ros_msg = MockTrajectory()
-        ros_msg.points = [MockPoint(i * 0.1, 0, 0) for i in range(20)]
-        ros_msg.velocities_flat = [small_vel, 0.0, 0.0, 0.0] * 5
-        ros_msg.soft_enabled = True
-        ros_msg.mode = 0
-        
-        uc_traj = adapter.to_uc(ros_msg)
-        
-        # 填充部分应该是零速度
-        for i in range(5, 20):
-            assert np.allclose(uc_traj.velocities[i, :], 0.0)
-    
-    def test_velocity_zero_fill_for_stop_mode(self):
-        """测试停止模式使用零填充"""
-        from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
-        
-        adapter = TrajectoryAdapter(DEFAULT_CONFIG)
-        
-        ros_msg = MockTrajectory()
-        ros_msg.points = [MockPoint(i * 0.1, 0, 0) for i in range(30)]
-        ros_msg.velocities_flat = [1.0, 0.0, 0.0, 0.0] * 10
-        ros_msg.soft_enabled = True
-        ros_msg.mode = 1  # MODE_STOP
-        
-        uc_traj = adapter.to_uc(ros_msg)
-        
-        # 停止模式下，填充部分应该是零速度
-        for i in range(10, 30):
-            assert np.allclose(uc_traj.velocities[i, :], 0.0)
-    
-    def test_velocity_decay_preserves_direction(self):
-        """测试速度衰减保持方向"""
-        from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
-        
-        adapter = TrajectoryAdapter(DEFAULT_CONFIG)
-        
-        # 使用有方向的速度 (vx=1, vy=1)
-        ros_msg = MockTrajectory()
-        ros_msg.points = [MockPoint(i * 0.1, i * 0.1, 0) for i in range(20)]
-        ros_msg.velocities_flat = [1.0, 1.0, 0.0, 0.5] * 5  # 有 vy 和 wz
-        ros_msg.soft_enabled = True
-        ros_msg.mode = 0
-        
-        uc_traj = adapter.to_uc(ros_msg)
-        
-        # 验证填充点的速度方向与最后一个原始速度点一致
-        last_original = uc_traj.velocities[4, :]
-        for i in range(5, 20):
-            filled = uc_traj.velocities[i, :]
-            # 检查方向一致性 (通过检查各分量的符号)
-            for j in range(4):
-                if abs(last_original[j]) > 1e-6 and abs(filled[j]) > 1e-6:
-                    assert np.sign(last_original[j]) == np.sign(filled[j])
-    
-    def test_velocity_padding_count_boundary(self):
-        """测试填充数量边界情况"""
-        from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
-        
-        adapter = TrajectoryAdapter(DEFAULT_CONFIG)
-        
-        # 测试只需要填充 1 个点的情况
         ros_msg = MockTrajectory()
         ros_msg.points = [MockPoint(i * 0.1, 0, 0) for i in range(10)]
-        ros_msg.velocities_flat = [1.0, 0.0, 0.0, 0.0] * 9  # 9 个速度点，需要填充 1 个
+        ros_msg.velocities_flat = [1.0, 0.0, 0.0, 0.0] * 5  # 只有 5 个速度点
         ros_msg.soft_enabled = True
-        ros_msg.mode = 0
         
         uc_traj = adapter.to_uc(ros_msg)
         
+        # 严格校验: 不匹配时禁用 soft
+        assert not uc_traj.soft_enabled or uc_traj.velocities is None
+    
+    def test_exact_match_preserves_soft(self):
+        """速度数量完全匹配时保留 soft 模式"""
+        from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+        
+        adapter = TrajectoryAdapter(DEFAULT_CONFIG)
+        
+        ros_msg = MockTrajectory()
+        ros_msg.points = [MockPoint(i * 0.1, 0, 0) for i in range(10)]
+        ros_msg.velocities_flat = [1.0, 0.0, 0.0, 0.0] * 10  # 正好 10 个
+        ros_msg.soft_enabled = True
+        
+        uc_traj = adapter.to_uc(ros_msg)
+        
+        assert uc_traj.soft_enabled
+        assert uc_traj.velocities is not None
         assert uc_traj.velocities.shape == (10, 4)
-        # 最后一个填充点的衰减因子 = 1/2 = 0.5
-        assert np.isclose(uc_traj.velocities[9, 0], 0.5, atol=0.01)
+    
+    def test_empty_velocities_disables_soft(self):
+        """空速度数组禁用 soft 模式"""
+        from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+        
+        adapter = TrajectoryAdapter(DEFAULT_CONFIG)
+        
+        ros_msg = MockTrajectory()
+        ros_msg.points = [MockPoint(i * 0.1, 0, 0) for i in range(5)]
+        ros_msg.velocities_flat = []
+        ros_msg.soft_enabled = True
+        
+        uc_traj = adapter.to_uc(ros_msg)
+        
+        assert not uc_traj.soft_enabled
+    
+    def test_invalid_velocity_dimension_disables_soft(self):
+        """速度维度不是 4 的倍数时禁用 soft 模式"""
+        from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+        
+        adapter = TrajectoryAdapter(DEFAULT_CONFIG)
+        
+        ros_msg = MockTrajectory()
+        ros_msg.points = [MockPoint(i * 0.1, 0, 0) for i in range(5)]
+        ros_msg.velocities_flat = [1.0, 0.0, 0.0]  # 3 个元素，不是 4 的倍数
+        ros_msg.soft_enabled = True
+        
+        uc_traj = adapter.to_uc(ros_msg)
+        
+        assert not uc_traj.soft_enabled
 
 
 if __name__ == '__main__':

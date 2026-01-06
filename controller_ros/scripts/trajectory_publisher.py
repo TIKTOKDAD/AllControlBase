@@ -20,7 +20,7 @@ Topics:
 Note:
     - Input trajectory coordinates assumed in base_link frame
     - Differential drive only uses x, y coordinates
-    - Configuration parameters are read from TrajectoryDefaults (Single Source of Truth)
+    - Configuration parameters are read from TrajectoryConfig
 """
 
 import rospy
@@ -32,8 +32,7 @@ from std_msgs.msg import Header, Float32MultiArray
 from controller_ros.utils.param_loader import ParamLoader, TOPICS_DEFAULTS
 from controller_ros.lifecycle import LifecycleMixin
 
-# Import TrajectoryDefaults for configuration
-from universal_controller.core.data_types import TrajectoryDefaults
+from universal_controller.core.data_types import TrajectoryConfig
 
 try:
     from controller_ros.msg import LocalTrajectoryV4
@@ -66,8 +65,7 @@ class TrajectoryPublisher(LifecycleMixin):
     - Configurable via ~republish_rate and ~enable_republish params
     
     Configuration:
-    - All trajectory parameters are read from TrajectoryDefaults
-    - TrajectoryDefaults.configure() is called during initialization
+    - All trajectory parameters are read from TrajectoryConfig instance
     
     Lifecycle:
     - Implements ILifecycleComponent via LifecycleMixin
@@ -84,23 +82,17 @@ class TrajectoryPublisher(LifecycleMixin):
         config = ParamLoader.load(node=None, validate=False)
         topics = ParamLoader.get_topics(node=None)
         
-        # Configure TrajectoryDefaults with loaded config
-        TrajectoryDefaults.configure(config)
+        # Create TrajectoryConfig instance
+        self._traj_config = TrajectoryConfig.from_dict(config)
         
-        # Get configuration from TrajectoryDefaults (Single Source of Truth)
-        transform_config = config.get('transform', {})
-        
-        # dt_sec from TrajectoryDefaults
-        self._dt = TrajectoryDefaults.dt_sec
+        # Get configuration from TrajectoryConfig
+        self._dt = self._traj_config.dt_sec
         self._confidence = rospy.get_param('~confidence', 1.0)
         self._soft_enabled = rospy.get_param('~soft_enabled', False)
         
         # Frame ID: use transform.source_frame for consistency
         private_frame = rospy.get_param('~frame_id', None)
-        if private_frame:
-            self._frame_id = private_frame
-        else:
-            self._frame_id = TrajectoryDefaults.default_frame_id
+        self._frame_id = private_frame or self._traj_config.default_frame_id
         
         # Topics: use unified topic configuration
         self._input_topic = rospy.get_param('~input_topic', '/waypoint')
@@ -405,8 +397,8 @@ class StopTrajectoryPublisher:
         config = ParamLoader.load(node=None, validate=False)
         topics = ParamLoader.get_topics(node=None)
         
-        # Configure TrajectoryDefaults
-        TrajectoryDefaults.configure(config)
+        # Create TrajectoryConfig instance
+        self._traj_config = TrajectoryConfig.from_dict(config)
         
         self._output_topic = rospy.get_param(
             '~output_topic',
@@ -414,7 +406,7 @@ class StopTrajectoryPublisher:
         )
         
         private_frame = rospy.get_param('~frame_id', None)
-        self._frame_id = private_frame or TrajectoryDefaults.default_frame_id
+        self._frame_id = private_frame or self._traj_config.default_frame_id
         
         self._pub = rospy.Publisher(self._output_topic, LocalTrajectoryV4, queue_size=1)
         rospy.sleep(0.5)
@@ -429,7 +421,7 @@ class StopTrajectoryPublisher:
         msg.points = [Point(x=0.0, y=0.0, z=0.0)]
         msg.velocities_flat = []
         msg.soft_enabled = False
-        msg.dt_sec = TrajectoryDefaults.dt_sec
+        msg.dt_sec = self._traj_config.dt_sec
         msg.confidence = 1.0
         
         self._pub.publish(msg)

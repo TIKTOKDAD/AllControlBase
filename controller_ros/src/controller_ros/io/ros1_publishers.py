@@ -2,10 +2,17 @@
 ROS1 发布管理器
 
 管理所有 ROS1 发布器，与 ROS2 的 PublisherManager 接口对齐。
+优化说明:
+- 修复了 Numpy 数组属性访问导致的崩溃问题 (Critical Bug Fix)
+- 引入了异步可视化发布线程，避免阻塞控制主循环 (High Performance)
 """
 from typing import Dict, Any, Optional, Callable, List
 import logging
+import threading
+import queue
+import time
 import numpy as np
+import math
 
 try:
     import rospy
@@ -37,7 +44,7 @@ class ROS1PublisherManager:
     职责:
     - 创建和管理所有 ROS1 发布器
     - 发布统一控制命令和诊断
-    - 与 ROS2 的 PublisherManager 接口对齐
+    - 异步发布可视化消息 (Debug Path)
     """
     
     def __init__(self, topics: Dict[str, str],
@@ -47,13 +54,6 @@ class ROS1PublisherManager:
                  is_quadrotor: bool = False):
         """
         初始化发布管理器
-        
-        Args:
-            topics: 话题配置字典
-            default_frame_id: 默认输出坐标系
-            diag_publish_rate: 诊断发布降频率
-            get_time_func: 时间获取函数
-            is_quadrotor: 是否为四旋翼平台
         """
         if not ROS1_AVAILABLE:
             raise RuntimeError("ROS1 (rospy) not available")
@@ -75,7 +75,23 @@ class ROS1PublisherManager:
         
         # 诊断节流器
         self._diag_throttler = DiagnosticsThrottler(publish_rate=diag_publish_rate)
-    
+
+        # -----------------------------------------------------------
+        # 异步可视化工作线程 (Async Visualization)
+        # -----------------------------------------------------------
+        self._vis_queue = queue.Queue(maxsize=2)  # 小缓冲区实现自动背压
+        self._vis_running = True
+        self._vis_thread = threading.Thread(
+            target=self._vis_worker_loop,
+            daemon=True,
+            name="VisWorkerROS1"
+        )
+        self._vis_thread.start()
+        
+        # 节流控制
+        self._last_debug_path_time = 0.0
+        self._debug_path_interval = 0.5  # 2Hz Limit
+
     def _create_publishers(self):
         """创建所有发布器"""
         # 预创建可复用的诊断消息对象
@@ -129,6 +145,27 @@ class ROS1PublisherManager:
         else:
             self._attitude_pub = None
     
+    def _vis_worker_loop(self):
+        """可视化工作线程循环"""
+        while self._vis_running and not rospy.is_shutdown():
+            try:
+                # 使用 timeout 允许定期检查停止标志
+                task = self._vis_queue.get(timeout=0.5)
+                if task is None:
+                    break
+                
+                func, args = task
+                try:
+                    func(*args)
+                except Exception as e:
+                    rospy.logdebug(f"Vis task failed: {e}")
+                finally:
+                    self._vis_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                rospy.logerr(f"Vis worker error: {e}")
+
     def publish_cmd(self, cmd: ControlOutput):
         """发布统一控制命令"""
         if self._cmd_pub is None:
@@ -146,7 +183,11 @@ class ROS1PublisherManager:
     def publish_diagnostics(self, diag: Dict[str, Any], force: bool = False):
         """发布诊断信息"""
         # 始终发布状态话题
-        current_state = diag.get('state', 0)
+        if isinstance(diag, dict):
+             current_state = diag.get('state', 0)
+        else:
+             current_state = getattr(diag, 'state', 0)
+
         state_msg = Int32()
         state_msg.data = current_state
         self._state_pub.publish(state_msg)
@@ -156,11 +197,9 @@ class ROS1PublisherManager:
             return
         
         if self._diag_pub is None:
-            rospy.logwarn_throttle(10.0, "Diagnostics publisher is None, cannot publish")
             return
         
         if self._reusable_diag_msg is None:
-            rospy.logwarn_throttle(10.0, "DiagnosticsV2 message not available, cannot publish")
             return
         
         try:
@@ -168,18 +207,12 @@ class ROS1PublisherManager:
             fill_diagnostics_msg(self._reusable_diag_msg, diag, get_time_func=lambda: rospy.Time.now())
             self._diag_pub.publish(self._reusable_diag_msg)
         except Exception as e:
-            rospy.logwarn_throttle(10.0, f"Failed to publish diagnostics: {e}")
-    
+            # 同样忽略错误以保护控制环
+             pass
+
     def publish_attitude_cmd(self, attitude_cmd: AttitudeCommand,
                              yaw_mode: int = 0, is_hovering: bool = False):
-        """
-        发布姿态命令 (四旋翼平台)
-        
-        Args:
-            attitude_cmd: 姿态命令
-            yaw_mode: 航向模式
-            is_hovering: 是否悬停
-        """
+        """发布姿态命令"""
         if self._attitude_pub is None or self._attitude_adapter is None:
             return
         
@@ -192,93 +225,165 @@ class ROS1PublisherManager:
     
     def publish_debug_path(self, trajectory: Trajectory):
         """
-        发布调试路径
+        发布调试路径 (异步/非阻塞版)
         
-        将轨迹转换为 nav_msgs/Path 消息发布，用于 RViz 可视化。
-        
-        Args:
-            trajectory: UC 轨迹数据
+        Fixes:
+        1. Async execution to prevent blocking ROS1 control loop.
+        2. Correct handling of Numpy array (Fixed Crash).
         """
         if self._debug_path_pub is None:
             return
-        
-        # 检查轨迹点是否有效
-        if trajectory.points is None or len(trajectory.points) == 0:
+            
+        # 优化: 检查订阅数
+        if self._debug_path_pub.get_num_connections() == 0:
             return
         
-        path = Path()
-        path.header.stamp = rospy.Time.now()
-        path.header.frame_id = trajectory.header.frame_id or 'odom'
-        
-        for p in trajectory.points:
-            pose = PoseStamped()
-            pose.header = path.header
-            pose.pose.position.x = p.x
-            pose.pose.position.y = p.y
-            pose.pose.position.z = p.z
-            pose.pose.orientation.w = 1.0
-            path.poses.append(pose)
-        
-        self._debug_path_pub.publish(path)
-    
+        # 节流
+        now = self._get_time_func()
+        if now - self._last_debug_path_time < self._debug_path_interval:
+            return
+        self._last_debug_path_time = now
+
+        # 检查有效性
+        if trajectory.points is None or len(trajectory.points) == 0:
+            return
+            
+        # 提交到队列
+        try:
+             # Snapshot timestamp now
+            stamp = rospy.Time.now()
+            self._vis_queue.put_nowait(
+                (self._do_publish_debug_path_sync, (trajectory, stamp))
+            )
+        except queue.Full:
+            pass
+
+    def _do_publish_debug_path_sync(self, trajectory: Trajectory, stamp):
+        """同步执行路径转换和发布 (Worker 线程)"""
+        if trajectory is None:
+            return
+            
+        try:
+            path = Path()
+            path.header.stamp = stamp
+            path.header.frame_id = trajectory.header.frame_id or 'odom'
+            
+            # --- CRITICAL FIX START ---
+            # 处理 Numpy 数组，避免 attribute error
+            if isinstance(trajectory.points, np.ndarray):
+                # 优化: 先转换为 Python List of Lists
+                # tolist() on [N, 3] array produces [[x,y,z], [x,y,z], ...]
+                points_list = trajectory.points.tolist()
+                path.poses = [
+                    self._create_pose_stamped(p[0], p[1], p[2], path.header)
+                    for p in points_list
+                ]
+            else:
+                # Legacy List[Point3D]
+                path.poses = [
+                    self._create_pose_stamped(p.x, p.y, p.z, path.header)
+                    for p in trajectory.points
+                ]
+            # --- CRITICAL FIX END ---
+            
+            self._debug_path_pub.publish(path)
+        except Exception:
+            pass
+
+    def _create_pose_stamped(self, x, y, z, header):
+        """Helper to create PoseStamped"""
+        pose = PoseStamped()
+        pose.header = header
+        pose.pose.position.x = float(x)
+        pose.pose.position.y = float(y)
+        pose.pose.position.z = float(z)
+        pose.pose.orientation.w = 1.0
+        return pose
+
     def publish_predicted_path(self, predicted_states: List, frame_id: str = 'odom'):
-        """发布 MPC 预测路径
-        
-        Args:
-            predicted_states: MPC 预测的状态序列
-            frame_id: 坐标系
-        """
+        """发布 MPC 预测路径 (异步)"""
         if self._mpc_path_pub is None:
             return
             
         if not predicted_states:
             return
             
-        path = Path()
-        path.header.stamp = rospy.Time.now()
-        path.header.frame_id = frame_id
-        
-        for state in predicted_states:
-            # ACADOS state: [px, py, pz, vx, vy, vz, theta, omega]
-            if len(state) < 3:
-                continue
-                
-            pose = PoseStamped()
-            pose.header = path.header
-            pose.pose.position.x = float(state[0])
-            pose.pose.position.y = float(state[1])
-            pose.pose.position.z = float(state[2])
+        if self._mpc_path_pub.get_num_connections() == 0:
+            return
+
+        # 节流 MPC path (Limit to ~5Hz)
+        now = self._get_time_func()
+        if not hasattr(self, '_last_mpc_path_time'):
+            self._last_mpc_path_time = 0.0
             
-            # Simple orientation from theta if available (state[6])
-            if len(state) > 6:
-                theta = float(state[6])
-                pose.pose.orientation.z = np.sin(theta / 2.0)
-                pose.pose.orientation.w = np.cos(theta / 2.0)
-            else:
-                pose.pose.orientation.w = 1.0
-                
-            path.poses.append(pose)
+        if now - self._last_mpc_path_time < 0.2:
+            return
+        self._last_mpc_path_time = now
             
-        self._mpc_path_pub.publish(path)
+        try:
+            stamp = rospy.Time.now()
+            self._vis_queue.put_nowait(
+                (self._do_publish_mpc_path_sync, (predicted_states, frame_id, stamp))
+            )
+        except queue.Full:
+            pass
+
+    def _do_publish_mpc_path_sync(self, predicted_states, frame_id, stamp):
+        """同步发布 MPC 路径"""
+        try:
+            path = Path()
+            path.header.stamp = stamp
+            path.header.frame_id = frame_id
+            
+            if isinstance(predicted_states, np.ndarray):
+                predicted_states = predicted_states.tolist()
+            
+            for state in predicted_states:
+                # ACADOS state: [px, py, pz, vx, vy, vz, theta, omega]
+                if len(state) < 3:
+                    continue
+                    
+                pose = PoseStamped()
+                pose.header = path.header
+                pose.pose.position.x = float(state[0])
+                pose.pose.position.y = float(state[1])
+                pose.pose.position.z = float(state[2])
+                
+                if len(state) > 6:
+                    theta = float(state[6])
+                    pose.pose.orientation.z = math.sin(theta / 2.0)
+                    pose.pose.orientation.w = math.cos(theta / 2.0)
+                else:
+                    pose.pose.orientation.w = 1.0
+                    
+                path.poses.append(pose)
+            
+            self._mpc_path_pub.publish(path)
+        except Exception:
+            pass
     
     @property
     def output_adapter(self) -> OutputAdapter:
-        """获取输出适配器"""
         return self._output_adapter
     
     @property
     def attitude_adapter(self) -> Optional[AttitudeAdapter]:
-        """获取姿态适配器"""
         return self._attitude_adapter
 
     def shutdown(self) -> None:
-        """
-        关闭发布管理器，释放资源
+        """关闭发布管理器"""
+        # 1. 停止线程
+        self._vis_running = False
+        try:
+            self._vis_queue.put(None, timeout=0.1)
+        except queue.Full:
+            pass
         
-        清理所有发布器引用。在 ROS1 中，发布器会在节点关闭时自动清理，
-        但显式清理可以更早释放资源。
-        """
-        # 注销发布器
+        if self._vis_thread is not None:
+            self._vis_thread.join(timeout=1.0)
+            self._vis_thread = None
+
+        # 2. 注销发布器
         if self._cmd_pub is not None:
             self._cmd_pub.unregister()
             self._cmd_pub = None

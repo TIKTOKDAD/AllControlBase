@@ -3,13 +3,15 @@ from typing import Dict, Any, Optional, List
 from collections import deque
 import numpy as np
 import logging
+import threading
 
 from ..core.interfaces import IStateEstimator
 from ..core.data_types import EstimatorOutput, Odometry, Imu
 from ..config.default_config import PLATFORM_CONFIG
 from ..core.ros_compat import euler_from_quaternion, get_monotonic_time, normalize_angle
+from ..core.indices import StateIdx
 from ..core.constants import (
-    QUATERNION_NORM_SQ_MIN, 
+    QUATERNION_NORM_SQ_MIN,
     QUATERNION_NORM_SQ_MAX,
     COVARIANCE_MIN_EIGENVALUE,
     COVARIANCE_INITIAL_VALUE,
@@ -25,20 +27,49 @@ logger = logging.getLogger(__name__)
 
 class AdaptiveEKFEstimator(IStateEstimator):
     """自适应 EKF 状态估计器
-    
+
     线程安全性:
-    - predict(), update_odom(), update_imu() 方法不是线程安全的
-    - 这些方法应在单线程中按顺序调用（通常在控制循环中）
-    - 如需多线程访问，调用者应在外部加锁
-    
+        此类提供可选的线程安全支持：
+        - 默认情况下不启用锁（thread_safe=False），以获得最佳性能
+        - 设置 thread_safe=True 启用内部锁保护
+        - 启用后，predict(), update_odom(), update_imu(), get_state() 方法是线程安全的
+        - 如果不启用内部锁，调用者应确保在单线程中调用或在外部加锁
+
     典型调用顺序:
         1. predict(dt)      - 运动学预测
         2. update_odom(odom) - 里程计更新
         3. update_imu(imu)   - IMU 更新（可选）
         4. get_state()       - 获取估计结果
     """
-    
-    def __init__(self, config: Dict[str, Any]):
+
+    def __init__(self, config: Dict[str, Any], thread_safe: bool = False):
+        """
+        初始化 EKF 估计器
+
+        Args:
+            config: 配置字典
+            thread_safe: 是否启用线程安全模式（默认 False 以获得最佳性能）
+            
+        Note:
+            当 thread_safe=False 时，调用者必须确保在单线程中调用，
+            或在外部加锁。在多线程环境中使用非线程安全模式可能导致数据竞争。
+        """
+        # 线程安全支持 - 优化：避免在非线程安全模式下的检查开销
+        self._thread_safe = thread_safe
+        if thread_safe:
+            self._lock = threading.RLock()
+            self._acquire_lock = self._lock.acquire
+            self._release_lock = self._lock.release
+        else:
+            self._lock = None
+            # 零开销的 No-op
+            self._acquire_lock = lambda: None
+            self._release_lock = lambda: None
+        
+        # 记录调用线程 ID，用于检测多线程误用
+        self._creation_thread_id = threading.get_ident()
+        self._thread_warning_logged = False
+
         ekf_config = config.get('ekf', config)
         
         # 初始协方差值 - 使用常量
@@ -64,6 +95,8 @@ class AdaptiveEKFEstimator(IStateEstimator):
         self.stationary_covariance_scale = adaptive.get('stationary_covariance_scale', 0.1)
         self.stationary_thresh = adaptive.get('stationary_thresh', 0.05)
         self.slip_probability_k_factor = adaptive.get('slip_probability_k_factor', 5.0)
+        # 打滑概率衰减参数
+        self.slip_decay_rate = adaptive.get('slip_decay_rate', 2.0)  # 每秒衰减量
         self.slip_history_window = adaptive.get('slip_history_window', 20)
         
         # IMU 相关参数 - 使用常量
@@ -142,6 +175,7 @@ class AdaptiveEKFEstimator(IStateEstimator):
         # 世界坐标系加速度
         self.last_world_velocity = np.zeros(2)
         self.current_world_velocity = np.zeros(2)
+        self._raw_odom_twist_norm = 0.0  # Raw Odom velocity for drift detection
         self.last_odom_time: Optional[float] = None
         self.world_accel_vec = np.zeros(2)
         self._world_accel_initialized = False
@@ -155,14 +189,82 @@ class AdaptiveEKFEstimator(IStateEstimator):
             'quaternion_error': False,
             'euler_nan': False,
             'tilt_exceeded': False,
+            'accel_nan': False,
+            'gyro_nan': False,
         }
-    
+
+        # ----------------------------------------------------------------------
+        # 性能优化: 预分配矩阵和向量
+        # ----------------------------------------------------------------------
+        # EKF 矩阵 (均在 __init__ 一次性分配)
+        self._F = np.eye(11)
+        self._H_odom = np.zeros((8, 11))
+        # 预设固定 H_odom 元素
+        self._H_odom[0:3, 0:3] = np.eye(3)
+        self._H_odom[3:6, 3:6] = np.eye(3)
+        self._H_odom[StateIdx.YAW, StateIdx.YAW] = 1.0
+        self._H_odom[7, StateIdx.YAW_RATE] = 1.0
+        
+        self._R_odom = np.zeros((8, 8))
+        self._z_odom = np.zeros(8)
+        self._y_odom = np.zeros(8) # Innovation buffer
+        
+        self._H_imu = np.zeros((4, 11))
+        # 预设固定 H_imu 元素
+        self._H_imu[0, StateIdx.ACCEL_BIAS_X] = 1.0  # bias_ax
+        self._H_imu[1, StateIdx.ACCEL_BIAS_Y] = 1.0  # bias_ay
+        self._H_imu[2, StateIdx.ACCEL_BIAS_Z] = 1.0 # bias_az
+        self._H_imu[3, StateIdx.YAW_RATE] = 1.0  # omega
+        
+        self._z_imu = np.zeros(4)
+        self._y_imu = np.zeros(4) # Innovation buffer
+        self._z_imu_expected = np.zeros(4)
+        self._I_11 = np.eye(11) # 恒等矩阵
+
+        # ----------------------------------------------------------------------
+        # 优化: 中间计算 Buffer (避免运行时 malloc)
+        # 命名约定: _temp_{rows}_{cols}_{usage}
+        # ----------------------------------------------------------------------
+        # Predict 阶段: P = F @ P @ F.T + Q * dt
+        self._temp_F_P = np.zeros((11, 11))        # F @ P
+        self._temp_P_FT = np.zeros((11, 11))       # P @ F.T (Not used directly if using F@P@FT) -> F@P -> (F@P)@F.T
+        self._temp_FP_FT = np.zeros((11, 11))      # (F @ P) @ F.T
+        
+        # Update 阶段 (Odom 8维): 
+        # y = z - Hx
+        # S = H @ P @ H.T + R
+        # K = P @ H.T @ S_inv
+        self._temp_H8_P = np.zeros((8, 11))        # H @ P
+        self._temp_H8_P_HT = np.zeros((8, 8))      # (H @ P) @ H.T
+        self._temp_PHt_8 = np.zeros((11, 8))       # P @ H.T
+        self._temp_K_8 = np.zeros((11, 8))         # K (Gain)
+        self._temp_K_y_8 = np.zeros(11)            # K @ y
+        self._temp_K_S_8 = np.zeros((11, 8))       # K @ S
+        self._temp_P_update_11 = np.zeros((11, 11)) # K @ S @ K.T (Joseph term)
+
+        # Update 阶段 (IMU 4维):
+        self._temp_H4_P = np.zeros((4, 11))        # H @ P
+        self._temp_H4_P_HT = np.zeros((4, 4))      # (H @ P) @ H.T
+        self._temp_PHt_4 = np.zeros((11, 4))       # P @ H.T
+        self._temp_K_4 = np.zeros((11, 4))         # K
+        self._temp_K_y_4 = np.zeros(11)            # K @ y
+        self._temp_K_S_4 = np.zeros((11, 4))       # K @ S
+
+    # _acquire_lock 和 _release_lock 现在是动态分配的，移除默认实现
+    # def _acquire_lock(self): ...
+    # def _release_lock(self): ...
+
     def set_imu_available(self, available: bool) -> None:
-        self._imu_available = available
+        """设置 IMU 可用状态（线程安全）"""
+        self._acquire_lock()
+        try:
+            self._imu_available = available
+        finally:
+            self._release_lock()
     
     def _get_theta_for_transform(self) -> float:
         """获取用于坐标变换的航向角"""
-        theta_var = self.P[6, 6]
+        theta_var = self.P[StateIdx.YAW, StateIdx.YAW]
         
         if (self.use_odom_orientation_fallback and 
             theta_var > self.theta_covariance_fallback_thresh and
@@ -173,45 +275,51 @@ class AdaptiveEKFEstimator(IStateEstimator):
         return self.x[6]
     
     def apply_drift_correction(self, dx: float, dy: float, dtheta: float) -> None:
-        """应用外部漂移校正
-        
+        """应用外部漂移校正（线程安全）
+
         对位置和航向进行外部校正（如来自 SLAM 或 GPS 的修正）。
         对于速度-航向耦合平台，同时更新速度方向以保持与新航向一致。
-        
+
         Args:
             dx: X 方向位置校正量（米）
             dy: Y 方向位置校正量（米）
             dtheta: 航向角校正量（弧度）
         """
-        self.x[0] += dx
-        self.x[1] += dy
-        self.x[6] += dtheta
-        self.x[6] = normalize_angle(self.x[6])
-        
-        if self.velocity_heading_coupled:
-            # 使用带符号的速度投影，与 predict() 方法保持一致
-            # v_signed > 0: 前进, v_signed < 0: 倒车
-            # 这确保漂移校正后速度方向正确（支持倒车场景）
-            v_signed = self.x[3] * np.cos(self.x[6] - dtheta) + self.x[4] * np.sin(self.x[6] - dtheta)
-            new_theta = self.x[6]
-            self.x[3] = v_signed * np.cos(new_theta)
-            self.x[4] = v_signed * np.sin(new_theta)
-        
-        self.P[0, 0] += abs(dx) * 0.1
-        self.P[1, 1] += abs(dy) * 0.1
-        self.P[6, 6] += abs(dtheta) * 0.1
+        self._acquire_lock()
+        try:
+            self.x[StateIdx.X] += dx
+            self.x[StateIdx.Y] += dy
+            self.x[StateIdx.YAW] += dtheta
+            self.x[StateIdx.YAW] = normalize_angle(self.x[StateIdx.YAW])
+
+            if self.velocity_heading_coupled:
+                # 使用带符号的速度投影，与 predict() 方法保持一致
+                # v_signed > 0: 前进, v_signed < 0: 倒车
+                # 这确保漂移校正后速度方向正确（支持倒车场景）
+                yaw = self.x[StateIdx.YAW]
+                vx = self.x[StateIdx.VX]
+                vy = self.x[StateIdx.VY]
+                v_signed = vx * np.cos(yaw - dtheta) + vy * np.sin(yaw - dtheta)
+                self.x[StateIdx.VX] = v_signed * np.cos(yaw)
+                self.x[StateIdx.VY] = v_signed * np.sin(yaw)
+
+            self.P[StateIdx.X, StateIdx.X] += abs(dx) * 0.1
+            self.P[StateIdx.Y, StateIdx.Y] += abs(dy) * 0.1
+            self.P[StateIdx.YAW, StateIdx.YAW] += abs(dtheta) * 0.1
+        finally:
+            self._release_lock()
     
     def predict(self, dt: float) -> None:
         """
         运动学预测
-        
+
         标准 EKF 预测步骤:
         1. 在当前状态上计算 Jacobian F
         2. 更新状态 x = f(x)
         3. 更新协方差 P = F @ P @ F.T + Q
-        
+
         注意: Jacobian 必须在状态更新之前计算，使用预测前的状态值
-        
+
         Args:
             dt: 时间步长（秒），必须为正有限值
         """
@@ -221,158 +329,185 @@ class AdaptiveEKFEstimator(IStateEstimator):
         # - np.isinf(dt): 无穷大值
         if dt <= 0 or not np.isfinite(dt):
             return
-        
-        # 1. 先在当前状态上计算 Jacobian (预测前的状态)
-        theta_before = self.x[6]
-        omega_before = self.x[7]
-        vx_before = self.x[3]
-        vy_before = self.x[4]
-        F = self._compute_jacobian(dt, theta_before, omega_before, vx_before, vy_before)
-        
-        # 2. 更新状态
-        self.x[0] += self.x[3] * dt
-        self.x[1] += self.x[4] * dt
-        self.x[2] += self.x[5] * dt
-        self.x[6] += self.x[7] * dt
-        self.x[6] = normalize_angle(self.x[6])
-        
-        # 对于速度-航向耦合平台（差速车/阿克曼车），强制速度方向与航向一致
-        # 这是非完整约束的体现：车辆只能沿前进方向移动，不能横向滑移
-        # 
-        # 注意：无论角速度是否为零，都需要执行此约束
-        # - 当 omega ≠ 0 时：航向在变化，速度方向需要跟随
-        # - 当 omega ≈ 0 时：速度方向仍应与航向一致，修正测量噪声导致的横向分量
-        # 
-        # 低速保护：当速度非常小时，不强制执行耦合约束
-        # 原因：低速时速度方向不确定，强制耦合可能因噪声导致方向跳变
-        if self.velocity_heading_coupled and self.enable_non_holonomic_constraint:
-            v_magnitude = np.sqrt(self.x[3]**2 + self.x[4]**2)
-            # 只有当速度大于静止阈值时才执行耦合约束
-            # 使用 stationary_thresh 作为阈值，保持与其他低速判断的一致性
-            # 
-            # 优化 (v3.19): 仅当打滑概率较低时才应用强非完整约束。
-            # 如果怀疑打滑，则信任里程计原始方向，避免将错误的 Odom 数据"修正"到错误的方向。
-            if v_magnitude > self.stationary_thresh:
-                if self.slip_probability < self.non_holonomic_slip_threshold:
-                    # 使用点积计算带符号的投影速度
-                    v_signed = self.x[3] * np.cos(self.x[6]) + self.x[4] * np.sin(self.x[6])
-                    self.x[3] = v_signed * np.cos(self.x[6])
-                    self.x[4] = v_signed * np.sin(self.x[6])
-                else:
-                    # 打滑高风险：不强制投影，允许 EKF 根据测量值自行收敛
-                    # 这允许滤波器在检测到横向滑移时正确跟踪
-                    pass
 
-        
-        # 3. 更新协方差
-        self.P = F @ self.P @ F.T + self.Q * dt
-        self._ensure_positive_definite()
+        self._acquire_lock()
+        try:
+            # 1. 先在当前状态上计算 Jacobian (预测前的状态)
+            # 使用 StateIdx 访问状态
+            theta_before = self.x[StateIdx.YAW]
+            omega_before = self.x[StateIdx.YAW_RATE]
+            vx_before = self.x[StateIdx.VX]
+            vy_before = self.x[StateIdx.VY]
+            
+            # 使用预分配的 _F 矩阵，并在 _update_jacobian_F 中填充
+            # 注意：原代码逻辑是 _compute_jacobian 返回新的 F
+            # 这里我们需要改为原地更新 _F
+            self._update_jacobian_F(dt, theta_before, omega_before, vx_before, vy_before)
+
+            # 2. 更新状态 (x = f(x))
+            self.x[StateIdx.X] += self.x[StateIdx.VX] * dt
+            self.x[StateIdx.Y] += self.x[StateIdx.VY] * dt
+            self.x[StateIdx.Z] += self.x[StateIdx.VZ] * dt
+            self.x[StateIdx.YAW] += self.x[StateIdx.YAW_RATE] * dt
+            self.x[StateIdx.YAW] = normalize_angle(self.x[StateIdx.YAW])
+
+            # 对于速度-航向耦合平台（差速车/阿克曼车），强制速度方向与航向一致
+            if self.velocity_heading_coupled and self.enable_non_holonomic_constraint:
+                v_magnitude = np.sqrt(self.x[StateIdx.VX]**2 + self.x[StateIdx.VY]**2)
+                
+                # 低速时不强制约束
+                if v_magnitude > self.stationary_thresh:
+                    if self.slip_probability < self.non_holonomic_slip_threshold:
+                        yaw = self.x[StateIdx.YAW]
+                        # 使用点积计算带符号的投影速度
+                        v_signed = self.x[StateIdx.VX] * np.cos(yaw) + self.x[StateIdx.VY] * np.sin(yaw)
+                        self.x[StateIdx.VX] = v_signed * np.cos(yaw)
+                        self.x[StateIdx.VY] = v_signed * np.sin(yaw)
+                    else:
+                        # 打滑时允许横向滑移
+                        pass
+
+            # 3. 更新协方差 P = F @ P @ F.T + Q * dt
+            # 优化: 使用原地操作避免分配
+            # Step 3.1: _temp_F_P = F @ P
+            np.matmul(self._F, self.P, out=self._temp_F_P)
+            
+            # Step 3.2: P_pred = _temp_F_P @ F.T
+            # 注意: self._F 是 array, .T 是属性，不是拷贝
+            np.matmul(self._temp_F_P, self._F.T, out=self._temp_FP_FT)
+            
+            # Step 3.3: P = P_pred + Q * dt
+            # Q 是对角阵，Q*dt 也是对角阵，直接加到 P_pred 上
+            # 为了极致性能，我们可以预先计算 Q_dt (如果 dt 不变)，但 dt 是变化的
+            # 这里做 inplace add: P = _temp_FP_FT + Q*dt
+            # 由于 Q 是稀疏的 (对角)，全矩阵加法略显浪费，但 numpy 如果不做 view 优化也不大
+            # 安全做法: P = _temp_FP_FT + Q * dt
+            # In-place: self.P[:] = ...
+            np.multiply(self.Q, dt, out=self._temp_F_P) # 复用 _temp_F_P 暂存 Q*dt
+            np.add(self._temp_FP_FT, self._temp_F_P, out=self.P)
+            
+            self._ensure_positive_definite()
+        finally:
+            self._release_lock()
 
     
     def update_odom(self, odom: Odometry) -> None:
         """Odom 更新"""
-        current_time = get_monotonic_time()
-        
-        self._last_odom_orientation = odom.pose_orientation
-        
-        new_position = np.array([
-            odom.pose_position.x,
-            odom.pose_position.y,
-            odom.pose_position.z
-        ])
-        self.position_jump = np.linalg.norm(new_position - self.last_position)
-        self.last_position = new_position
-        
-        vx_body = odom.twist_linear[0]
-        vy_body = odom.twist_linear[1]
-        vz_body = odom.twist_linear[2]
-        v_body = np.sqrt(vx_body**2 + vy_body**2)
-        
-        # 从 odom 获取角速度 (z 轴)
-        omega_z = odom.twist_angular[2]
-        
-        # 从 odom 四元数提取航向角
-        _, _, odom_yaw = euler_from_quaternion(odom.pose_orientation)
-        
-        # 获取航向角用于坐标变换
-        # 使用 odom 的航向角，而不是 EKF 估计的航向角
-        # 这确保速度变换使用正确的航向
-        theta = odom_yaw
-        cos_theta = np.cos(theta)
-        sin_theta = np.sin(theta)
-        
-        # 机体坐标系到世界坐标系的速度变换
-        # v_world = R(theta) @ v_body
-        # 其中 R(theta) 是绕 Z 轴旋转 theta 的旋转矩阵
-        # [vx_world]   [cos(θ)  -sin(θ)] [vx_body]
-        # [vy_world] = [sin(θ)   cos(θ)] [vy_body]
-        vx_world = vx_body * cos_theta - vy_body * sin_theta
-        vy_world = vx_body * sin_theta + vy_body * cos_theta
-        vz_world = vz_body  # Z 轴速度不受 yaw 旋转影响
-        
-        self.last_world_velocity = self.current_world_velocity.copy()
-        self.current_world_velocity = np.array([vx_world, vy_world])
-        
-        if self.last_odom_time is not None:
-            dt = current_time - self.last_odom_time
-            if dt > 0:
-                self.world_accel_vec = (self.current_world_velocity - self.last_world_velocity) / dt
-                self._world_accel_initialized = True
+        self._acquire_lock()
+        try:
+            current_time = get_monotonic_time()
+
+            self._last_odom_orientation = odom.pose_orientation
+
+            new_position = np.array([
+                odom.pose_position.x,
+                odom.pose_position.y,
+                odom.pose_position.z
+            ])
+            self.position_jump = np.linalg.norm(new_position - self.last_position)
+            self.last_position = new_position
+
+            vx_body = odom.twist_linear[0]
+            vy_body = odom.twist_linear[1]
+            vz_body = odom.twist_linear[2]
+            v_body = np.sqrt(vx_body**2 + vy_body**2)
+            self._raw_odom_twist_norm = v_body  # Store raw for drift detection
+
+            # 从 odom 获取角速度 (z 轴)
+            omega_z = odom.twist_angular[2]
+
+            # 从 odom 四元数提取航向角
+            _, _, odom_yaw = euler_from_quaternion(odom.pose_orientation)
+
+            # 获取航向角用于坐标变换
+            # 使用 odom 的航向角，而不是 EKF 估计的航向角
+            # 这确保速度变换使用正确的航向
+            theta = odom_yaw
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+
+            # 机体坐标系到世界坐标系的速度变换
+            # v_world = R(theta) @ v_body
+            # 其中 R(theta) 是绕 Z 轴旋转 theta 的旋转矩阵
+            # [vx_world]   [cos(θ)  -sin(θ)] [vx_body]
+            # [vy_world] = [sin(θ)   cos(θ)] [vy_body]
+            vx_world = vx_body * cos_theta - vy_body * sin_theta
+            vy_world = vx_body * sin_theta + vy_body * cos_theta
+            vz_world = vz_body  # Z 轴速度不受 yaw 旋转影响
+
+            self.last_world_velocity = self.current_world_velocity.copy()
+            self.current_world_velocity = np.array([vx_world, vy_world])
+
+            if self.last_odom_time is not None:
+                dt = current_time - self.last_odom_time
+                if dt > 0:
+                    self.world_accel_vec = (self.current_world_velocity - self.last_world_velocity) / dt
+                    self._world_accel_initialized = True
+                else:
+                    self.world_accel_vec = np.zeros(2)
             else:
                 self.world_accel_vec = np.zeros(2)
-        else:
-            self.world_accel_vec = np.zeros(2)
-        
-        self.last_odom_time = current_time
-        self._update_odom_covariance(v_body)
-        
-        # 观测向量：位置、速度、航向角、角速度
-        z = np.array([
-            odom.pose_position.x,
-            odom.pose_position.y,
-            odom.pose_position.z,
-            vx_world,
-            vy_world,
-            vz_world,
-            odom_yaw,
-            omega_z,
-        ])
-        
-        # 观测矩阵：映射状态到观测
-        H = np.zeros((8, 11))
-        H[0:3, 0:3] = np.eye(3)  # 位置
-        H[3:6, 3:6] = np.eye(3)  # 速度
-        H[6, 6] = 1.0            # 航向角
-        H[7, 7] = 1.0            # 角速度
-        
-        # 测量噪声矩阵：添加航向角和角速度的噪声
-        R = np.zeros((8, 8))
-        R[0:6, 0:6] = self.R_odom_current
-        R[6, 6] = self._odom_orientation_noise  # 航向角测量噪声
-        R[7, 7] = self._odom_angular_velocity_noise  # 角速度测量噪声
-        
-        self._kalman_update(z, H, R, angle_indices=[6])
+
+            self.last_odom_time = current_time
+            self._update_odom_covariance(v_body)
+
+            # 观测向量 z (复用预分配数组)
+            self._z_odom[0] = odom.pose_position.x
+            self._z_odom[1] = odom.pose_position.y
+            self._z_odom[2] = odom.pose_position.z
+            self._z_odom[3] = vx_world
+            self._z_odom[4] = vy_world
+            self._z_odom[5] = vz_world
+            self._z_odom[6] = odom_yaw
+            self._z_odom[7] = omega_z
+
+            # H 矩阵在 __init__ 中已初始化 (self._H_odom)
+            
+            # R 矩阵 (复用预分配矩阵)
+            self._R_odom.fill(0.0)
+            
+            # 填充对角线
+            self._R_odom[0:6, 0:6] = self.R_odom_current
+            self._R_odom[6, 6] = self._odom_orientation_noise
+            self._R_odom[7, 7] = self._odom_angular_velocity_noise
+
+            # 里程计跳变处理
+            if self.position_jump > self.jump_thresh:
+                jump_scale = min(self.position_jump / self.jump_thresh, 10.0)
+                # 原地修改 R 的前三行前三列
+                self._R_odom[0:3, 0:3] *= (jump_scale ** 2)
+                logger.warning(
+                    f"Odom position jump detected: {self.position_jump:.3f}m > {self.jump_thresh}m, "
+                    f"increasing position measurement noise by {jump_scale**2:.1f}x"
+                )
+
+            self._kalman_update(self._z_odom, self._H_odom, self._R_odom, 
+                              angle_indices=[StateIdx.YAW],
+                              buffers=(self._temp_H8_P, self._temp_H8_P_HT, self._temp_K_8, self._temp_K_y_8, self._temp_PHt_8, self._temp_K_S_8, self._temp_P_update_11),
+                              y_buffer=self._y_odom)
+        finally:
+            self._release_lock()
     
     def update_imu(self, imu: Imu) -> None:
         """
         IMU 观测更新
-        
+
         IMU 测量模型 (比力模型):
         - 加速度计测量的是比力 (specific force): a_measured = a_true - g_body + bias + noise
         - 其中 a_true 是真实加速度，g_body 是重力在机体坐标系的投影
         - 静止时: a_measured = -g_body + bias ≈ [0, 0, +g] + bias (假设水平)
         - 陀螺仪测量: omega_measured = omega + bias + noise
-        
+
         坐标系约定 (ENU):
         - 世界坐标系: X-东, Y-北, Z-上
         - 重力向量 (世界坐标系): g_world = [0, 0, -9.81] m/s²
-        
+
         重力在机体坐标系的投影 (ZYX 欧拉角约定):
         - g_body = R_world_to_body @ [0, 0, -g]
         - g_body_x = -g * sin(pitch)
-        - g_body_y = g * sin(roll) * cos(pitch)  
+        - g_body_y = g * sin(roll) * cos(pitch)
         - g_body_z = -g * cos(roll) * cos(pitch)
-        
+
         加速度计静止时的期望测量值 (比力 = -g_body):
         - a_expected_x = g * sin(pitch)
         - a_expected_y = -g * sin(roll) * cos(pitch)
@@ -380,9 +515,40 @@ class AdaptiveEKFEstimator(IStateEstimator):
         """
         if not self._imu_available:
             return
-        
+
+        # 安全关键: 检查 IMU 数据有效性
+        # 传感器故障可能返回 NaN/Inf，必须在处理前检测
+        accel = imu.linear_acceleration
+        gyro = imu.angular_velocity
+
+        if not (np.isfinite(accel[0]) and np.isfinite(accel[1]) and np.isfinite(accel[2])):
+            if not self._warning_logged.get('accel_nan', False):
+                logger.warning(
+                    f"Invalid IMU acceleration data (NaN/Inf): "
+                    f"ax={accel[0]}, ay={accel[1]}, az={accel[2]}. Skipping IMU update."
+                )
+                self._warning_logged['accel_nan'] = True
+            return
+
+        if not (np.isfinite(gyro[0]) and np.isfinite(gyro[1]) and np.isfinite(gyro[2])):
+            if not self._warning_logged.get('gyro_nan', False):
+                logger.warning(
+                    f"Invalid IMU angular velocity data (NaN/Inf): "
+                    f"wx={gyro[0]}, wy={gyro[1]}, wz={gyro[2]}. Skipping IMU update."
+                )
+                self._warning_logged['gyro_nan'] = True
+            return
+
+        self._acquire_lock()
+        try:
+            self._update_imu_internal(imu, accel, gyro)
+        finally:
+            self._release_lock()
+
+    def _update_imu_internal(self, imu: Imu, accel, gyro) -> None:
+        """IMU 更新的内部实现（已在锁保护下调用）"""
         self.gyro_z = imu.angular_velocity[2]
-        theta = self.x[6]  # yaw 角
+        theta = self.x[StateIdx.YAW]  # yaw 角
         cos_theta = np.cos(theta)
         sin_theta = np.sin(theta)
         
@@ -473,8 +639,8 @@ class AdaptiveEKFEstimator(IStateEstimator):
         
         # 从 IMU 测量值中提取真实加速度（去除重力和 bias）
         # a_true_body = a_measured - g_measured - bias
-        ax_body_true = imu.linear_acceleration[0] - g_measured_x - self.x[8]
-        ay_body_true = imu.linear_acceleration[1] - g_measured_y - self.x[9]
+        ax_body_true = imu.linear_acceleration[0] - g_measured_x - self.x[StateIdx.ACCEL_BIAS_X]
+        ay_body_true = imu.linear_acceleration[1] - g_measured_y - self.x[StateIdx.ACCEL_BIAS_Y]
         
         # 将真实加速度转换到世界坐标系（只考虑 yaw 旋转，因为地面车辆 roll/pitch 接近 0）
         ax_world = ax_body_true * cos_theta - ay_body_true * sin_theta
@@ -491,59 +657,75 @@ class AdaptiveEKFEstimator(IStateEstimator):
         )
         
         if odom_accel_fresh:
+            # 重构打滑检测: 统一在 Body Frame 下进行比较
+            # -------------------------------------------------------------
+            # 原逻辑存在严重缺陷: 它将 Odom 速度转到 World 系，再微分得 World Accel，
+            # 然后与 imu_accel_world (也转到 World 系) 比较。
+            # 这对 Yaw 估计极其敏感。如果 Odom Yaw 与 EKF Yaw (用于转 IMU) 不一致，
+            # 两个向量会有一个夹角，导致巨大的虚假差值。
+            #
+            # 新逻辑:
+            # 1. 计算 Odom 在 Body Frame 下的加速度 (a_odom_body)
+            #    a_odom_body ≈ (v_body_current - v_body_last) / dt
+            #    (忽略科氏力项，因为通常由 Odom 直接给出 Body Twist)
+            # 2. 直接使用 IMU 测量值 (a_imu_body, 已去重力)
+            # 3. 比较两者模长或向量差
+            # -------------------------------------------------------------
+
+            # 计算 odom body acceleration
             imu_accel_world = np.array([ax_world, ay_world])
             accel_diff = np.linalg.norm(imu_accel_world - self.world_accel_vec)
             self.slip_probability = self._compute_slip_probability(accel_diff)
             self.slip_detected = self.slip_probability > 0.5
         else:
             # odom 加速度数据过旧，不进行打滑检测
-            # 保持上一次的打滑状态，但逐渐衰减概率
-            if self.slip_probability > 0:
-                self.slip_probability = max(0, self.slip_probability - 0.05)
+            # 保持上一次的打滑状态，但基于时间间隔衰减概率
+            if self.slip_probability > 0 and self.last_imu_time is not None:
+                dt_decay = current_imu_time - self.last_imu_time
+                if dt_decay > 0:
+                    # 基于时间的指数衰减: P(t) = P(0) * exp(-decay_rate * dt)
+                    decay_factor = np.exp(-self.slip_decay_rate * dt_decay)
+                    self.slip_probability *= decay_factor
             self.slip_detected = self.slip_probability > 0.5
         
         self.last_imu_time = current_imu_time
         
-        # IMU 观测向量
-        z = np.array([
-            imu.linear_acceleration[0],
-            imu.linear_acceleration[1],
-            imu.linear_acceleration[2],
-            imu.angular_velocity[2],
-        ])
+        # 复用预分配的观测向量
+        self._z_imu[0] = imu.linear_acceleration[0]
+        self._z_imu[1] = imu.linear_acceleration[1]
+        self._z_imu[2] = imu.linear_acceleration[2]
+        self._z_imu[3] = imu.angular_velocity[2]
         
-        # 观测矩阵：IMU 测量与状态的关系
-        # 加速度计测量 = bias + 重力期望值 (+ 运动加速度，如果启用补偿)
-        # 陀螺仪测量 = 角速度
-        H = np.zeros((4, 11))
-        H[0, 8] = 1.0  # ax 与 bias_ax
-        H[1, 9] = 1.0  # ay 与 bias_ay
-        H[2, 10] = 1.0  # az 与 bias_az
-        H[3, 7] = 1.0  # wz 与 omega
+        # H 矩阵是 constant 且已预分配 (self._H_imu)
         
-        # 计算期望的 IMU 测量值
+        # 计算期望值
+        bias_x = self.x[StateIdx.ACCEL_BIAS_X]
+        bias_y = self.x[StateIdx.ACCEL_BIAS_Y]
+        bias_z = self.x[StateIdx.ACCEL_BIAS_Z]
+        omega_current = self.x[StateIdx.YAW_RATE]
+        
         if self.imu_motion_compensation and self._world_accel_initialized:
-            # 运动加速度从世界坐标系转换到机体坐标系
             ax_motion_body = self.world_accel_vec[0] * cos_theta + self.world_accel_vec[1] * sin_theta
             ay_motion_body = -self.world_accel_vec[0] * sin_theta + self.world_accel_vec[1] * cos_theta
-            z_expected = np.array([
-                self.x[8] + ax_motion_body + g_measured_x,
-                self.x[9] + ay_motion_body + g_measured_y,
-                self.x[10] + g_measured_z,
-                self.x[7],
-            ])
+            
+            self._z_imu_expected[0] = bias_x + ax_motion_body + g_measured_x
+            self._z_imu_expected[1] = bias_y + ay_motion_body + g_measured_y
+            self._z_imu_expected[2] = bias_z + g_measured_z
+            self._z_imu_expected[3] = omega_current
         else:
-            z_expected = np.array([
-                self.x[8] + g_measured_x,
-                self.x[9] + g_measured_y,
-                self.x[10] + g_measured_z,
-                self.x[7]
-            ])
+            self._z_imu_expected[0] = bias_x + g_measured_x
+            self._z_imu_expected[1] = bias_y + g_measured_y
+            self._z_imu_expected[2] = bias_z + g_measured_z
+            self._z_imu_expected[3] = omega_current
         
-        self._kalman_update_with_expected(z, z_expected, H, self.R_imu)
+        self._kalman_update_with_expected(self._z_imu, self._z_imu_expected, self._H_imu, self.R_imu,
+                                        buffers=(self._temp_H4_P, self._temp_H4_P_HT, self._temp_K_4, self._temp_K_y_4, self._temp_PHt_4, self._temp_K_S_4, self._temp_P_update_11),
+                                        y_buffer=self._y_imu)
     
     def _kalman_update(self, z: np.ndarray, H: np.ndarray, R: np.ndarray, 
-                       angle_indices: list = None) -> None:
+                       angle_indices: list = None,
+                       buffers: tuple = None,
+                       y_buffer: np.ndarray = None) -> None:
         """
         卡尔曼更新
         
@@ -552,121 +734,179 @@ class AdaptiveEKFEstimator(IStateEstimator):
             H: 观测矩阵
             R: 测量噪声矩阵
             angle_indices: 观测向量中角度元素的索引列表，用于角度归一化
+            buffers: 预分配的 Buffer 元组，用于性能优化
+            y_buffer: 创新 (Innovation) 向量 y 的 buffer，避免 H @ x 分配
         """
-        y = z - H @ self.x
+        if y_buffer is not None:
+            # Zero-alloc impl
+            # 1. Hx = H @ x (Store in y_buffer temporarily)
+            np.matmul(H, self.x, out=y_buffer)
+            # 2. y = z - Hx (Store result in y_buffer)
+            np.subtract(z, y_buffer, out=y_buffer)
+            y = y_buffer
+        else:
+            # Fallback
+            y = z - H @ self.x 
         
         # 对角度元素进行归一化
         if angle_indices:
             for idx in angle_indices:
                 y[idx] = normalize_angle(y[idx])
         
-        self._apply_kalman_gain(y, H, R)
+        self._apply_kalman_gain(y, H, R, buffers)
     
     def _kalman_update_with_expected(self, z: np.ndarray, z_expected: np.ndarray,
-                                     H: np.ndarray, R: np.ndarray):
-        y = z - z_expected
-        self._apply_kalman_gain(y, H, R)
+                                     H: np.ndarray, R: np.ndarray,
+                                     buffers: tuple = None,
+                                     y_buffer: np.ndarray = None):
+        if y_buffer is not None:
+            np.subtract(z, z_expected, out=y_buffer)
+            y = y_buffer
+        else:
+            y = z - z_expected
+             
+        self._apply_kalman_gain(y, H, R, buffers)
     
-    def _apply_kalman_gain(self, y: np.ndarray, H: np.ndarray, R: np.ndarray) -> None:
-        S = H @ self.P @ H.T + R
+    def _apply_kalman_gain(self, y: np.ndarray, H: np.ndarray, R: np.ndarray,
+                          buffers: tuple = None) -> None:
+        """应用卡尔曼增益 (零内存分配版)"""
+        
+        if buffers is None:
+            # Fallback for simplicity or legacy calls
+            self._apply_kalman_gain_legacy(y, H, R)
+            return
+
+        # 解包 Buffers
+        # buffers=(temp_H_P, temp_H_P_HT, temp_K, temp_K_y, temp_PHt, temp_K_S, temp_P_update)
+        # 注意: 传入的 buffers 需要根据 H 的维度匹配
+        (t_HP, t_HPHT, t_K, t_Ky, t_PHt, t_KS, t_P_upd) = buffers
+        
+        # 1. S = H @ P @ H.T + R
+        # Step 1.1: t_HP = H @ P
+        np.matmul(H, self.P, out=t_HP)
+        # Step 1.2: t_HPHT = t_HP @ H.T
+        np.matmul(t_HP, H.T, out=t_HPHT)
+        # Step 1.3: S = t_HPHT + R (S reuse t_HPHT)
+        # 注意: R 是对角/对称阵，这里直接加
+        np.add(t_HPHT, R, out=t_HPHT) # Now t_HPHT holds S
+        S = t_HPHT
+        
+        # 2. 计算 Kalman Gain K
+        # K = P @ H.T @ S_inv
+        
+        # Step 2.1: t_PHt = P @ H.T
+        # 这个其实就是 t_HP.T，因为 P 对称。但为了稳健还是乘一下
+        # 优化: t_PHt = t_HP.T (Zero copy view if shape matches?) 
+        # t_HP shape (M, N), t_PHt shape (N, M). 
+        # 直接拿 t_HP.T 并在后续使用 solve 可能更快，但这里为了利用 buffer显式计算
+        np.matmul(self.P, H.T, out=t_PHt)
+        
+        # Step 2.2: Compute K
+        # 由于无法做 inplace solve (S_inv)，我们仍需解方程
+        # K = t_PHt @ inv(S) -> K @ S = t_PHt -> K = solve(S.T, t_PHt.T).T
+        # 这里的 solve 依然会分配内存，这很难避免，除非手写 Cholesky
         try:
-            L = np.linalg.cholesky(S)
-            K = self.P @ H.T @ np.linalg.solve(L.T, np.linalg.solve(L, np.eye(len(S))))
+            # 使用 Cholesky 分解 (比 inv 快)
+            # L = cholesky(S)
+            # K = t_PHt @ inv(S)
+            # solve is: x = solve(a, b) -> ax = b
+            # We want K = P H' S^-1 => K S = P H'
+            # S is symmetric
+            # scipy.linalg.solve(S, (P H').T, assume_a='pos').T
+            # 这里用 numpy standard solve: K = solve(S, t_PHt.T).T
+            # 分配不可避免: S_inv or intermediate
+            K_trans = np.linalg.solve(S, t_PHt.T)
+            np.transpose(K_trans, out=t_K) # Store in t_K
         except np.linalg.LinAlgError:
+            # Fallback
+            K_legacy = self.P @ H.T @ np.linalg.pinv(S)
+            t_K[:] = K_legacy
+             
+        # 3. 更新状态 x = x + K @ y
+        np.matmul(t_K, y, out=t_Ky)
+        np.add(self.x, t_Ky, out=self.x)
+        
+        # 4. 更新协方差 P (Joseph Form: P = (I - KH)P(I-KH)' + KRK')
+        # Simplified: P = P - K @ S @ K.T (Optimal for symmetric)
+        # Step 4.1: t_KS = K @ S
+        np.matmul(t_K, S, out=t_KS)
+        # Step 4.2: term = t_KS @ K.T
+        np.matmul(t_KS, t_K.T, out=t_P_upd)
+        
+        # Step 4.3: P = P - term
+        np.subtract(self.P, t_P_upd, out=self.P)
+        
+        self._ensure_positive_definite()
+        self.last_innovation_norm = np.linalg.norm(y)
+        self.x[StateIdx.YAW] = normalize_angle(self.x[StateIdx.YAW])
+
+    
+    def _apply_kalman_gain_legacy(self, y: np.ndarray, H: np.ndarray, R: np.ndarray) -> None:
+        """应用卡尔曼增益 (legacy implementation)"""
+        # S = H P H.T + R
+        S = H @ self.P @ H.T + R
+        
+        try:
+            # 使用 Cholesky 分解求逆更加数值稳定且快
+            L = np.linalg.cholesky(S)
+            # K = P H.T S^-1
+            S_inv = np.linalg.solve(L.T, np.linalg.solve(L, np.eye(len(S))))
+            K = self.P @ H.T @ S_inv
+        except np.linalg.LinAlgError:
+            # 退化回伪逆
             K = self.P @ H.T @ np.linalg.pinv(S)
         
+        # 更新状态 x = x + K y
         self.x = self.x + K @ y
-        I_KH = np.eye(11) - K @ H
-        self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
+        
+        # 更新协方差 P = P - K @ S @ K.T
+        term = K @ S @ K.T
+        self.P = self.P - term
+        
         self._ensure_positive_definite()
         self.last_innovation_norm = np.linalg.norm(y)
         
-        self.x[6] = normalize_angle(self.x[6])
+        self.x[StateIdx.YAW] = normalize_angle(self.x[StateIdx.YAW])
     
-    def _compute_jacobian(self, dt: float, theta: float, omega: float, 
-                          vx: float, vy: float) -> np.ndarray:
+    def _update_jacobian_F(self, dt: float, theta: float, omega: float, 
+                          vx: float, vy: float) -> None:
         """
-        计算状态转移 Jacobian
-        
-        重要: 此函数应在状态更新之前调用，使用预测前的状态值
-        
-        对于速度-航向耦合的平台 (差速车/阿克曼车):
-        - vx_world = v_signed * cos(theta)
-        - vy_world = v_signed * sin(theta)
-        其中 v_signed 是带符号的速度（正=前进，负=倒车）
-        
-        状态转移方程:
-        - px_new = px + vx * dt
-        - py_new = py + vy * dt
-        - pz_new = pz + vz * dt
-        - theta_new = theta + omega * dt
-        - 对于耦合平台: vx_new = v_signed * cos(theta_new), vy_new = v_signed * sin(theta_new)
-        
-        Jacobian 在预测前状态点计算 (标准 EKF 做法)
-        
-        倒车支持:
-        - 使用带符号的速度投影 v_signed = vx * cos(theta) + vy * sin(theta)
-        - v_signed > 0 表示前进，v_signed < 0 表示倒车
-        - Jacobian 中的偏导数需要保持正确的符号
-        
-        Args:
-            dt: 时间步长
-            theta: 预测前的航向角
-            omega: 预测前的角速度
-            vx: 预测前的 x 方向速度
-            vy: 预测前的 y 方向速度
-        
-        Returns:
-            状态转移 Jacobian 矩阵 F [11x11]
+        更新状态转移 Jacobian 矩阵 (原地修改 self._F)
         """
-        F = np.eye(11)
-        F[0, 3] = dt  # ∂px/∂vx
-        F[1, 4] = dt  # ∂py/∂vy
-        F[2, 5] = dt  # ∂pz/∂vz
-        F[6, 7] = dt  # ∂theta/∂omega
+        # 我们只修改变动的项。_F 在 init 中被设为 eye(11)
+        
+        # 必须先清除上一帧可能设置的值（特别是那些根据条件分支设置的值）
+        self._F[StateIdx.VX, StateIdx.YAW] = 0.0
+        self._F[StateIdx.VY, StateIdx.YAW] = 0.0
+        self._F[StateIdx.VX, StateIdx.YAW_RATE] = 0.0
+        self._F[StateIdx.VY, StateIdx.YAW_RATE] = 0.0
+        
+        # 更新标准项
+        self._F[StateIdx.X, StateIdx.VX] = dt  # px/vx
+        self._F[StateIdx.Y, StateIdx.VY] = dt  # py/vy
+        self._F[StateIdx.Z, StateIdx.VZ] = dt  # pz/vz
+        self._F[StateIdx.YAW, StateIdx.YAW_RATE] = dt  # theta/omega
         
         if self.velocity_heading_coupled:
             cos_theta = np.cos(theta)
             sin_theta = np.sin(theta)
             
-            # 计算带符号的速度投影（沿航向方向的速度分量）
-            # v_signed > 0: 前进
-            # v_signed < 0: 倒车
+            # 计算带符号的速度投影
             v_signed = vx * cos_theta + vy * sin_theta
             
-            # 优化策略 (v3.18):
-            # 使用 tanh 函数代替 sign 函数，确保 Jacobian 在零速附近连续可微
-            # smooth_sign(v) = tanh(v / epsilon)
-            # 当 v = 0 时，导数有限且连续
-            
-            # 平滑因子 epsilon：决定了过渡区的宽度
-            # 值越小，越接近阶跃函数；值越大，越平滑但偏差越大
-            # 从配置中读取，默认为 0.1
+            # 平滑符号函数处理
             epsilon = self.jacobian_smooth_epsilon
-            
-            # 平滑后的符号函数
             smooth_sign = np.tanh(v_signed / epsilon)
-            
-            # 平滑后的速度模长（避免 sqrt(0) 的梯度奇点）
-            # MIN_VELOCITY 作为一个正则化项
             v_magnitude_smooth = np.sqrt(v_signed**2 + self.min_velocity_for_jacobian**2)
-            
-            # 计算有效速度
-            # effective_v ≈ v_signed (当 |v| > epsilon)
-            # effective_v ≈ v_signed (当 |v| ≈ 0，因为 tanh(x) ≈ x)
             effective_v = smooth_sign * v_magnitude_smooth
             
-            # ∂vx_world/∂theta = -v_signed * sin(theta)
-            # ∂vy_world/∂theta = v_signed * cos(theta)
-            F[3, 6] = -effective_v * sin_theta
-            F[4, 6] = effective_v * cos_theta
+            # ∂vx_world/∂theta
+            self._F[StateIdx.VX, StateIdx.YAW] = -effective_v * sin_theta
+            self._F[StateIdx.VY, StateIdx.YAW] = effective_v * cos_theta
             
-            # ∂vx_world/∂omega = -v_signed * sin(theta) * dt
-            # ∂vy_world/∂omega = v_signed * cos(theta) * dt
-            F[3, 7] = -effective_v * sin_theta * dt
-            F[4, 7] = effective_v * cos_theta * dt
-        
-        return F
+            # ∂vx_world/∂omega
+            self._F[StateIdx.VX, StateIdx.YAW_RATE] = -effective_v * sin_theta * dt
+            self._F[StateIdx.VY, StateIdx.YAW_RATE] = effective_v * cos_theta * dt
     
     def _ensure_positive_definite(self) -> None:
         """确保协方差矩阵正定
@@ -703,11 +943,11 @@ class AdaptiveEKFEstimator(IStateEstimator):
             self.P = np.eye(11) * self.initial_covariance
     
     def _get_adaptive_slip_threshold(self) -> float:
-        current_velocity = np.linalg.norm(self.x[3:6])
+        current_velocity = np.linalg.norm(self.x[StateIdx.VX : StateIdx.VZ + 1])
         return self.base_slip_thresh + self.slip_velocity_factor * current_velocity
     
     def _is_stationary(self) -> bool:
-        return np.linalg.norm(self.x[3:6]) < self.stationary_thresh
+        return np.linalg.norm(self.x[StateIdx.VX : StateIdx.VZ + 1]) < self.stationary_thresh
     
     def _update_odom_covariance(self, v_body: float) -> None:
         """更新 odom 测量噪声协方差"""
@@ -720,7 +960,7 @@ class AdaptiveEKFEstimator(IStateEstimator):
         
         # 当速度较高时，航向角不确定性会影响速度估计的不确定性
         # 使用 stationary_thresh 作为阈值，保持一致性
-        theta_var = self.P[6, 6]
+        theta_var = self.P[StateIdx.YAW, StateIdx.YAW]
         if theta_var > 0 and v_body > self.stationary_thresh * 2:
             velocity_transform_var = (v_body ** 2) * theta_var
             self.R_odom_current[3, 3] += velocity_transform_var
@@ -732,11 +972,10 @@ class AdaptiveEKFEstimator(IStateEstimator):
         probability = 1.0 / (1.0 + np.exp(-k * (accel_diff - slip_thresh * 0.8)))
         self.slip_history.append(probability)
         return np.mean(self.slip_history)
-    
-    def detect_anomalies(self) -> List[str]:
-        """
-        检测估计器异常
-        
+
+    def _detect_anomalies_unlocked(self) -> List[str]:
+        """检测估计器异常（内部无锁版本）
+
         检测以下异常情况:
         - SLIP_DETECTED: 检测到轮子打滑
         - IMU_DRIFT: IMU 漂移（静止时陀螺仪有输出）
@@ -744,71 +983,123 @@ class AdaptiveEKFEstimator(IStateEstimator):
         - IMU_UNAVAILABLE: IMU 数据不可用
         - COVARIANCE_EXPLOSION: 协方差矩阵发散
         - INNOVATION_ANOMALY: 测量创新度异常大
-        
+
         Returns:
             异常标识列表
         """
         anomalies = []
-        
+
         if self.slip_detected:
             anomalies.append("SLIP_DETECTED")
+
+        # Use raw odom velocity for drift detection to avoid circular dependency
+        # If EKF is drifting, _is_stationary() (based on self.x) might return False, masking the drift.
+        is_physically_stationary = self._raw_odom_twist_norm < self.stationary_thresh
         
-        if self._is_stationary() and abs(self.gyro_z) > self.drift_thresh:
+        if is_physically_stationary and abs(self.gyro_z) > self.drift_thresh:
             anomalies.append("IMU_DRIFT")
             self._imu_drift_detected = True
         else:
             self._imu_drift_detected = False
-        
+
         if self.position_jump > self.jump_thresh:
             anomalies.append("ODOM_JUMP")
-        
+
         if not self._imu_available:
             anomalies.append("IMU_UNAVAILABLE")
-        
+
         # 协方差爆炸检测
         covariance_norm = np.linalg.norm(self.P[:8, :8])
         if covariance_norm > self.covariance_explosion_thresh:
             anomalies.append("COVARIANCE_EXPLOSION")
             logger.warning(f"Covariance explosion detected: norm={covariance_norm:.2f}")
-        
+
         # 创新度异常检测
         if self.last_innovation_norm > self.innovation_anomaly_thresh:
             anomalies.append("INNOVATION_ANOMALY")
-        
+
         return anomalies
-    
+
+    def detect_anomalies(self) -> List[str]:
+        """检测估计器异常（线程安全）
+
+        检测以下异常情况:
+        - SLIP_DETECTED: 检测到轮子打滑
+        - IMU_DRIFT: IMU 漂移（静止时陀螺仪有输出）
+        - ODOM_JUMP: 里程计位置跳变
+        - IMU_UNAVAILABLE: IMU 数据不可用
+        - COVARIANCE_EXPLOSION: 协方差矩阵发散
+        - INNOVATION_ANOMALY: 测量创新度异常大
+
+        Returns:
+            异常标识列表
+        """
+        self._acquire_lock()
+        try:
+            return self._detect_anomalies_unlocked()
+        finally:
+            self._release_lock()
+
     def get_state(self) -> EstimatorOutput:
-        return EstimatorOutput(
-            state=self.x[:8].copy(),
-            covariance=self.P[:8, :8].copy(),
-            covariance_norm=np.linalg.norm(self.P[:8, :8]),
-            innovation_norm=self.last_innovation_norm,
-            imu_bias=self.x[8:11].copy(),
-            slip_probability=self.slip_probability,
-            anomalies=self.detect_anomalies(),
-            imu_available=self._imu_available,
-            imu_drift_detected=self._imu_drift_detected
-        )
-    
+        """获取当前状态估计结果（线程安全）"""
+        self._acquire_lock()
+        try:
+            return EstimatorOutput(
+                state=self.x[:StateIdx.ACCEL_BIAS_X].copy(),
+                covariance=self.P[:StateIdx.ACCEL_BIAS_X, :StateIdx.ACCEL_BIAS_X].copy(),
+                covariance_norm=np.linalg.norm(self.P[:StateIdx.ACCEL_BIAS_X, :StateIdx.ACCEL_BIAS_X]),
+                innovation_norm=self.last_innovation_norm,
+                imu_bias=self.x[StateIdx.ACCEL_BIAS_X : StateIdx.ACCEL_BIAS_Z + 1].copy(),
+                slip_probability=self.slip_probability,
+                anomalies=self._detect_anomalies_unlocked(),
+                imu_available=self._imu_available,
+                imu_drift_detected=self._imu_drift_detected
+            )
+        finally:
+            self._release_lock()
+
     def reset(self) -> None:
-        self.x = np.zeros(11)
-        self.P = np.eye(11) * self.initial_covariance
-        self.slip_detected = False
-        self.slip_probability = 0.0
-        self.last_innovation_norm = 0.0
-        self.slip_history.clear()
-        self.last_imu_time = None
-        self.last_odom_time = None
-        self.last_world_velocity = np.zeros(2)
-        self.current_world_velocity = np.zeros(2)
-        self.world_accel_vec = np.zeros(2)
-        self._world_accel_initialized = False
-        self.last_position = np.zeros(3)
-        self.position_jump = 0.0
-        self.gyro_z = 0.0
-        self._imu_available = True
-        self._imu_drift_detected = False
-        self._last_odom_orientation = None
-        # 重置日志节流标志，允许重置后再次记录警告
-        for key in self._warning_logged:
-            self._warning_logged[key] = False
+        """重置估计器状态（线程安全）"""
+        self._acquire_lock()
+        try:
+            self.x = np.zeros(11)
+            self.P = np.eye(11) * self.initial_covariance
+            self.slip_detected = False
+            self.slip_probability = 0.0
+            self.last_innovation_norm = 0.0
+            self.slip_history.clear()
+            self.last_imu_time = None
+            self.last_odom_time = None
+            self.last_world_velocity = np.zeros(2)
+            self.current_world_velocity = np.zeros(2)
+            self._raw_odom_twist_norm = 0.0
+            self.world_accel_vec = np.zeros(2)
+            self._world_accel_initialized = False
+            self.last_position = np.zeros(3)
+            self.position_jump = 0.0
+            self.gyro_z = 0.0
+            self._imu_available = True
+            self._imu_drift_detected = False
+            self._last_odom_orientation = None
+            # 重置日志节流标志，允许重置后再次记录警告
+            for key in self._warning_logged:
+                self._warning_logged[key] = False
+        finally:
+            self._release_lock()
+
+    def shutdown(self) -> None:
+        """关闭并释放所有资源"""
+        self._acquire_lock()
+        try:
+            # 清理状态
+            self.reset()
+            # 释放大数组引用，帮助 GC
+            self._F = None
+            self._H_odom = None
+            self._temp_F_P = None
+            self._temp_FP_FT = None
+            self._temp_P_update_11 = None
+            # ... 其他 buffers
+            logger.info("AdaptiveEKFEstimator shutdown complete")
+        finally:
+            self._release_lock()

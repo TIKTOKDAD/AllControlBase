@@ -263,11 +263,22 @@ class AttitudeProcessor(IControlProcessor):
         elif yaw_mode == 'fixed':
             return theta_current
         elif yaw_mode == 'manual':
+            # 使用实际时间差计算 yaw 变化
+            # 如果时间差无效，记录警告并使用默认 dt
             if self._last_time is not None:
                 dt_actual = current_time - self._last_time
                 if 0 < dt_actual < 1.0:
-                    return theta_current + velocity_cmd.omega * dt_actual
-            return theta_current + velocity_cmd.omega * self.dt
+                    yaw_result = theta_current + velocity_cmd.omega * dt_actual
+                    return normalize_angle(yaw_result)
+                else:
+                    # 时间差异常（过大或非正），使用默认 dt 但记录警告
+                    import logging
+                    logging.getLogger(__name__).debug(
+                        f"Manual yaw mode: abnormal dt_actual={dt_actual:.3f}s, using default dt={self.dt}s"
+                    )
+            # 首次调用或时间差异常，使用默认 dt
+            yaw_result = theta_current + velocity_cmd.omega * self.dt
+            return normalize_angle(yaw_result)
         return theta_current
 
     def _update_hover_state(self, v_horizontal_current: float, v_horizontal_cmd: float,
@@ -314,8 +325,14 @@ class AttitudeProcessor(IControlProcessor):
                 self._hover_debounce_start = current_time
                 self._hover_debounce_target = True
                 return False
-            elif (self._hover_debounce_start is not None and 
+            elif (self._hover_debounce_start is not None and
                   current_time - self._hover_debounce_start >= self.hover_debounce_time):
+                # 防抖完成，正式进入悬停状态
+                # 在这里设置 _hover_start_time，确保 is_hovering 属性立即返回正确值
+                # 注意：_hover_yaw 在 _apply_hover_yaw_compensation 中设置，
+                # 因为需要 theta_current 参数
+                if self._hover_start_time is None:
+                    self._hover_start_time = current_time
                 return True
             else:
                 return False
@@ -324,16 +341,17 @@ class AttitudeProcessor(IControlProcessor):
             self._hover_debounce_target = None
             return False
 
-    def _apply_hover_yaw_compensation(self, theta_current: float, 
+    def _apply_hover_yaw_compensation(self, theta_current: float,
                                       current_time: float) -> Optional[float]:
-        if self._hover_start_time is None:
-            self._hover_start_time = current_time
+        # _hover_start_time 已在 _handle_hover_enter 中设置
+        # 这里只需要初始化 _hover_yaw（首次进入时）
+        if self._hover_yaw is None:
             self._hover_yaw = theta_current
             self._accumulated_yaw_drift = 0.0
         else:
             hover_duration = current_time - self._hover_start_time
             self._accumulated_yaw_drift = self._yaw_drift_rate * hover_duration
-        
+
         if self._hover_yaw is not None:
             return self._hover_yaw - self._accumulated_yaw_drift
         return None

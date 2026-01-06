@@ -199,13 +199,15 @@ class TestSoftDisabledTransitions:
         assert new_state == ControllerState.MPC_DEGRADED
     
     def test_soft_disabled_to_backup_on_mpc_fail(self):
-        """SOFT_DISABLED -> BACKUP_ACTIVE: MPC 失败"""
+        """SOFT_DISABLED -> BACKUP_ACTIVE: 连续 MPC 失败（与 NORMAL 状态一致的窗口检测）"""
         config = DEFAULT_CONFIG.copy()
         sm = StateMachine(config)
         sm.state = ControllerState.SOFT_DISABLED
         
-        diag = create_normal_diagnostics(mpc_success=False)
-        new_state = sm.update(diag)
+        # 需要连续 mpc_fail_thresh 次失败才能触发切换
+        for _ in range(sm.mpc_fail_thresh + 1):
+            diag = create_normal_diagnostics(mpc_success=False)
+            new_state = sm.update(diag)
         
         assert new_state == ControllerState.BACKUP_ACTIVE
 

@@ -8,6 +8,7 @@ import gc
 
 from ..core.interfaces import ITrajectoryTracker
 from ..core.data_types import Trajectory, ControlOutput, ConsistencyResult
+from ..core.indices import MPCStateIdx, MPCInputIdx, MPCSlices
 from ..core.enums import PlatformType
 from ..core.ros_compat import normalize_angle, angle_difference, get_monotonic_time
 from ..core.velocity_smoother import VelocitySmoother
@@ -75,6 +76,9 @@ class MPCController(ITrajectoryTracker):
             self.platform_type != PlatformType.ACKERMANN
         )
         
+        # 可视化配置
+        self.visualize_prediction = mpc_config.get('visualize_prediction', False)
+        
         # MPC 权重
         mpc_weights = mpc_config.get('weights', {})
         self.Q_pos = max(mpc_weights.get('position', 10.0), EPSILON)
@@ -93,15 +97,21 @@ class MPCController(ITrajectoryTracker):
         # 求解器状态
         self._solver = None
         self._solver_cache = {}  # Cache: horizon -> solver
+        self._solver_cache_order = []  # LRU order tracking: [oldest, ..., newest]
+        self._solver_cache_max_size = mpc_config.get('solver_cache_max_size', 5)
         self._is_initialized = False
         self._acados_creation_failed = False
         
-        # 生成唯一模型名以支持多进程
+        # 生成模型名 (使用确定性命名以利用缓存)
         import os
-        import uuid
+        # 使用 PID 区分不同进程，但移除 UUID 以确保同一进程内 Horizon 切换时名称稳定
+        # 注意: 如果不同 Horizon 共用同一个基础名，会导致文件冲突
+        # 使用 PID 和对象 ID 区分模型，确保进程内多实例安全
         pid = os.getpid()
-        uid = str(uuid.uuid4())[:8]
-        self._model_name = f"mpc_model_{pid}_{uid}"
+        self._model_name_base = f"mpc_model_pid{pid}_{id(self)}"
+        
+        # 预先检查 ACADOS 库是否存在，避免频繁编译
+        self._solver_lib_path = {}
         
         # 注册资源清理回调
         self._finalizer = weakref.finalize(self, self._cleanup_resources, self._solver_cache)
@@ -133,6 +143,9 @@ class MPCController(ITrajectoryTracker):
         self._last_cmd: Optional[ControlOutput] = None
         self._last_predicted_next_state: Optional[np.ndarray] = None
         
+        # 性能优化: 预分配 Buffer
+        self._yref_buffer: Optional[np.ndarray] = None
+        
         # 速度平滑器
         ctrl_freq = config.get('system', {}).get('ctrl_freq', 50)
         smoother_dt = 1.0 / ctrl_freq
@@ -151,17 +164,40 @@ class MPCController(ITrajectoryTracker):
         gc.collect()
 
     def _get_solver(self, horizon: int):
-        """获取或创建指定 horizon 的求解器 (带缓存)"""
+        """获取或创建指定 horizon 的求解器 (带 LRU 缓存)
+        
+        缓存策略:
+        - 使用 LRU (Least Recently Used) 策略管理缓存
+        - 缓存大小由 solver_cache_max_size 配置控制（默认 5）
+        - 当缓存满时，移除最久未使用的求解器
+        - 访问已缓存的求解器会更新其 LRU 顺序
+        """
         if horizon in self._solver_cache:
+            # 更新 LRU 顺序：移到末尾（最近使用）
+            if horizon in self._solver_cache_order:
+                self._solver_cache_order.remove(horizon)
+            self._solver_cache_order.append(horizon)
             return self._solver_cache[horizon]
+        
+        # 缓存满时，移除最久未使用的求解器
+        if len(self._solver_cache) >= self._solver_cache_max_size:
+            if self._solver_cache_order:
+                oldest_horizon = self._solver_cache_order.pop(0)
+                if oldest_horizon in self._solver_cache:
+                    del self._solver_cache[oldest_horizon]
+                    logger.debug(f"Evicted MPC solver for horizon {oldest_horizon} from cache (LRU)")
+        
         return self._create_solver(horizon)
 
     def _create_solver(self, horizon: int):
         """创建新的 ACADOS 求解器"""
         ocp = AcadosOcp()
         model = AcadosModel()
-        # Ensure unique model name to avoid conflicts if multiple models are loaded
-        model.name = f'{self._model_name}_{horizon}'
+        
+        # 使用确定性的模型名称 (base_name + horizon)
+        # 这确保了同一进程中，相同 horizon 的求解器对应相同的 json/so 文件
+        model_name = f'{self._model_name_base}_h{horizon}'
+        model.name = model_name
         
         # 状态变量: [px, py, pz, vx, vy, vz, theta, omega]
         px = ca.SX.sym('px')
@@ -186,19 +222,33 @@ class MPCController(ITrajectoryTracker):
         
         # 动力学模型
         if self.is_omni or self.is_3d:
-            xdot = ca.vertcat(vx, vy, vz, ax, ay, az, omega, alpha)
+            # 使用 StateIdx 保证顺序一致性
+            theta_fn = theta
+            xdot_expr = [0] * 8
+            xdot_expr[MPCStateIdx.X] = vx
+            xdot_expr[MPCStateIdx.Y] = vy
+            xdot_expr[MPCStateIdx.Z] = vz
+            xdot_expr[MPCStateIdx.VX] = ax
+            xdot_expr[MPCStateIdx.VY] = ay
+            xdot_expr[MPCStateIdx.VZ] = az
+            xdot_expr[MPCStateIdx.THETA] = omega
+            xdot_expr[MPCStateIdx.OMEGA] = alpha
+            xdot = ca.vertcat(*xdot_expr)
         else:
-            v_forward = vx * ca.cos(theta) + vy * ca.sin(theta)
-            xdot = ca.vertcat(
-                v_forward * ca.cos(theta),
-                v_forward * ca.sin(theta),
-                vz,
-                ax * ca.cos(theta) - v_forward * omega * ca.sin(theta),
-                ax * ca.sin(theta) + v_forward * omega * ca.cos(theta),
-                az,
-                omega,
-                alpha
-            )
+            theta_fn = theta
+            v_forward = vx * ca.cos(theta_fn) + vy * ca.sin(theta_fn)
+            
+            xdot_expr = [0] * 8
+            xdot_expr[MPCStateIdx.X] = v_forward * ca.cos(theta_fn)
+            xdot_expr[MPCStateIdx.Y] = v_forward * ca.sin(theta_fn)
+            xdot_expr[MPCStateIdx.Z] = vz
+            xdot_expr[MPCStateIdx.VX] = ax * ca.cos(theta_fn) - v_forward * omega * ca.sin(theta_fn)
+            xdot_expr[MPCStateIdx.VY] = ax * ca.sin(theta_fn) + v_forward * omega * ca.cos(theta_fn)
+            xdot_expr[MPCStateIdx.VZ] = az
+            xdot_expr[MPCStateIdx.THETA] = omega
+            xdot_expr[MPCStateIdx.OMEGA] = alpha
+            
+            xdot = ca.vertcat(*xdot_expr)
         
         model.x = x
         model.u = u
@@ -261,13 +311,32 @@ class MPCController(ITrajectoryTracker):
         ocp.solver_options.nlp_solver_type = self.nlp_solver_type
         ocp.solver_options.nlp_solver_max_iter = self.nlp_max_iter
         
-        # Use a unique json file name
-        json_file = f'{self._model_name}_{horizon}.json'
+        # Use a unique json file name based on deterministic model name
+        json_file = f'{model_name}.json'
         
-        solver = AcadosOcpSolver(ocp, json_file=json_file)
+        # 智能编译策略:
+        # 如果对应的共享库已经存在，且模型参数未变（此处假设同一 horizon 配置不变），
+        # 则跳过生成和编译步骤，极大地加速加载时间
+        # ACADOS 生成的库通常在 c_generated_code 目录下
+        generate_code = True
+        build_code = True
         
-        # Cache solver
+        # 简单的存在性检查 (实际路径可能由 acados_template 内部处理，这里主要做优化提示)
+        # 标记: 如果希望完全依赖 ACADOS 的 makefile 检查，可以保持 True
+        # 但明确的 False 可以避免任何文件 IO 检查及 make 调用开销
+        if horizon in self._solver_lib_path:
+            generate_code = False
+            build_code = False
+            logger.debug(f"Reusing existing solver library for horizon {horizon}")
+
+        solver = AcadosOcpSolver(ocp, json_file=json_file, generate=generate_code, build=build_code)
+        
+        # 记录库已准备好
+        self._solver_lib_path[horizon] = True
+        
+        # Cache solver and update LRU order
         self._solver_cache[horizon] = solver
+        self._solver_cache_order.append(horizon)
         return solver
 
     def _initialize_solver(self, horizon: int = None) -> None:
@@ -297,65 +366,198 @@ class MPCController(ITrajectoryTracker):
 
     def _solve_with_acados(self, state: np.ndarray, trajectory: Trajectory,
                           consistency: ConsistencyResult) -> ControlOutput:
-        """使用 ACADOS 求解 MPC 问题"""
+        """使用 ACADOS 求解 MPC 问题 (向量化优化版)"""
         if not self._is_initialized or self._solver is None:
             return ControlOutput(vx=0, vy=0, vz=0, omega=0, frame_id=self.output_frame,
                                success=False, health_metrics={'error_type': 'not_initialized'})
 
+        # 1. 设置初始状态约束
         self._solver.set(0, 'lbx', state)
         self._solver.set(0, 'ubx', state)
         
-        theta_ref = state[6]
+        # 2. 准备轨迹参考数据 (向量化处理，避免 Python 循环计算)
+        # traj_points = trajectory.points
+        # traj_len unused
         alpha = consistency.alpha
         
-        # 填充 Horizon 序列
-        traj_points = trajectory.points
-        traj_len = len(traj_points)
-        
-        # 批量获取混合速度
+        # 获取混合速度 [H, 4]
+        # 注意: get_blended_velocities_slice 返回的是 copy，安全修改
         blended_vels = trajectory.get_blended_velocities_slice(0, self.horizon, alpha)
-        # 补全
-        if len(blended_vels) < self.horizon:
-             pad_len = self.horizon - len(blended_vels)
-             if len(blended_vels) > 0:
-                 # Use constant 0 padding for velocity to ensure kinematic consistency
-                 # (Position stays constant at end, so velocity should be 0)
-                 blended_vels = np.pad(blended_vels, ((0, pad_len), (0, 0)), 'constant', constant_values=0)
-             else:
-                 blended_vels = np.zeros((self.horizon, 4))
         
-        for i in range(self.horizon):
-            traj_idx = min(i, traj_len - 1)
-            ref_point = traj_points[traj_idx]
-            
-            vx_ref, vy_ref, vz_ref, wz_ref = blended_vels[i]
-            
-            if i == 0:
-                theta_ref = state[6]
-            elif abs(wz_ref) > 1e-3:
-                theta_ref = normalize_angle(theta_ref + wz_ref * self.dt)
-            elif traj_idx < traj_len - 1:
-                next_point = traj_points[traj_idx + 1]
-                dx, dy = next_point.x - ref_point.x, next_point.y - ref_point.y
-                if np.hypot(dx, dy) > 1e-3: 
-                    theta_ref = np.arctan2(dy, dx)
-            
-            y_ref = np.array([ref_point.x, ref_point.y, ref_point.z,
-                             vx_ref, vy_ref, vz_ref, theta_ref, 0.0,
-                             0.0, 0.0, 0.0, 0.0])
-            self._solver.set(i, 'yref', y_ref)
-            
-            p = np.array([ref_point.x, ref_point.y, ref_point.z,
-                         vx_ref, vy_ref, vz_ref, theta_ref])
-            self._solver.set(i, 'p', p)
+        # 填充不足的部分
+        actual_len = len(blended_vels)
+        if actual_len < self.horizon:
+            # 需要填充的长度
+            pad_len = self.horizon - actual_len
+            if actual_len > 0:
+                # 速度用 0 填充
+                padding = np.zeros((pad_len, 4))
+                blended_vels = np.vstack([blended_vels, padding])
+            else:
+                blended_vels = np.zeros((self.horizon, 4))
+                
+        # 提取点坐标 [N, 3] -> 截取前 Horizon 个点并填充
+        # get_points_matrix() 有缓存，速度快
+        points_all = trajectory.get_points_matrix()
+        points_slice = points_all[:self.horizon]
         
-        # 终端代价
-        final_idx = min(self.horizon, traj_len - 1)
-        final_point = traj_points[final_idx]
-        y_ref_e = np.array([final_point.x, final_point.y, final_point.z,
-                          0.0, 0.0, 0.0, state[6], 0.0])
-        self._solver.set(self.horizon, 'yref', y_ref_e)
+        points_len = len(points_slice)
+        if points_len < self.horizon:
+            # 使用最后一个点填充剩余部分 (保持位置不变)
+            if points_len > 0:
+                last_pt = points_slice[-1]
+                pad_pts = np.tile(last_pt, (self.horizon - points_len, 1))
+                points_slice = np.vstack([points_slice, pad_pts])
+            else:
+                points_slice = np.zeros((self.horizon, 3))
+                
+        # ----------------------------------------------------------
+        # 3. 计算参考航向角 theta_ref (重构: 优先使用几何一致性)
+        # ----------------------------------------------------------
+        # 旧逻辑存在 "积分回环" 风险 (Points -> Diff -> Wz -> Integrate -> Theta)
+        # 新逻辑: 
+        #   1. 计算路径几何切向 (Geometric Tangent) 作为基础航向
+        #   2. 处理由静止或倒车引起的航向不确定性
+        #   3. 使用 Soft Wz 对 Geometric Theta 进行平滑 (可选，目前保持几何优先)
         
+        # 计算路径几何差分 [H-1, 3]
+        diffs = points_slice[1:] - points_slice[:-1]
+        
+        # 填充最后一个差分
+        last_diff = np.zeros(3)
+        if len(diffs) > 0:
+            last_diff = diffs[-1]
+        diffs = np.vstack([diffs, last_diff]) # [H, 3]
+        
+        # 计算几何航向 (atan2)
+        # 修正: 支持倒车逻辑
+        # 检查参考速度 (blended_vels[:, 0] 即 vx)
+        # 如果 vx < -0.01 (hysteresis), 则认为是在倒车，几何航向应翻转 180 度
+        vx_refs = blended_vels[:, 0]
+        geom_thetas = np.arctan2(diffs[:, 1], diffs[:, 0]) # [H]
+        
+        # 倒车检测与修正
+        # 使用切片操作避免循环
+        reversing_mask = vx_refs < -0.01
+        if np.any(reversing_mask):
+            # 只有当检测到确实在倒车时才修正
+            # geom = atan2(dy, dx). Reversing means heading is opposite to velocity vec
+            geom_thetas[reversing_mask] = normalize_angle(geom_thetas[reversing_mask] + np.pi)
+        
+        # 处理原地停滞 (Points 重叠): 此时 atan2 无意义 (0/0)
+        # 使用上一个有效的航向进行填充
+        dist_sq = diffs[:, 0]**2 + diffs[:, 1]**2
+        valid_mask = dist_sq > 1e-6
+        
+        theta_refs = np.zeros(self.horizon)
+        
+        # 1. 初始点: 优先使用当前状态航向，以保证连续性
+        theta_refs[0] = state[MPCStateIdx.THETA]
+        
+        # 2. 后续点: 使用几何航向
+        # 为了防止角度跳变 (如 -pi -> pi)，需要进行 unwrapping
+        # 但我们先填充数值
+        
+        # 简单的填充逻辑：无效点沿用上一个有效点的航向
+        last_valid_theta = theta_refs[0]
+        for i in range(1, self.horizon):
+            if valid_mask[i-1]: # diff[i-1] 对应从 i-1 到 i 的方向
+                # 使用几何方向
+                # 检测是否需要翻转 (例如倒车路径):
+                # 如果几何方向与上一时刻方向差接近 180 度，可能是倒车？
+                # 暂时假设前向跟踪
+                last_valid_theta = geom_thetas[i-1]
+            
+            theta_refs[i] = last_valid_theta
+            
+        # 3. 角度解缠 (Unwrapping) 及 归一化
+        # 确保 theta_refs 连续，没有 2pi 跳变，这对于 QP 求解器非常重要
+        # 首先计算相对于当前状态的相对角，然后归一化到 [-pi, pi]
+        # 但 MPC 中经常使用无限角度或 unwrapped 角度。
+        # ACADOS 取决于是否使用 Quaternions。这里是 Euler。
+        # 简单策略: 保持 reference 接近当前状态
+        
+        # 使用累计差分的方法来重建连续角度，避免跳变
+        # delta = normalize(theta[i] - theta[i-1])
+        # theta[i] = theta[i-1] + delta
+        for i in range(1, self.horizon):
+            delta = normalize_angle(theta_refs[i] - theta_refs[i-1])
+            theta_refs[i] = theta_refs[i-1] + delta
+            
+        # 4. Soft Wz 混合 (已移除复杂的积分逻辑，仅在完全静止时信任 Soft Wz? 不，几何优先)
+        # 如果启用 soft mode 且 confidence 高，是否应该用 soft theta?
+        # 原始设计意图不明，现在的几何优先更稳健。
+        
+        # 最终不需要再次归一化到 [-pi, pi]，因为我们需要保持角度的连续性 (Unwrapped)
+        # ACADOS/QP 求解器在处理 (theta - theta_ref)^2 时，如果你归一化了，
+        # 会出现 (3.1 - (-3.1))^2 = 38.4 的巨大误差，导致控制器反转。
+        # theta_refs = normalize_angle(theta_refs)  # REMOVED
+        
+        # 4. 构建 yref 矩阵 [H, 12]
+        # yref: [px, py, pz, vx, vy, vz, theta, omega, ax, ay, az, alpha]
+        
+        # 性能优化: 使用预分配 Buffer 避免重复 malloc
+        if self._yref_buffer is None or self._yref_buffer.shape[0] != self.horizon:
+            self._yref_buffer = np.zeros((self.horizon, 12), dtype=np.float64)
+            
+        yrefs = self._yref_buffer
+        
+        # 填充数据
+        # 填充数据
+        yrefs[:, MPCSlices.REF_POS] = points_slice         # px, py, pz
+        yrefs[:, MPCSlices.REF_VEL] = blended_vels[:, 0:3] # vx, vy, vz
+        yrefs[:, MPCSlices.REF_THETA] = theta_refs         # theta
+        yrefs[:, MPCSlices.REF_OMEGA] = blended_vels[:, 3] # omega
+        yrefs[:, MPCSlices.REF_CONTROLS] = 0.0             # controls (ax, ay, az, alpha) 期望为 0
+        
+        # 5. 构建 parameters 矩阵 p [H, 7]
+        # p: [px_ref, py_ref, pz_ref, vx_ref, vy_ref, vz_ref, theta_ref]
+        # 这几乎是 yref 的前 7 列
+        ps = yrefs[:, MPCSlices.POSE_VEL]
+        
+        # 6. 批量设置到求解器
+        # ACADOS Python 接口目前的 set() 必须循环调用
+        # 优化1: 缓存方法引用，减少属性查找开销
+        # 优化2: 确保数组 C 连续且为 float64
+        # yrefs 已经是连续的(来自 buffer)，ps 是 slice
+
+        
+        # 确保 yrefs 是连续的 (通常已经是)
+        if not yrefs.flags['C_CONTIGUOUS']:
+            yrefs = np.ascontiguousarray(yrefs, dtype=np.float64)
+             
+        # 优化: 尽量减少 Python 循环内的属性查找
+        solver_set = self._solver.set
+        horizon = self.horizon
+        
+        # 预先获取整个矩阵的 VIEW，避免在循环中重复切片
+        # yrefs 已经确保是连续的 np.float64
+        # p_params 是 yrefs 的前7列 (Pose + Vel)
+        
+        for i in range(horizon):
+            # 直接传递行引用 (NumPy 切片 view)
+            # Acados Python Interface 会处理 contiguous 检查，
+            # 但我们在外部保证 yrefs 是 contiguous 的，所以 yrefs[i] 也是 contiguous
+            solver_set(i, 'yref', yrefs[i])
+            
+            # 设置参数 p. 
+            # 优化: 使用 ps[i] 直接获取参数，避免重复切片 yrefs[i, MPCSlices.POSE_VEL]
+            solver_set(i, 'p', ps[i])
+            
+        # 7. 终端代价 (Terminal Cost)
+        # 使用最后一个点的状态作为终端参考
+        final_pt = points_slice[-1]
+        final_theta = theta_refs[-1]
+        
+        # yref_e: [px, py, pz, vx, vy, vz, theta, omega] (8维)
+        yref_e = np.array([
+            final_pt[0], final_pt[1], final_pt[2],
+            0.0, 0.0, 0.0, final_theta, 0.0
+        ])
+        solver_set(self.horizon, 'yref', yref_e)
+        solver_set(self.horizon, 'p', ps[-1]) # 终端参数通常也需要设置
+        
+        # 8. 求解
         status = self._solver.solve()
         
         # 获取结果
@@ -365,21 +567,25 @@ class MPCController(ITrajectoryTracker):
             x1 = self._solver.get(1, "x")
             self._last_predicted_next_state = x1
             
-            # Extract full predicted trajectory for visualization
-            # This allows RViz to show exactly what the MPC plans to do
-            pred_states = []
-            try:
-                for i in range(self.horizon + 1):
-                    pred_states.append(self._solver.get(i, "x"))
-            except Exception as e:
-                logger.warning(f"Failed to extract predicted trajectory: {e}")
-            
+            # 使用索引常量提取结果
             result = ControlOutput(
-                vx=x1[3], vy=x1[4], vz=x1[5], omega=x1[7],
-                frame_id=self.output_frame, success=True,
-                health_metrics={'kkt_residual': self._last_kkt_residual},
-                extras={'predicted_trajectory': pred_states}
+                vx=x1[MPCStateIdx.VX], 
+                vy=x1[MPCStateIdx.VY], 
+                vz=x1[MPCStateIdx.VZ], 
+                omega=x1[MPCStateIdx.OMEGA],
+                frame_id=self.output_frame, 
+                success=True,
+                health_metrics={'kkt_residual': self._last_kkt_residual}
             )
+            
+            # 只有在启用可视化时才提取完整轨迹，节省开销
+            if self.visualize_prediction:
+                pred_states = []
+                solver_get = self._solver.get
+                for i in range(self.horizon + 1):
+                    pred_states.append(solver_get(i, "x"))
+                result.extras['predicted_trajectory'] = pred_states
+            
         else:
             logger.warning(f"ACADOS solve failed with status {status}")
             result = ControlOutput(
@@ -401,8 +607,8 @@ class MPCController(ITrajectoryTracker):
         if not self._is_initialized:
             # 尝试重新初始化（如果是之前的瞬时失败），或者直接返回失败
             if not self._acados_creation_failed:
-                 # 尚未失败过但未初始化，可能是未调用或者第一次
-                 self._initialize_solver()
+                # 尚未失败过但未初始化，可能是未调用或者第一次
+                self._initialize_solver()
             
             if not self._is_initialized:
                 return ControlOutput(vx=0, vy=0, vz=0, omega=0, frame_id=self.output_frame, success=False,
@@ -420,6 +626,11 @@ class MPCController(ITrajectoryTracker):
             return result
                 
         except Exception as e:
+            # 开发调试友好：重抛代码错误（如拼写错误、类型错误），不掩盖 Bug
+            if isinstance(e, (AttributeError, NameError, TypeError, SyntaxError)):
+                raise e
+            
+            # 运行时错误（如求解器失败、数学域错误）：记录日志并安全降级
             logger.exception(f"MPC compute error: {e}")
             return ControlOutput(vx=0, vy=0, vz=0, omega=0, frame_id=self.output_frame, success=False,
                                health_metrics={'error_type': 'compute_exception', 'msg': str(e)})
@@ -429,9 +640,11 @@ class MPCController(ITrajectoryTracker):
         if self._solver is not None:
             self._solver = None
         
-        # 清理缓存的求解器
+        # 清理缓存的求解器和 LRU 顺序
         if hasattr(self, '_solver_cache') and self._solver_cache:
             self._solver_cache.clear()
+        if hasattr(self, '_solver_cache_order'):
+            self._solver_cache_order.clear()
         
         # 强制 GC 以清理 C 资源
         gc.collect()
@@ -445,7 +658,7 @@ class MPCController(ITrajectoryTracker):
         
         current_time = get_monotonic_time()
         if self._last_horizon_change_time is not None:
-             # 如果已有缓存，允许快速切换；否则限制频率
+            # 如果已有缓存，允许快速切换；否则限制频率
             if (horizon not in self._solver_cache) and (current_time - self._last_horizon_change_time < self._horizon_change_min_interval):
                 return False
         
@@ -464,7 +677,9 @@ class MPCController(ITrajectoryTracker):
             'last_solve_time_ms': self._last_solve_time_ms,
             'kkt_residual': self._last_kkt_residual,
             'condition_number': self._last_condition_number,
-            'acados_available': self._is_initialized
+            'acados_available': self._is_initialized,
+            'solver_cache_size': len(self._solver_cache),
+            'solver_cache_max_size': self._solver_cache_max_size,
         }
     
     def get_predicted_next_state(self) -> Optional[np.ndarray]:

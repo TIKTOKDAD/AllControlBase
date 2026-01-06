@@ -9,6 +9,11 @@ from typing import Any, Dict, Optional, Callable
 from universal_controller.core.data_types import ControlOutput as UcControlOutput
 from .base import IMsgConverter
 
+try:
+    from controller_ros.msg import UnifiedCmd
+except ImportError:
+    UnifiedCmd = None
+
 
 class OutputAdapter(IMsgConverter):
     """
@@ -44,10 +49,7 @@ class OutputAdapter(IMsgConverter):
     
     def to_ros(self, uc_data: UcControlOutput) -> Any:
         """UC ControlOutput → ROS UnifiedCmd"""
-        # 延迟导入避免循环依赖
-        try:
-            from controller_ros.msg import UnifiedCmd
-        except ImportError:
+        if UnifiedCmd is None:
             raise ImportError("ROS messages not available")
         
         msg = UnifiedCmd()
@@ -63,9 +65,7 @@ class OutputAdapter(IMsgConverter):
     
     def create_stop_cmd(self) -> Any:
         """创建停止命令"""
-        try:
-            from controller_ros.msg import UnifiedCmd
-        except ImportError:
+        if UnifiedCmd is None:
             raise ImportError("ROS messages not available")
         
         msg = UnifiedCmd()

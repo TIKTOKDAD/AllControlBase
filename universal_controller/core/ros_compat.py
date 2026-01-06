@@ -84,6 +84,9 @@ def euler_from_quaternion(q: Tuple[float, float, float, float]) -> Tuple[float, 
     Returns:
         (roll, pitch, yaw) 弧度
     """
+    if tft is not None:
+        return tft.euler_from_quaternion(q)
+        
     x, y, z, w = q
     
     # 归一化四元数，确保数值稳定性
@@ -128,6 +131,9 @@ def quaternion_from_euler(roll: float, pitch: float, yaw: float) -> Tuple[float,
     Returns:
         四元数 (x, y, z, w)
     """
+    if tft is not None:
+        return tft.quaternion_from_euler(roll, pitch, yaw)
+
     cy = np.cos(yaw * 0.5)
     sy = np.sin(yaw * 0.5)
     cp = np.cos(pitch * 0.5)
@@ -342,16 +348,15 @@ def apply_transform_to_trajectory(traj: 'Trajectory', transform_matrix: np.ndarr
     # 向量化变换所有点
     if len(traj.points) > 0:
         # 构建点矩阵 [N, 3]
-        points = np.array([[p.x, p.y, p.z] for p in traj.points])
+        # Use vectorized getter (handles both List[Point3D] and np.ndarray input efficiently)
+        points = traj.get_points_matrix()
         
         # 应用变换: p' = R @ p + t
-        transformed_points = (R @ points.T).T + t
+        # points.T is [3, N], R is [3, 3] -> [3, N]. Transpose back to [N, 3]
+        transformed_points = (points @ R.T) + t
         
-        # 更新轨迹点
-        new_traj.points = [
-            Point3D(x=p[0], y=p[1], z=p[2]) 
-            for p in transformed_points
-        ]
+        # 更新轨迹点 (Trajectory supports numpy array now)
+        new_traj.points = transformed_points
     
     # 变换速度向量 (只需旋转，不需平移)
     if traj.velocities is not None and len(traj.velocities) > 0:

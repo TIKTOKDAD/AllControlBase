@@ -207,7 +207,7 @@ class TestParamLoaderIntegration:
         assert 'weights' in config['mpc']
         assert 'position' in config['mpc']['weights']
         assert 'health_monitor' in config['mpc']
-        assert 'solver' in config['mpc']
+        # 注意: solver 参数已移至 core/constants.py，不再在配置中
         assert 'fallback' in config['mpc']
     
     def test_load_includes_transform_config_with_tf2_params(self):

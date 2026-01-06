@@ -139,13 +139,18 @@ def test_odom_timeout_config():
         
         monitor = TimeoutMonitor(config)
         
-        # 更新一次
-        monitor.update_odom()
+        # 先发送一次有效数据，触发启动宽限期结束
+        data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+        monitor.check(data_ages)
         
-        # 等待超时
-        time.sleep(timeout_ms / 1000 + 0.05)
+        # 等待启动宽限期结束
+        time.sleep(0.015)
         
-        status = monitor.check()
+        # 模拟超时：odom 数据年龄超过阈值
+        timeout_age_sec = (timeout_ms + 50) / 1000.0  # 超过阈值
+        data_ages_timeout = {'odom': timeout_age_sec, 'trajectory': 0.0, 'imu': 0.0}
+        
+        status = monitor.check(data_ages_timeout)
         assert status.odom_timeout == True, f"timeout_ms={timeout_ms}: should be timeout"
         
     print("✓ test_odom_timeout_config passed")
@@ -160,8 +165,8 @@ def test_startup_grace_config():
         
         monitor = TimeoutMonitor(config)
         
-        # 立即检查，应该在宽限期内
-        status = monitor.check()
+        # 立即检查（不传入数据），应该在宽限期内
+        status = monitor.check({})
         assert status.in_startup_grace == True, f"grace_ms={grace_ms}: should be in startup grace"
         
     print("✓ test_startup_grace_config passed")
@@ -177,11 +182,17 @@ def test_trajectory_grace_config():
         config['watchdog']['startup_grace_ms'] = 10
         
         monitor = TimeoutMonitor(config)
-        monitor.update_trajectory()
         
-        # 等待超时但在宽限期内
-        time.sleep(0.06)
-        status = monitor.check()
+        # 先发送一次有效数据，触发启动宽限期结束
+        data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+        monitor.check(data_ages)
+        
+        # 等待启动宽限期结束
+        time.sleep(0.015)
+        
+        # 模拟轨迹超时：trajectory 数据年龄超过阈值
+        data_ages_timeout = {'odom': 0.0, 'trajectory': 0.06, 'imu': 0.0}  # 60ms > 50ms
+        status = monitor.check(data_ages_timeout)
         
         # 应该超时但不超过宽限期
         assert status.traj_timeout == True
@@ -541,10 +552,11 @@ def test_platform_output_frame_config():
     
     odom = create_test_odom(vx=1.0)
     trajectory = create_test_trajectory()
-    cmd = manager.update(odom, trajectory)
+    current_time = time.time()
+    data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+    cmd = manager.update(current_time, odom, trajectory, data_ages)
     
     assert cmd.frame_id == 'base_link'
-    manager.shutdown()
     
     # 全向车应该输出 world
     config2 = DEFAULT_CONFIG.copy()
@@ -553,9 +565,8 @@ def test_platform_output_frame_config():
     manager2 = ControllerManager(config2)
     manager2.initialize_default_components()
     
-    cmd2 = manager2.update(odom, trajectory)
+    cmd2 = manager2.update(current_time, odom, trajectory, data_ages)
     assert cmd2.frame_id == 'world'
-    manager2.shutdown()
     
     print("✓ test_platform_output_frame_config passed")
 
@@ -573,13 +584,13 @@ def test_platform_constraints_config():
         
         odom = create_test_odom(vx=1.0)
         trajectory = create_test_trajectory()
-        cmd = manager.update(odom, trajectory)
+        current_time = time.time()
+        data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+        cmd = manager.update(current_time, odom, trajectory, data_ages)
         
         # 验证命令有效
         assert cmd is not None
         assert not np.isnan(cmd.vx)
-        
-        manager.shutdown()
     
     print("✓ test_platform_constraints_config passed")
 
@@ -613,15 +624,16 @@ def test_full_config_integration():
     # 运行几个周期
     odom = create_test_odom(vx=1.0)
     trajectory = create_test_trajectory(soft_enabled=True)
+    current_time = time.time()
+    data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
     
-    for _ in range(10):
-        cmd = manager.update(odom, trajectory)
+    for i in range(10):
+        cmd = manager.update(current_time + i * 0.01, odom, trajectory, data_ages)
         
         # 验证速度约束
         v = np.sqrt(cmd.vx**2 + cmd.vy**2)
         assert v <= 1.5 * 1.5, f"Velocity {v} exceeds configured limit"
     
-    manager.shutdown()
     print("✓ test_full_config_integration passed")
 
 

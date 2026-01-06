@@ -58,7 +58,9 @@ def test_controller_bridge_update():
     odom = create_test_odom(vx=1.0)
     trajectory = create_test_trajectory()
     
-    cmd = bridge.update(odom, trajectory)
+    current_time = time.time()
+    data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+    cmd = bridge.update(current_time, odom, trajectory, data_ages)
     
     assert cmd is not None
     assert hasattr(cmd, 'vx')
@@ -78,8 +80,10 @@ def test_controller_bridge_reset():
     odom = create_test_odom(vx=1.0)
     trajectory = create_test_trajectory()
     
+    data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
     for _ in range(5):
-        bridge.update(odom, trajectory)
+        current_time = time.time()
+        bridge.update(current_time, odom, trajectory, data_ages)
     
     # 重置
     bridge.reset()
@@ -98,7 +102,9 @@ def test_controller_bridge_diagnostics():
     odom = create_test_odom(vx=1.0)
     trajectory = create_test_trajectory()
     
-    bridge.update(odom, trajectory)
+    current_time = time.time()
+    data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+    bridge.update(current_time, odom, trajectory, data_ages)
     
     diag = bridge.get_diagnostics()
     assert diag is not None
@@ -123,8 +129,10 @@ def test_controller_bridge_diagnostics_callback():
     odom = create_test_odom(vx=1.0)
     trajectory = create_test_trajectory()
     
+    data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
     for _ in range(5):
-        bridge.update(odom, trajectory)
+        current_time = time.time()
+        bridge.update(current_time, odom, trajectory, data_ages)
     
     assert len(callback_data) >= 5
     
@@ -148,7 +156,9 @@ def test_controller_bridge_platform_types():
         odom = create_test_odom(vx=1.0)
         trajectory = create_test_trajectory()
         
-        cmd = bridge.update(odom, trajectory)
+        current_time = time.time()
+        data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+        cmd = bridge.update(current_time, odom, trajectory, data_ages)
         assert cmd is not None
         
         bridge.shutdown()
@@ -169,8 +179,10 @@ def test_controller_bridge_request_stop():
     odom = create_test_odom(vx=1.0)
     trajectory = create_test_trajectory()
     
+    data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
     for _ in range(5):
-        bridge.update(odom, trajectory)
+        current_time = time.time()
+        bridge.update(current_time, odom, trajectory, data_ages)
     
     # 请求停止
     success = bridge.request_stop()
@@ -178,7 +190,8 @@ def test_controller_bridge_request_stop():
     
     # 新方案：状态转换发生在下一次 update() 时
     # 再执行一次 update，状态机会处理停止请求
-    bridge.update(odom, trajectory)
+    current_time = time.time()
+    bridge.update(current_time, odom, trajectory, data_ages)
     
     # 验证状态已变为 STOPPING
     assert bridge.get_state() == ControllerState.STOPPING, \

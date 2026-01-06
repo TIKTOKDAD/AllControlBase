@@ -9,6 +9,7 @@ ROS 兼容层
         get_time_sec, ros_time_to_sec, sec_to_ros_time
     )
 """
+import os
 import time
 import logging
 import threading
@@ -25,25 +26,53 @@ ROS_VERSION = 0  # 0=无, 1=ROS1, 2=ROS2
 ROS_AVAILABLE = False
 TF2_AVAILABLE = False
 
-# 尝试检测 ROS2
-try:
-    import rclpy
-    from rclpy.node import Node
+# 1. 优先使用环境变量 (标准做法)
+env_ros_version = os.environ.get('ROS_VERSION')
+if env_ros_version == '1':
+    ROS_VERSION = 1
+    ROS_AVAILABLE = True
+elif env_ros_version == '2':
     ROS_VERSION = 2
     ROS_AVAILABLE = True
-    logger.debug("ROS2 detected")
-except ImportError:
-    pass
 
-# 尝试检测 ROS1
+# 2. 如果环境变量未设置，尝试自动检测
 if ROS_VERSION == 0:
+    # 尝试检测 ROS2
     try:
-        import rospy
-        ROS_VERSION = 1
+        import rclpy
+        from rclpy.node import Node
+        ROS_VERSION = 2
         ROS_AVAILABLE = True
-        logger.debug("ROS1 detected")
+        logger.debug("ROS2 detected (via import)")
     except ImportError:
         pass
+
+    # 尝试检测 ROS1
+    if ROS_VERSION == 0:
+        try:
+            import rospy
+            ROS_VERSION = 1
+            ROS_AVAILABLE = True
+            logger.debug("ROS1 detected (via import)")
+        except ImportError:
+            pass
+else:
+    # 根据环境变量尝试导入对应的库，确保环境一致性
+    if ROS_VERSION == 2:
+        try:
+            import rclpy
+            from rclpy.node import Node
+            logger.debug("ROS2 environment detected")
+        except ImportError:
+             logger.warning("ROS_VERSION=2 but failed to import rclpy")
+             ROS_AVAILABLE = False
+    elif ROS_VERSION == 1:
+        try:
+            import rospy
+            logger.debug("ROS1 environment detected")
+        except ImportError:
+            logger.warning("ROS_VERSION=1 but failed to import rospy")
+            ROS_AVAILABLE = False
 
 # 检测 TF2
 if ROS_VERSION == 2:
@@ -116,30 +145,22 @@ def ros_time_to_sec(stamp) -> float:
     支持 ROS1 (secs/nsecs 或 to_sec()) 和 ROS2 (sec/nanosec) 格式
     也支持测试环境中的 Mock 对象
     """
-    if ROS_VERSION == 1:
-        # ROS1: rospy.Time 有 to_sec() 方法
-        if hasattr(stamp, 'to_sec'):
-            return stamp.to_sec()
-        # 或者直接访问属性
-        if hasattr(stamp, 'secs') and hasattr(stamp, 'nsecs'):
-            return stamp.secs + stamp.nsecs * 1e-9
-    elif ROS_VERSION == 2:
-        # ROS2: builtin_interfaces/Time
-        if hasattr(stamp, 'sec') and hasattr(stamp, 'nanosec'):
-            return stamp.sec + stamp.nanosec * 1e-9
-    
-    # 非 ROS 环境或 Mock 对象：尝试通用属性访问
-    # 支持 ROS2 风格 (sec/nanosec)
-    if hasattr(stamp, 'sec') and hasattr(stamp, 'nanosec'):
+    # 快速路径: float
+    if isinstance(stamp, (float, int)):
+        return float(stamp)
+
+    # ROS2 (builtin_interfaces/Time) - Most likely in ROS2 env
+    if hasattr(stamp, 'nanosec'):
         return stamp.sec + stamp.nanosec * 1e-9
-    # 支持 ROS1 风格 (secs/nsecs)
-    if hasattr(stamp, 'secs') and hasattr(stamp, 'nsecs'):
-        return stamp.secs + stamp.nsecs * 1e-9
-    # 支持 to_sec() 方法
+        
+    # ROS1 (rospy.Time) - Has to_sec method
     if hasattr(stamp, 'to_sec'):
         return stamp.to_sec()
     
-    # 最后尝试直接转换
+    # Fallback for ROS1 raw msg structures (secs/nsecs)
+    if hasattr(stamp, 'nsecs'):
+        return stamp.secs + stamp.nsecs * 1e-9
+        
     return float(stamp)
 
 
@@ -205,6 +226,62 @@ if ROS_VERSION == 1:
         _setup_logging_for_ros()
     except Exception:
         pass  # 如果 rospy 未初始化，跳过配置
+
+
+def setup_ros2_logging(node):
+    """
+    配置 logging 以便在 ROS2 环境下正确输出到 /rosout
+    
+    Args:
+        node: ROS2 Node 实例
+    """
+    if ROS_VERSION != 2:
+        return
+
+    class Ros2Handler(logging.Handler):
+        """将 Python logging 转发到 ROS2 Node Logger"""
+        def __init__(self, node_instance):
+            super().__init__()
+            self._node = node_instance
+            
+        def emit(self, record):
+            try:
+                msg = self.format(record)
+                # 使用 record.name 作为前缀，保留模块信息，看起来像: [universal_controller.mpc] Message...
+                # 注意: 不使用 node.get_logger().get_child() 因为那会创建大量 logger 对象
+                ros_msg = f"[{record.name}] {msg}"
+                
+                # 映射日志级别
+                if record.levelno >= logging.ERROR:
+                    self._node.get_logger().error(ros_msg)
+                elif record.levelno >= logging.WARNING:
+                    self._node.get_logger().warn(ros_msg)
+                elif record.levelno >= logging.INFO:
+                    self._node.get_logger().info(ros_msg)
+                else:
+                    self._node.get_logger().debug(ros_msg)
+            except Exception:
+                self.handleError(record)
+
+    # 创建并配置 Handler
+    handler = Ros2Handler(node)
+    # 消息格式只包含消息本身，因为 Ros2Handler 会添加 name 前缀，ROS 自身会添加时间戳
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    
+    # 为关键模块配置日志
+    for module_name in ['controller_ros', 'universal_controller']:
+        logger_obj = logging.getLogger(module_name)
+        
+        # 避免重复添加 (幂等性)
+        if not any(isinstance(h, Ros2Handler) for h in logger_obj.handlers):
+            logger_obj.addHandler(handler)
+            # 设置为 DEBUG，让 ROS 2 的 verbosity 级别 (通过 launch 或 ros2 param) 来决定最终显示
+            logger_obj.setLevel(logging.DEBUG) 
+            # 停止传播，防止同时打印到 stdout (造成双重日志)
+            logger_obj.propagate = False
+            
+    # 记录一条调试信息确认配置成功
+    node.get_logger().debug("Python logging bridged to ROS 2 /rosout")
 
 
 def log_info(msg: str):
@@ -377,7 +454,7 @@ class TF2Compat:
             self._initialized = False
     
     def lookup_transform(self, target_frame: str, source_frame: str,
-                        time=None, timeout_sec: float = 0.01) -> Optional[dict]:
+                        time=None, timeout_sec: float = 0.0) -> Optional[dict]:
         """
         查询坐标变换
         
@@ -405,10 +482,8 @@ class TF2Compat:
                 if time is None:
                     ros_time = rospy.Time(0)  # 最新可用的变换
                 elif isinstance(time, (int, float)):
-                    # float 秒数 -> 使用 Time(0) 获取最新变换
-                    # 注意：TF2 lookup 通常使用 Time(0) 获取最新变换更可靠
-                    # 因为精确时间戳可能不在 buffer 中
-                    ros_time = rospy.Time(0)
+                    # float 秒数 -> 转换为 ROS Time
+                    ros_time = rospy.Time.from_sec(time)
                 else:
                     ros_time = time  # 假设已经是 rospy.Time
                 
@@ -440,8 +515,10 @@ class TF2Compat:
                 if time is None:
                     ros_time = Time()  # 最新可用的变换
                 elif isinstance(time, (int, float)):
-                    # float 秒数 -> 使用 Time() 获取最新变换
-                    ros_time = Time()
+                    # float 秒数 -> 转换为 rclpy Time
+                    sec = int(time)
+                    nanosec = int((time - sec) * 1e9)
+                    ros_time = Time(seconds=sec, nanoseconds=nanosec)
                 else:
                     ros_time = time  # 假设已经是 rclpy.time.Time
                 
@@ -471,7 +548,7 @@ class TF2Compat:
         return None
     
     def can_transform(self, target_frame: str, source_frame: str,
-                     time=None, timeout_sec: float = 0.01) -> bool:
+                     time=None, timeout_sec: float = 0.0) -> bool:
         """检查是否可以进行坐标变换"""
         if not self._initialized or self._buffer is None:
             return False

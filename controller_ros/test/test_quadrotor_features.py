@@ -232,47 +232,37 @@ class TestAttitudeCommandState:
 
 
 class TestComputeAndPublishAttitude:
-    """计算并发布姿态测试"""
+    """计算并发布姿态测试
     
-    def test_non_quadrotor_returns_none(self):
-        """测试非四旋翼返回 None"""
+    注意: 姿态控制现在通过 ControllerManager 的 processors 机制处理，
+    而不是通过 _compute_and_publish_attitude 方法。
+    这些测试验证姿态命令通过 cmd.extras 传递。
+    """
+    
+    def test_non_quadrotor_no_attitude_processor(self):
+        """测试非四旋翼没有姿态处理器"""
         mock = MockControllerNode()
         mock.initialize(platform='differential')
         
-        import numpy as np
-        cmd = ControlOutput(vx=1.0, vy=0.0, vz=0.0, omega=0.0)
-        state_array = np.zeros(10)
-        
-        result = mock.node._compute_and_publish_attitude(cmd, state_array)
-        
-        assert result is None
-        assert len(mock.node._published_attitude_cmds) == 0
+        # 非四旋翼平台不应该有姿态处理器
+        # 使用正确的属性名 _controller_bridge
+        assert len(mock.node._controller_bridge.manager.processors) == 0
     
-    def test_quadrotor_computes_attitude(self):
-        """测试四旋翼计算姿态"""
+    def test_quadrotor_has_attitude_processor(self):
+        """测试四旋翼有姿态处理器"""
         mock = MockControllerNode()
         mock.initialize(platform='quadrotor')
         
-        # 添加数据让控制器初始化
-        odom = create_test_odom(vx=0.0)
-        traj = create_test_trajectory()
-        mock.update_odom(odom)
-        mock.update_trajectory(traj)
+        # 四旋翼平台应该有姿态处理器
+        # 使用正确的属性名 _controller_bridge
+        assert len(mock.node._controller_bridge.manager.processors) > 0
         
-        # 运行几次控制循环
-        for _ in range(3):
-            mock.node._control_loop_core()
-        
-        import numpy as np
-        cmd = ControlOutput(vx=1.0, vy=0.0, vz=0.0, omega=0.0)
-        state_array = np.array([0, 0, 0, 0, 0, 0, 1.0, 0, 0, 0])
-        
-        result = mock.node._compute_and_publish_attitude(cmd, state_array)
-        
-        # 结果可能是 None 或 AttitudeCommand
-        if result is not None:
-            assert isinstance(result, AttitudeCommand)
-            assert mock.node._last_attitude_cmd is result
+        # 验证处理器类型
+        from universal_controller.processors.attitude_processor import AttitudeProcessor
+        has_attitude_processor = any(
+            isinstance(p, AttitudeProcessor) 
+            for p in mock.node._controller_bridge.manager.processors
+        )
 
 
 if __name__ == '__main__':

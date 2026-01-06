@@ -116,7 +116,8 @@ def test_state_machine_mpc_fail_count_reset():
     config = DEFAULT_CONFIG.copy()
     sm = StateMachine(config)
     
-    # 测试 1: SOFT_DISABLED -> BACKUP_ACTIVE (mpc_success=False)
+    # 测试 1: SOFT_DISABLED -> BACKUP_ACTIVE (连续 mpc_success=False)
+    # 注意: 需要连续 mpc_fail_thresh 次失败才能触发切换
     sm.state = ControllerState.SOFT_DISABLED
     # 预填充一些历史记录
     for _ in range(5):
@@ -136,9 +137,14 @@ def test_state_machine_mpc_fail_count_reset():
         vz=0.0,
     )
     
-    new_state = sm.update(diagnostics)
+    # 需要连续多次失败才能触发切换
+    for _ in range(sm.mpc_fail_thresh + 1):
+        new_state = sm.update(diagnostics)
+    
     assert new_state == ControllerState.BACKUP_ACTIVE
-    assert len(sm._mpc_success_history) == 0, f"_mpc_success_history should be empty, got {len(sm._mpc_success_history)}"
+    # 状态转换时历史被清空，但转换后的 update() 会追加新记录
+    # BACKUP_ACTIVE 状态下会继续追加 MPC 结果
+    assert len(sm._mpc_success_history) <= 1, f"_mpc_success_history should be reset, got {len(sm._mpc_success_history)}"
     
     # 测试 2: SOFT_DISABLED -> MPC_DEGRADED (safety_failed)
     sm.reset()
@@ -286,7 +292,15 @@ def test_timeout_monitor_disabled_timeout():
     
     monitor = TimeoutMonitor(config)
     
-    # 即使传入很大的 age，也应该被忽略
+    # 先发送一次有效数据，触发启动宽限期开始
+    data_ages_init = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+    monitor.check(data_ages_init)
+    
+    # 等待启动宽限期结束
+    import time
+    time.sleep(0.015)
+    
+    # 即使传入很大的 age，也应该被忽略（因为 IMU 超时已禁用）
     data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 999.0}
     status = monitor.check(data_ages)
     
@@ -295,9 +309,15 @@ def test_timeout_monitor_disabled_timeout():
     # 测试 odom 超时禁用
     config2 = copy.deepcopy(DEFAULT_CONFIG)
     config2['watchdog']['odom_timeout_ms'] = 0
+    config2['watchdog']['startup_grace_ms'] = 10
     
     monitor2 = TimeoutMonitor(config2)
-    # Odom age very large
+    
+    # 先发送一次有效数据，触发启动宽限期开始
+    monitor2.check(data_ages_init)
+    time.sleep(0.015)
+    
+    # Odom age very large，但因为禁用了所以不应该超时
     data_ages2 = {'odom': 999.0, 'trajectory': 0.0, 'imu': 0.0}
     status2 = monitor2.check(data_ages2)
     
@@ -340,7 +360,16 @@ def test_safety_monitor():
 
 
 def test_mpc_horizon_dynamic_adjustment():
-    """测试 MPC horizon 动态调整 (v3.17.3)"""
+    """测试 MPC horizon 动态调整 (v3.17.3)
+    
+    注意: 此测试需要 ACADOS 库。在无 ACADOS 环境下会跳过。
+    """
+    from universal_controller.tracker.mpc_controller import ACADOS_AVAILABLE
+    
+    if not ACADOS_AVAILABLE:
+        print("⚠ test_mpc_horizon_dynamic_adjustment skipped (ACADOS not available)")
+        return
+    
     config = DEFAULT_CONFIG.copy()
     # 设置较短的节流间隔以便测试
     config['mpc'] = config.get('mpc', {}).copy()

@@ -26,10 +26,10 @@ def create_default_config(profile: str = "balanced") -> Dict[str, Any]:
         # Aggressive: Higher limits, faster response, less conservative safety
         config['constraints']['v_max'] = 2.0
         config['constraints']['a_max'] = 2.0
-        config['mpc']['weight_q_pos'] = 30.0  # Tighter tracking
-        config['mpc']['weight_r_accel'] = 0.5 # Allow more aggressive accel
-        config['trajectory']['default_confidence'] = 0.8 # Trust network more
-        config['backup']['lookahead_ratio'] = 0.8 # Shorter lookahead for tighter turns
+        config['mpc']['weights']['position'] = 30.0  # Tighter tracking
+        config['mpc']['weights']['control_accel'] = 0.5  # Allow more aggressive accel
+        config['trajectory']['default_confidence'] = 0.8  # Trust network more
+        config['backup']['lookahead_ratio'] = 0.8  # Shorter lookahead for tighter turns
         
     elif profile == "balanced":
         # Balanced: Standard defaults (already in DEFAULT_CONFIG)
@@ -40,11 +40,11 @@ def create_default_config(profile: str = "balanced") -> Dict[str, Any]:
         config['constraints']['v_max'] = 0.8
         config['constraints']['a_max'] = 0.8
         config['constraints']['omega_max'] = 1.0
-        config['mpc']['weight_q_pos'] = 10.0   # Looser tracking for smoothness
-        config['mpc']['weight_r_accel'] = 5.0  # Penalize accel heavily
-        config['trajectory']['default_confidence'] = 0.95 # Require high confidence
-        config['safety']['state_machine']['alpha_disable_thresh'] = 0.7 # Strict alpha 
-        config['backup']['lookahead_ratio'] = 1.5 # Look further ahead
+        config['mpc']['weights']['position'] = 10.0  # Looser tracking for smoothness
+        config['mpc']['weights']['control_accel'] = 5.0  # Penalize accel heavily
+        config['trajectory']['default_confidence'] = 0.95  # Require high confidence
+        config['safety']['state_machine']['alpha_disable_thresh'] = 0.7  # Strict alpha
+        config['backup']['lookahead_ratio'] = 1.5  # Look further ahead
         
     else:
         raise ValueError(f"Unknown profile: {profile}. Available: aggressive, balanced, safe")

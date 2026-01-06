@@ -99,7 +99,13 @@ class TestAdapterDataConversion:
         assert not uc_traj.soft_enabled
     
     def test_trajectory_adapter_velocity_padding(self):
-        """测试速度数组填充"""
+        """测试速度数组处理（严格模式）
+        
+        设计说明 (Strict Mode):
+        - 速度点数量必须与位置点数量完全一致
+        - 如果数量不匹配，适配器会拒绝速度数据并禁用 soft 模式
+        - 这是安全设计，避免隐式行为导致的歧义
+        """
         from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
         
         adapter = TrajectoryAdapter(DEFAULT_CONFIG)
@@ -119,7 +125,7 @@ class TestAdapterDataConversion:
             def __init__(self):
                 self.header = MockHeader()
                 self.points = [MockPoint(i * 0.1, 0.0, 0.0) for i in range(10)]
-                # 只有 3 个速度点，需要填充到 10 个
+                # 只有 3 个速度点，与 10 个位置点不匹配
                 self.velocities_flat = [0.5, 0.0, 0.0, 0.0] * 3
                 self.dt_sec = 0.1
                 self.confidence = 0.9
@@ -129,8 +135,10 @@ class TestAdapterDataConversion:
         ros_msg = MockTrajectory()
         uc_traj = adapter.to_uc(ros_msg)
         
-        assert uc_traj.velocities is not None
-        assert uc_traj.velocities.shape == (10, 4)
+        # 严格模式下，速度点数量不匹配会导致速度数据被丢弃
+        assert uc_traj.velocities is None, "Mismatched velocity count should result in None velocities"
+        # soft_enabled 也应该被禁用
+        assert uc_traj.soft_enabled == False, "soft_enabled should be False when velocities are discarded"
     
     def test_odom_adapter_conversion(self):
         """测试里程计适配器转换"""
@@ -213,6 +221,7 @@ class TestBridgeLifecycle:
     
     def test_bridge_reset(self):
         """测试桥接层重置"""
+        import time
         from controller_ros.bridge.controller_bridge import ControllerBridge
         
         config = DEFAULT_CONFIG.copy()
@@ -221,9 +230,10 @@ class TestBridgeLifecycle:
         # 运行几次更新
         odom = create_test_odom(vx=1.0)
         trajectory = create_test_trajectory()
+        current_time = time.time()
         
-        for _ in range(3):
-            bridge.update(odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
+        for i in range(3):
+            bridge.update(current_time + i * 0.02, odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
         
         # 重置
         bridge.reset()
@@ -248,6 +258,7 @@ class TestBridgeLifecycle:
     
     def test_bridge_diagnostics_callback(self):
         """测试桥接层诊断回调"""
+        import time
         from controller_ros.bridge.controller_bridge import ControllerBridge
         
         config = DEFAULT_CONFIG.copy()
@@ -262,9 +273,10 @@ class TestBridgeLifecycle:
         
         odom = create_test_odom(vx=1.0)
         trajectory = create_test_trajectory()
+        current_time = time.time()
         
-        for _ in range(3):
-            bridge.update(odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
+        for i in range(3):
+            bridge.update(current_time + i * 0.02, odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
         
         assert len(callback_data) >= 3
         
@@ -616,6 +628,7 @@ class TestEmergencyStopIntegration:
     
     def test_emergency_stop_via_bridge(self):
         """测试通过桥接层触发紧急停止"""
+        import time
         from controller_ros.bridge.controller_bridge import ControllerBridge
         
         config = DEFAULT_CONFIG.copy()
@@ -624,16 +637,17 @@ class TestEmergencyStopIntegration:
         # 先运行几次更新
         odom = create_test_odom(vx=1.0)
         trajectory = create_test_trajectory()
+        current_time = time.time()
         
-        for _ in range(5):
-            bridge.update(odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
+        for i in range(5):
+            bridge.update(current_time + i * 0.02, odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
         
         # 请求停止
         success = bridge.request_stop()
         assert success
         
         # 再次更新，状态应该变为 STOPPING
-        bridge.update(odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
+        bridge.update(current_time + 0.1, odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
         
         assert bridge.get_state() == ControllerState.STOPPING
         
@@ -641,6 +655,7 @@ class TestEmergencyStopIntegration:
     
     def test_emergency_stop_output_zero_velocity(self):
         """测试紧急停止输出零速度"""
+        import time
         from controller_ros.bridge.controller_bridge import ControllerBridge
         
         config = DEFAULT_CONFIG.copy()
@@ -648,17 +663,18 @@ class TestEmergencyStopIntegration:
         
         odom = create_test_odom(vx=1.0)
         trajectory = create_test_trajectory()
+        current_time = time.time()
         
         # 进入正常状态
-        for _ in range(5):
-            bridge.update(odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
+        for i in range(5):
+            bridge.update(current_time + i * 0.02, odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
         
         # 请求停止
         bridge.request_stop()
         
         # 更新几次让状态机进入 STOPPING 状态
-        for _ in range(3):
-            cmd = bridge.update(odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
+        for i in range(3):
+            cmd = bridge.update(current_time + 0.1 + i * 0.02, odom, trajectory, {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01})
         
         # 在 STOPPING 状态下，控制器会逐渐减速
         # 验证状态已经是 STOPPING 或 STOPPED

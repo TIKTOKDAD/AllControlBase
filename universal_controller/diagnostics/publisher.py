@@ -49,14 +49,16 @@ class DiagnosticsPublisher:
         publisher.publish(...)
     """
     
-    def __init__(self):
+    def __init__(self, publish_rate: float = 10.0):
         """
         初始化诊断发布器
         
-        注意: 话题名称配置已移至 ROS 层，核心库不再处理话题相关配置
+        Args:
+            publish_rate: 诊断发布频率 (Hz)，默认 10Hz
         """
         # 回调函数（线程安全）
-        self._callbacks: List[Callable[[Dict[str, Any]], None]] = []
+        # Now passes DiagnosticsV2 object instead of Dict
+        self._callbacks: List[Callable[[Any], None]] = []
         self._callbacks_lock = threading.Lock()
         
         # 回调失败计数（用于自动移除持续失败的回调）
@@ -64,14 +66,21 @@ class DiagnosticsPublisher:
         self._callback_max_failures = 5  # 连续失败超过此次数后移除回调
         
         # 发布历史
-        self._last_published: Optional[Dict[str, Any]] = None
+        self._last_published: Optional[DiagnosticsV2] = None
+        
+        # 节流控制
+        self._min_interval = 1.0 / publish_rate if publish_rate > 0 else 0.0
+        self._last_publish_time = 0.0
+        
+        # 复用诊断对象以减少 GC
+        self._diagnostics_v2 = DiagnosticsV2()
     
-    def add_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+    def add_callback(self, callback: Callable[['DiagnosticsV2'], None]) -> None:
         """
         添加诊断回调函数（线程安全）
         
         Args:
-            callback: 回调函数，签名为 callback(diagnostics: Dict[str, Any]) -> None
+            callback: 回调函数，签名为 callback(diagnostics: DiagnosticsV2) -> None
         
         Note:
             如果回调连续失败超过 5 次，会被自动移除以防止日志泛滥
@@ -81,7 +90,7 @@ class DiagnosticsPublisher:
                 self._callbacks.append(callback)
                 self._callback_fail_counts[id(callback)] = 0
     
-    def remove_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+    def remove_callback(self, callback: Callable[[Any], None]) -> None:
         """移除诊断回调函数（线程安全）"""
         with self._callbacks_lock:
             if callback in self._callbacks:
@@ -108,7 +117,8 @@ class DiagnosticsPublisher:
                 tf2_critical: bool,
                 safety_check_passed: bool = True,
                 emergency_stop: bool = False,
-                tracking_quality: Optional[Dict[str, Any]] = None) -> None:
+                tracking_quality: Optional[Dict[str, Any]] = None,
+                force: bool = False) -> None:
         """
         发布诊断数据
         
@@ -127,7 +137,14 @@ class DiagnosticsPublisher:
             safety_check_passed: 安全检查是否通过
             emergency_stop: 是否处于紧急停止状态
             tracking_quality: 跟踪质量评估结果
+            force: 强制发布，忽略节流
         """
+        # 节流检查
+        if not force and (current_time - self._last_publish_time) < self._min_interval:
+            return
+
+        self._last_publish_time = current_time
+
         diag = self._build_diagnostics(
             current_time, state, cmd, state_output, consistency,
             mpc_health, timeout_status, transform_status,
@@ -135,17 +152,20 @@ class DiagnosticsPublisher:
             safety_check_passed, emergency_stop, tracking_quality
         )
         
-        diag_dict = diag.to_ros_msg()
-        self._last_published = diag_dict
+        # Pass the object directly, do NOT convert to dict
+        self._last_published = diag
         
         # 调用所有回调（线程安全：复制列表后迭代）
         with self._callbacks_lock:
+            if not self._callbacks:
+                return
             callbacks_copy = list(self._callbacks)
         
         callbacks_to_remove = []
         for callback in callbacks_copy:
             try:
-                callback(diag_dict)
+                # Pass the object
+                callback(diag)
                 # 成功时重置失败计数
                 with self._callbacks_lock:
                     self._callback_fail_counts[id(callback)] = 0
@@ -176,7 +196,7 @@ class DiagnosticsPublisher:
                         self._callbacks.remove(callback)
                         self._callback_fail_counts.pop(id(callback), None)
     
-    def get_last_published(self) -> Optional[Dict[str, Any]]:
+    def get_last_published(self) -> Optional[DiagnosticsV2]:
         """获取最后发布的诊断数据"""
         return self._last_published
     
@@ -196,76 +216,118 @@ class DiagnosticsPublisher:
                           emergency_stop: bool = False,
                           tracking_quality: Optional[Dict[str, Any]] = None) -> DiagnosticsV2:
         """构建 DiagnosticsV2 消息"""
-        return DiagnosticsV2(
-            header=Header(stamp=current_time, frame_id=''),
-            state=int(state),
-            mpc_success=cmd.success if cmd else False,
-            mpc_solve_time_ms=cmd.solve_time_ms if cmd else 0.0,
-            backup_active=state == ControllerState.BACKUP_ACTIVE,
+        """构建 DiagnosticsV2 消息 (复用对象)"""
+        d = self._diagnostics_v2
+        
+        # Header
+        d.header.stamp = current_time
+        d.header.frame_id = ''
+        
+        d.state = int(state)
+        d.mpc_success = cmd.success if cmd else False
+        d.mpc_solve_time_ms = cmd.solve_time_ms if cmd else 0.0
+        d.backup_active = state == ControllerState.BACKUP_ACTIVE
+        
+        # MPC 健康状态
+        if mpc_health:
+            d.mpc_health_kkt_residual = mpc_health.kkt_residual
+            d.mpc_health_condition_number = mpc_health.condition_number
+            d.mpc_health_consecutive_near_timeout = mpc_health.consecutive_near_timeout
+            d.mpc_health_degradation_warning = mpc_health.degradation_warning
+            d.mpc_health_can_recover = mpc_health.can_recover
+        else:
+            d.mpc_health_kkt_residual = 0.0
+            d.mpc_health_condition_number = 1.0
+            d.mpc_health_consecutive_near_timeout = 0
+            d.mpc_health_degradation_warning = False
+            d.mpc_health_can_recover = False
             
-            # MPC 健康状态
-            mpc_health_kkt_residual=mpc_health.kkt_residual if mpc_health else 0.0,
-            mpc_health_condition_number=mpc_health.condition_number if mpc_health else 1.0,
-            mpc_health_consecutive_near_timeout=mpc_health.consecutive_near_timeout if mpc_health else 0,
-            mpc_health_degradation_warning=mpc_health.degradation_warning if mpc_health else False,
-            mpc_health_can_recover=mpc_health.can_recover if mpc_health else False,
+        # 一致性指标
+        if consistency:
+            d.consistency_curvature = consistency.kappa_consistency
+            d.consistency_velocity_dir = consistency.v_dir_consistency
+            d.consistency_temporal = consistency.temporal_smooth
+            d.consistency_alpha_soft = consistency.alpha
+            d.consistency_data_valid = consistency.data_valid
+        else:
+            d.consistency_curvature = 1.0
+            d.consistency_velocity_dir = 1.0
+            d.consistency_temporal = 1.0
+            d.consistency_alpha_soft = 0.0
+            d.consistency_data_valid = True
             
-            # 一致性指标
-            consistency_curvature=consistency.kappa_consistency if consistency else 1.0,
-            consistency_velocity_dir=consistency.v_dir_consistency if consistency else 1.0,
-            consistency_temporal=consistency.temporal_smooth if consistency else 1.0,
-            consistency_alpha_soft=consistency.alpha if consistency else 0.0,
-            consistency_data_valid=consistency.data_valid if consistency else True,
+        # 状态估计器健康
+        if state_output:
+            d.estimator_covariance_norm = state_output.covariance_norm
+            d.estimator_innovation_norm = state_output.innovation_norm
+            d.estimator_slip_probability = state_output.slip_probability
+            d.estimator_imu_drift_detected = state_output.imu_drift_detected
+            d.estimator_imu_bias = state_output.imu_bias
+            d.estimator_imu_available = state_output.imu_available
+        else:
+            d.estimator_covariance_norm = 0.0
+            d.estimator_innovation_norm = 0.0
+            d.estimator_slip_probability = 0.0
+            d.estimator_imu_drift_detected = False
+            d.estimator_imu_bias = np.zeros(3)
+            d.estimator_imu_available = True
             
-            # 状态估计器健康
-            estimator_covariance_norm=state_output.covariance_norm if state_output else 0.0,
-            estimator_innovation_norm=state_output.innovation_norm if state_output else 0.0,
-            estimator_slip_probability=state_output.slip_probability if state_output else 0.0,
-            estimator_imu_drift_detected=state_output.imu_drift_detected if state_output else False,
-            estimator_imu_bias=state_output.imu_bias if state_output else np.zeros(3),
-            estimator_imu_available=state_output.imu_available if state_output else True,
+        # 跟踪误差
+        if tracking_error:
+            d.tracking_lateral_error = tracking_error.get('lateral_error', 0.0)
+            d.tracking_longitudinal_error = tracking_error.get('longitudinal_error', 0.0)
+            d.tracking_heading_error = tracking_error.get('heading_error', 0.0)
+            d.tracking_prediction_error = tracking_error.get('prediction_error', float('nan'))
+        else:
+            d.tracking_lateral_error = 0.0
+            d.tracking_longitudinal_error = 0.0
+            d.tracking_heading_error = 0.0
+            d.tracking_prediction_error = float('nan')
             
-            # 跟踪误差
-            # prediction_error 使用 NaN 表示"无数据"，与 DiagnosticsV2 默认值保持一致
-            tracking_lateral_error=tracking_error.get('lateral_error', 0.0) if tracking_error else 0.0,
-            tracking_longitudinal_error=tracking_error.get('longitudinal_error', 0.0) if tracking_error else 0.0,
-            tracking_heading_error=tracking_error.get('heading_error', 0.0) if tracking_error else 0.0,
-            tracking_prediction_error=tracking_error.get('prediction_error', float('nan')) if tracking_error else float('nan'),
+        # 跟踪质量
+        if tracking_quality:
+            d.tracking_quality_score = tracking_quality.get('overall_score', 0.0)
+            d.tracking_quality_rating = tracking_quality.get('rating', 'unknown')
+        else:
+            d.tracking_quality_score = 0.0
+            d.tracking_quality_rating = 'unknown'
             
-            # 跟踪质量
-            tracking_quality_score=tracking_quality.get('overall_score', 0.0) if tracking_quality else 0.0,
-            tracking_quality_rating=tracking_quality.get('rating', 'unknown') if tracking_quality else 'unknown',
+        # 坐标变换状态
+        d.transform_tf2_available = not tf2_critical
+        d.transform_tf2_injected = transform_status.get('tf2_injected', False)
+        d.transform_fallback_duration_ms = transform_status.get('fallback_duration_ms', 0.0)
+        d.transform_accumulated_drift = transform_status.get('accumulated_drift', 0.0)
+        d.transform_source_frame = transform_status.get('source_frame', '')
+        d.transform_target_frame = transform_status.get('target_frame', '')
+        d.transform_error_message = transform_status.get('error_message', '')
             
-            # 坐标变换状态
-            transform_tf2_available=not tf2_critical,
-            transform_tf2_injected=transform_status.get('tf2_injected', False),
-            transform_fallback_duration_ms=transform_status.get('fallback_duration_ms', 0.0),
-            transform_accumulated_drift=transform_status.get('accumulated_drift', 0.0),
-            transform_source_frame=transform_status.get('source_frame', ''),
-            transform_target_frame=transform_status.get('target_frame', ''),
-            transform_error_message=transform_status.get('error_message', ''),
+        # 超时状态
+        d.timeout_odom = timeout_status.odom_timeout
+        d.timeout_traj = timeout_status.traj_timeout
+        d.timeout_traj_grace_exceeded = timeout_status.traj_grace_exceeded
+        d.timeout_imu = timeout_status.imu_timeout
+        d.timeout_last_odom_age_ms = timeout_status.last_odom_age_ms
+        d.timeout_last_traj_age_ms = timeout_status.last_traj_age_ms
+        d.timeout_last_imu_age_ms = timeout_status.last_imu_age_ms
+        d.timeout_in_startup_grace = timeout_status.in_startup_grace
             
-            # 超时状态
-            timeout_odom=timeout_status.odom_timeout,
-            timeout_traj=timeout_status.traj_timeout,
-            timeout_traj_grace_exceeded=timeout_status.traj_grace_exceeded,
-            timeout_imu=timeout_status.imu_timeout,
-            timeout_last_odom_age_ms=timeout_status.last_odom_age_ms,
-            timeout_last_traj_age_ms=timeout_status.last_traj_age_ms,
-            timeout_last_imu_age_ms=timeout_status.last_imu_age_ms,
-            timeout_in_startup_grace=timeout_status.in_startup_grace,
+        # 控制命令
+        if cmd:
+            d.cmd_vx = cmd.vx
+            d.cmd_vy = cmd.vy
+            d.cmd_vz = cmd.vz
+            d.cmd_omega = cmd.omega
+            d.cmd_frame_id = cmd.frame_id
+        else:
+            d.cmd_vx = 0.0
+            d.cmd_vy = 0.0
+            d.cmd_vz = 0.0
+            d.cmd_omega = 0.0
+            d.cmd_frame_id = ''
             
-            # 控制命令
-            cmd_vx=cmd.vx if cmd else 0.0,
-            cmd_vy=cmd.vy if cmd else 0.0,
-            cmd_vz=cmd.vz if cmd else 0.0,
-            cmd_omega=cmd.omega if cmd else 0.0,
-            cmd_frame_id=cmd.frame_id if cmd else '',
-            
-            # 过渡进度
-            transition_progress=transition_progress,
-            
-            # 安全状态
-            safety_check_passed=safety_check_passed,
-            emergency_stop=emergency_stop
-        )
+        # 其他状态
+        d.transition_progress = transition_progress
+        d.safety_check_passed = safety_check_passed
+        d.emergency_stop = emergency_stop
+        
+        return d

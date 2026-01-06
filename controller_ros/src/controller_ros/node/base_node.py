@@ -32,7 +32,7 @@ from universal_controller.core.enums import ControllerState, PlatformType
 
 from ..bridge import ControllerBridge
 from ..io.data_manager import DataManager
-from ..utils import TF2InjectionManager
+from ..utils import ErrorHandler
 from ..lifecycle import LifecycleMixin, LifecycleState, HealthChecker
 
 logger = logging.getLogger(__name__)
@@ -40,125 +40,71 @@ logger = logging.getLogger(__name__)
 
 class ControllerNodeBase(LifecycleMixin, ABC):
     """
-    控制器节点基类
-    
-    封装 ROS1 和 ROS2 节点的共享逻辑：
-    - 控制器初始化
-    - 数据管理
-    - 控制循环核心逻辑
-    - TF2 注入
-    - 诊断处理
-    - 紧急停止处理
-    - 姿态控制接口 (四旋翼平台)
-    
-    生命周期:
-    - 实现 ILifecycleComponent 接口（通过 LifecycleMixin）
-    - _initialize(): 初始化所有组件（调用 LifecycleMixin.initialize()）
-    - reset(): 重置控制器和数据管理器（通过 _handle_reset()）
-    - shutdown(): 关闭所有组件，释放资源
-    
-    子类需要实现：
-    - _create_ros_interfaces(): 创建 ROS 特定的接口
-    - _get_time(): 获取当前 ROS 时间
-    - _log_info/warn/error(): 日志方法
-    - _publish_cmd(): 发布控制命令
-    - _publish_stop_cmd(): 发布停止命令
-    - _publish_diagnostics(): 发布诊断信息
-    - _publish_attitude_cmd(): 发布姿态命令 (四旋翼平台)
+    Controller Node Base
     """
     
     def __init__(self):
-        """初始化基类（子类应在调用 super().__init__() 前完成 ROS 节点初始化）"""
-        # 初始化 LifecycleMixin
+        """Init"""
         LifecycleMixin.__init__(self)
         
-        # 关闭状态标志 - 使用 Event 确保线程安全和内存可见性
         self._shutting_down = threading.Event()
+        self._control_lock = threading.RLock()
         
-        # 配置属性（由子类在调用 _initialize() 前设置）
         self._params: Dict[str, Any] = {}
         self._topics: Dict[str, str] = {}
         self._default_frame_id: str = 'base_link'
         self._platform_type: str = 'differential'
         
-        # 核心组件（由 _initialize() 创建）
         self._controller_bridge: Optional[ControllerBridge] = None
         self._data_manager: Optional[DataManager] = None
         self._tf_bridge: Any = None
-        self._tf2_injection_manager: Optional[TF2InjectionManager] = None
         
-        # 健康检查器
+        # Simple flag to track TF2 injection state
+        self._is_tf2_active = False
+        
         self._health_checker: Optional[HealthChecker] = None
         
-        # ROS 资源占位符 (确保 shutdown 时无需 hasattr 检查)
         self._publishers = None
         self._services = None
-        self._timer = None  # ROS1 timer or ROS2 timer
-        self._control_timer = None # ROS2 specific
+        self._timer = None 
+        self._control_timer = None
         self._odom_sub = None
         self._imu_sub = None
         self._traj_sub = None
+        self._traj_msg_available = False
         self._emergency_stop_sub = None
         
-        # 状态
         self._waiting_for_data = True
-        self._consecutive_errors = 0
-        # 轨迹消息可用性标志 - 默认为 False（悲观默认，fail-safe）
-        # 子类在确认消息类型可用后应设为 True
-        self._traj_msg_available = False
+        self._error_handler: Optional[ErrorHandler] = None
         
-        # 错误处理配置（由 _initialize() 从配置中读取）
-        self._max_consecutive_errors_detail = 10
-        self._error_summary_interval = 50
-        self._max_error_count = 1000
-        
-        # 紧急停止状态
         self._emergency_stop_requested = False
         self._emergency_stop_time: Optional[float] = None
         
-        # 姿态控制状态 (四旋翼平台)
         self._is_quadrotor = False
         self._last_attitude_cmd: Optional[AttitudeCommand] = None
-        self._attitude_yaw_mode: int = 0  # 0=FOLLOW_VELOCITY
-    
+        self._attitude_yaw_mode: int = 0
+
     def _initialize(self):
-        """
-        初始化控制器组件
-        
-        子类应在加载参数后调用此方法。
-        内部调用 LifecycleMixin.initialize() 来执行实际初始化。
-        """
-        # 调用 LifecycleMixin 的 initialize 方法
-        # 这会调用 _do_initialize()
+        """Initialize controller components"""
         if not LifecycleMixin.initialize(self):
             self._log_error("Controller node initialization failed")
     
-    # ==================== LifecycleMixin 实现 ====================
+    # ==================== LifecycleMixin Implementation ====================
     
     def _do_initialize(self) -> bool:
-        """
-        实际的初始化逻辑
-        
-        由 LifecycleMixin.initialize() 调用。
-        
-        注意：此方法不捕获异常，让异常传播到 LifecycleMixin.initialize() 中处理，
-        这样 _last_error 会包含详细的错误信息。
-        """
-        # 1. 获取平台配置
         self._platform_type = self._params.get('system', {}).get('platform', 'differential')
         platform_config = PLATFORM_CONFIG.get(self._platform_type, PLATFORM_CONFIG['differential'])
         self._default_frame_id = platform_config.get('output_frame', 'base_link')
         
-        # 检查是否为四旋翼平台
         self._is_quadrotor = platform_config.get('type') == PlatformType.QUADROTOR
         
-        # 1.1 读取错误处理配置
         diag_config = self._params.get('diagnostics', {})
-        self._max_consecutive_errors_detail = diag_config.get('max_consecutive_errors_detail', 10)
-        self._error_summary_interval = diag_config.get('error_summary_interval', 50)
-        self._max_error_count = diag_config.get('max_error_count', 1000)
+        self._error_handler = ErrorHandler(
+            log_error_func=self._log_error,
+            log_warn_func=self._log_warn,
+            config=diag_config
+        )
         
-        # 2. 创建数据管理器（带时钟跳变回调和轨迹配置）
         trajectory_config = self._params.get('trajectory', {})
         clock_config = self._params.get('clock', {})
         self._data_manager = DataManager(
@@ -168,20 +114,16 @@ class ControllerNodeBase(LifecycleMixin, ABC):
             clock_config=clock_config
         )
         
-        # 3. 创建控制器桥接
         self._controller_bridge = ControllerBridge.create(self._params)
         if self._controller_bridge is None:
             raise RuntimeError("Failed to create ControllerBridge")
         
-        # 4. 设置诊断回调
         self._controller_bridge.set_diagnostics_callback(self._on_diagnostics)
         
-        # 5. 创建健康检查器并注册组件
         self._health_checker = HealthChecker()
         self._health_checker.register('controller_bridge', self._controller_bridge)
         self._health_checker.register('data_manager', self._data_manager)
         
-        # 注册 ControllerManager 内部的核心组件（使用适配器）
         manager = self._controller_bridge.manager
         if manager is not None:
             if manager.state_estimator is not None:
@@ -196,133 +138,83 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         return True
     
     def _do_shutdown(self) -> None:
-        """
-        实际的关闭逻辑
-        
-        由 LifecycleMixin.shutdown() 调用。
-        """
-        # 关闭控制器桥接
         if self._controller_bridge is not None:
             self._controller_bridge.shutdown()
             self._controller_bridge = None
         
-        # 关闭数据管理器
         if self._data_manager is not None:
             self._data_manager.shutdown()
             self._data_manager = None
         
-        # 清理 TF2 注入管理器
-        if self._tf2_injection_manager is not None:
-            self._tf2_injection_manager.reset()
-            self._tf2_injection_manager = None
-        
-        # 清理健康检查器
         if self._health_checker is not None:
             self._health_checker = None
-        
+            
+        self._is_tf2_active = False
         self._log_info('Controller node shutdown complete')
     
     def _do_reset(self) -> None:
-        """
-        实际的重置逻辑
-        
-        由 LifecycleMixin.reset() 调用。
-        
-        注意: reset() 不会清除紧急停止状态，这是安全设计。
-        要从紧急停止恢复，必须显式调用 set_state(NORMAL) 服务。
-        """
-        if self._controller_bridge is not None:
-            self._controller_bridge.reset()
-        if self._data_manager is not None:
-            self._data_manager.reset()
-        if self._tf2_injection_manager is not None:
-            self._tf2_injection_manager.reset()
-        self._waiting_for_data = True
-        self._consecutive_errors = 0
-        # 注意: 不清除紧急停止状态，这是安全设计
-        # self._clear_emergency_stop()
-        self._last_attitude_cmd = None
+        with self._control_lock:
+            if self._controller_bridge is not None:
+                self._controller_bridge.reset()
+            if self._data_manager is not None:
+                self._data_manager.reset()
+            if self._error_handler is not None:
+                self._error_handler.reset()
+                
+            # Reset TF2 flag
+            # Note: We do not need to re-inject TF2 callback here as the manager instance persists.
+            # Only full re-initialization requires re-binding.
+            # BUG FIX: Do NOT set _is_tf2_active = False here, as the callback is still bound in Manager.
+            # self._is_tf2_active = False 
+            
+            self._waiting_for_data = True
+            # Note: Do NOT clear emergency stop state here for safety
+            self._last_attitude_cmd = None
+            
         self._log_info('Controller node reset complete (emergency stop state preserved)')
     
     def _get_health_details(self) -> Dict[str, Any]:
-        """获取详细健康信息"""
         details = {
             'platform': self._platform_type,
             'is_quadrotor': self._is_quadrotor,
             'waiting_for_data': self._waiting_for_data,
-            'consecutive_errors': self._consecutive_errors,
+            'consecutive_errors': self._error_handler.consecutive_errors if self._error_handler else 0,
             'emergency_stop': self._emergency_stop_requested,
             'traj_msg_available': self._traj_msg_available,
         }
         
-        # 添加子组件健康状态
         if self._controller_bridge is not None:
             details['controller_bridge'] = self._controller_bridge.get_health_status()
         
         if self._data_manager is not None:
             details['data_manager'] = self._data_manager.get_health_status()
         
-        if self._tf2_injection_manager is not None:
-            details['tf2_injected'] = self._tf2_injection_manager.is_injected
+        details['tf2_injected'] = self._is_tf2_active
         
-        # 添加健康检查器摘要
         if self._health_checker is not None:
             details['health_summary'] = self._health_checker.get_summary()
         
         return details
     
-
-    
     def _on_clock_jump(self, event) -> None:
-        """
-        时钟跳变回调
-        
-        Args:
-            event: ClockJumpEvent 对象
-        """
         if event.is_backward:
             self._log_warn(
                 f"Clock jumped backward by {abs(event.jump_delta):.3f}s. "
                 f"Waiting for fresh sensor data before resuming control."
             )
-            # 可以在这里触发控制器重置或其他安全措施
             self._waiting_for_data = True
     
     def _inject_tf2_to_controller(self, blocking: bool = True):
         """
-        将 TF2 注入到坐标变换器
-        
-        Args:
-            blocking: 是否阻塞等待 TF2 buffer 预热
+        Initial TF2 injection.
         """
-        if self._tf_bridge is None:
-            self._log_info("TF bridge is None, skipping TF2 injection")
-            return
-        
-        if self._controller_bridge is None or self._controller_bridge.manager is None:
-            self._log_warn("Controller bridge not ready, cannot inject TF2")
-            return
-        
-        # 创建 TF2 注入管理器
-        # transform 配置包含所有坐标变换相关参数（包括 ROS TF2 扩展参数）
-        transform_config = self._params.get('transform', {})
-        
-        self._tf2_injection_manager = TF2InjectionManager(
-            tf_bridge=self._tf_bridge,
-            controller_manager=self._controller_bridge.manager,
-            config=transform_config,
-            transform_config=transform_config,
-            log_info=self._log_info,
-            log_warn=self._log_warn,
-        )
-        
-        # 执行注入
-        self._tf2_injection_manager.inject(blocking=blocking)
+        self._bind_tf2_interface()
     
     def _try_tf2_reinjection(self):
-        """尝试重新注入 TF2（运行时调用）"""
-        if self._tf2_injection_manager is not None:
-            self._tf2_injection_manager.try_reinjection_if_needed()
+        """
+        Runtime reinjection attempt.
+        """
+        self._bind_tf2_interface()
     
     # ==================== 紧急停止处理 ====================
     
@@ -331,28 +223,40 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         处理紧急停止请求
         
         当收到紧急停止信号时调用此方法。
-        立即发送停止命令，然后请求控制器进入停止状态。
+        设计目标：非阻塞，最高优先级。
+        
+        策略:
+        1. 设置原子标志位 _emergency_stop_requested
+        2. 立即发送停止命令 (不锁)
+        3. 尝试通知 bridge 切换状态 (尝试获取锁，失败则异步或者由主循环处理)
         """
         if not self._emergency_stop_requested:
             self._emergency_stop_requested = True
             self._emergency_stop_time = self._get_time()
             self._log_warn("Emergency stop requested! Sending immediate stop command.")
             
-            # 立即发送停止命令 (不等待下一个控制周期)
+            # 立即发送停止命令 (不等待下一个控制周期, 且不使用任何锁)
             try:
                 self._publish_stop_cmd()
             except Exception as e:
                 self._log_error(f"Failed to publish emergency stop command: {e}")
             
-            # 请求控制器进入停止状态
-            if self._controller_bridge is not None:
-                self._controller_bridge.request_stop()
-    
+            # 尝试请求控制器进入停止状态
+            # 使用 non-blocking lock acquire。如果主循环正在忙 (holding lock)，
+            # 我们不需要死等，因为主循环会在下一次迭代或者当前迭代结束时看到 _emergency_stop_requested 标志。
+            # 如果能立即拿到锁，就顺手就把状态切换了。
+            if self._control_lock.acquire(blocking=False):
+                try:
+                    if self._controller_bridge is not None:
+                        self._controller_bridge.request_stop()
+                finally:
+                    self._control_lock.release()
+            else:
+                 self._log_warn("Control lock busy, deferred internal state switch (safety flag already set)")
+
     def _clear_emergency_stop(self):
         """
         清除紧急停止状态
-        
-        通过 reset 服务调用时会清除紧急停止状态。
         """
         self._emergency_stop_requested = False
         self._emergency_stop_time = None
@@ -367,9 +271,6 @@ class ControllerNodeBase(LifecycleMixin, ABC):
     def _publish_extra_outputs(self, cmd: ControlOutput) -> None:
         """
         发布额外的控制输出
-        
-        Args:
-            cmd: 控制输出，包含 extras
         """
         # 发布姿态命令 (四旋翼平台)
         if self._is_quadrotor and 'attitude_cmd' in cmd.extras:
@@ -403,15 +304,7 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         return mode_map.get(self._attitude_yaw_mode, 'velocity')
     
     def _handle_set_hover_yaw(self, yaw: float) -> bool:
-        """
-        处理设置悬停航向请求
-        
-        Args:
-            yaw: 目标航向 (rad)
-        
-        Returns:
-            是否成功
-        """
+        """处理设置悬停航向请求"""
         if not self._is_quadrotor:
             self._log_warn("Set hover yaw is only available for quadrotor platform")
             return False
@@ -424,12 +317,7 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         return True
     
     def _handle_get_attitude_rate_limits(self) -> Optional[Dict[str, float]]:
-        """
-        获取姿态角速度限制
-        
-        Returns:
-            角速度限制字典，非四旋翼平台返回 None
-        """
+        """获取姿态角速度限制"""
         if not self._is_quadrotor:
             return None
         
@@ -441,6 +329,27 @@ class ControllerNodeBase(LifecycleMixin, ABC):
     
     # ==================== 控制循环 ====================
     
+    def _bind_tf2_interface(self):
+        """
+        绑定 TF2 接口到控制器管理器
+        
+        将 ROS 层的 TF2 查询能力注入到算法层的坐标变换器中。
+        """
+        if self._is_tf2_active:
+             return
+
+        if self._tf_bridge is None or not self._tf_bridge.is_initialized:
+            return
+            
+        # 检查 Manager 是否配置了 TF 回调
+        if self._controller_bridge and self._controller_bridge.manager:
+             transformer = getattr(self._controller_bridge.manager, 'coord_transformer', None)
+             if transformer and hasattr(transformer, 'set_tf2_lookup_callback'):
+                 # 幂等注入，不需要复杂的状态跟踪
+                 # 直接设置回调，开销极小
+                 transformer.set_tf2_lookup_callback(self._tf_bridge.lookup_transform)
+                 self._is_tf2_active = True
+
     def _control_loop_core(self) -> Optional[ControlOutput]:
         """
         控制循环核心逻辑
@@ -448,27 +357,25 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         Returns:
             控制输出，如果无法执行控制则返回 None
         """
-        # 0. 检查关闭状态 - 防止在关闭过程中继续执行
+        # 0. 检查关闭状态
         if self._shutting_down.is_set():
             return None
         
-        # 0.1 检查紧急停止
+        # 0.1 检查紧急停止 (无锁检查，最为快速)
         if self._emergency_stop_requested:
             self._publish_stop_cmd()
             return None
         
-        # 0.2 检查轨迹消息类型是否可用
+        # 0.2 检查轨迹消息类型
         if not self._traj_msg_available:
             self._log_warn_throttle(
                 10.0, 
                 "Trajectory message type not available! "
-                "Controller cannot work. Please build the package with message generation."
             )
             self._publish_stop_cmd()
             return None
         
-        # 0.3 尝试 TF2 重新注入（由 TF2InjectionManager 管理）
-        self._try_tf2_reinjection()
+
         
         # 1. 获取最新数据 (Atomic Snapshot)
         snapshot = self._data_manager.get_control_snapshot()
@@ -488,19 +395,44 @@ class ControllerNodeBase(LifecycleMixin, ABC):
             self._waiting_for_data = False
         
         # 3. 执行控制更新
-        # 超时检测由 ControllerManager 内部的 TimeoutMonitor 统一处理
+        current_time = self._get_time()
+        
         try:
-            # New: Pass data_ages to update
-            cmd = self._controller_bridge.update(odom, trajectory, data_ages, imu)
-            self._consecutive_errors = 0
+            # 使用锁保护控制更新，但范围仅限于核心计算
+            # 这样做的目的是确保 Reset 服务不会在计算中间修改状态
+            # 但 Emergency Stop 可以在计算期间设置 flag，虽然无法中断计算，但可以拦截输出
+            cmd = None
+            with self._control_lock:
+                # 再次快速检查，防止在等待锁的过程中状态改变
+                # RACE CONDITION FIX: Explicitly check _waiting_for_data inside lock
+                # If reset() happened while we were waiting for lock, _waiting_for_data will be True.
+                if self._shutting_down.is_set() or self._emergency_stop_requested or self._waiting_for_data:
+                    return None
+                    
+                cmd = self._controller_bridge.update(current_time, odom, trajectory, data_ages, imu)
             
-            # 4. 记录超时警告（从 ControllerManager 获取统一的超时状态）
+            # [关键] 计算后再次检查紧急停止
+            # 如果在 update 计算期间发生了急停，我们应该丢弃刚刚算出来的 cmd
+            if self._emergency_stop_requested:
+                self._publish_stop_cmd()
+                # 尝试异步切换状态 (如果还没切换的话)
+                # FIX: Ensure we transition to STOPPING if not already there.
+                # Previously used magic number 3 which was MPC_DEGRADED, causing E-Stop failure in degraded mode.
+                current_state = self._controller_bridge.get_state()
+                if current_state not in (ControllerState.STOPPING, ControllerState.STOPPED):
+                     self._controller_bridge.request_stop()
+                return None
+
+            if self._error_handler:
+                self._error_handler.reset()
+            
+            # 4. 记录超时警告
             self._log_timeout_warnings()
             
-            # 5. 发布额外输出（如四旋翼姿态）
+            # 5. 发布额外输出
             self._publish_extra_outputs(cmd)
             
-            # 6. 发布调试路径 (用于 RViz 可视化)
+            # 6. 发布调试路径 (异步)
             self._publish_debug_path(trajectory)
             
             return cmd
@@ -539,100 +471,67 @@ class ControllerNodeBase(LifecycleMixin, ABC):
     
     def _handle_control_error(self, error: Exception):
         """
-        处理控制更新错误
-        
-        策略 (v3.19 Optimization):
-        - 对于配置错误 (TypeError, ValueError) 或代码逻辑错误 (AttributeError, NameError)，
-          立即抛出异常 (Crash Early)，不进行掩盖。这有助于快速定位静态错误。
-        - 对于运行时错误 (RuntimeError, IOError) 或算法异常，
-          捕获并记录，尝试降级或安全停止。
+        处理控制更新错误 (委托给 ErrorHandler)
         """
-        # Critical structural errors: Do not catch, let it crash!
-        if isinstance(error, (TypeError, AttributeError, NameError, SystemError)):
-            logger.critical(f"Critical configuration or logic error detected: {error}. Crashing immediately.")
-            raise error
+        if self._error_handler is None:
+            # Fallback if error handler not initialized (should not happen in normal run)
+            self._log_error(f"Critical: Error handler not initialized. Original error: {error}")
+            return
 
-        # Runtime errors: Handle gracefully
-        self._consecutive_errors += 1
+        # 1. 委托主要处理逻辑
+        diag_base = self._error_handler.handle_control_error(
+            error, 
+            tf2_reinjection_callback=self._try_tf2_reinjection
+        )
         
-        # 限制连续错误计数的上限，避免无限增长
-        if self._consecutive_errors > self._max_error_count:
-            self._consecutive_errors = self._max_error_count
-        
-        # 日志策略：
-        # - 前 N 次详细记录（N = max_consecutive_errors_detail）
-        # - 之后每 M 次记录一次摘要（M = error_summary_interval）
-        if self._consecutive_errors <= self._max_consecutive_errors_detail:
-            self._log_error(f'Controller update failed ({self._consecutive_errors}): {error}')
-        elif self._consecutive_errors % self._error_summary_interval == 0:
-            self._log_error(
-                f'Controller update still failing ({self._consecutive_errors} consecutive errors): {error}'
-            )
-        
-        self._publish_stop_cmd()
-        
-        error_diag = self._create_error_diagnostics(error)
-        self._publish_diagnostics(error_diag, force=True)
-    
-    def _create_error_diagnostics(self, error: Exception) -> Dict[str, Any]:
-        """创建错误诊断信息"""
-        # 从 ControllerManager 获取统一的超时状态
+        # 2. 收集上下文信息 (Timing, TF, Estop)
         timeout_status = None
         if self._controller_bridge is not None and self._controller_bridge.manager is not None:
-            timeout_status = self._controller_bridge.manager.get_timeout_status()
-        
-        # 如果无法获取超时状态，使用默认值
-        if timeout_status is None:
-            timeout_status = TimeoutStatus(
-                odom_timeout=False, traj_timeout=False, traj_grace_exceeded=False,
-                imu_timeout=False, last_odom_age_ms=0.0, last_traj_age_ms=0.0,
-                last_imu_age_ms=0.0, in_startup_grace=False
-            )
-        
-        return {
-            'state': 0,
-            'mpc_success': False,
-            'backup_active': False,
-            'error_message': str(error),
-            'consecutive_errors': self._consecutive_errors,
-            'timeout': {
-                'odom_timeout': timeout_status.odom_timeout,
-                'traj_timeout': timeout_status.traj_timeout,
-                'traj_grace_exceeded': timeout_status.traj_grace_exceeded,
-                'imu_timeout': timeout_status.imu_timeout,
-                'last_odom_age_ms': timeout_status.last_odom_age_ms,
-                'last_traj_age_ms': timeout_status.last_traj_age_ms,
-                'last_imu_age_ms': timeout_status.last_imu_age_ms,
-                'in_startup_grace': timeout_status.in_startup_grace,
-            },
-            'cmd': {'vx': 0.0, 'vy': 0.0, 'vz': 0.0, 'omega': 0.0},
-            'transform': {
-                'tf2_available': getattr(self._tf_bridge, 'is_initialized', False) 
-                                 if self._tf_bridge else False,
-                'tf2_injected': self._is_tf2_injected,
-            },
-            'emergency_stop': self._emergency_stop_requested,
+             timeout_status = self._controller_bridge.manager.get_timeout_status()
+             
+        tf2_status = {
+            'tf2_available': getattr(self._tf_bridge, 'is_initialized', False) if self._tf_bridge else False,
+            'tf2_injected': self._is_tf2_injected,
         }
+        
+        # 3. 丰富诊断信息
+        full_diag = self._error_handler.enrich_diagnostics(
+            diag_base,
+            timeout_status=timeout_status,
+            tf2_status=tf2_status,
+            estop_status=self._emergency_stop_requested
+        )
+        
+        # 4. 发布停止命令和错误诊断
+        self._publish_stop_cmd()
+        self._publish_diagnostics(full_diag, force=True)
     
     @property
     def _is_tf2_injected(self) -> bool:
         """检查 TF2 是否已注入"""
-        if self._tf2_injection_manager is not None:
-            return self._tf2_injection_manager.is_injected
-        return False
+        return self._is_tf2_active
     
-    def _on_diagnostics(self, diag: Dict[str, Any]):
+    def _on_diagnostics(self, diag: Any):
         """诊断回调"""
-        if 'transform' not in diag:
-            diag['transform'] = {}
-        diag['transform']['tf2_available'] = (
-            getattr(self._tf_bridge, 'is_initialized', False) 
-            if self._tf_bridge else False
-        )
-        diag['transform']['tf2_injected'] = self._is_tf2_injected
-        
-        # 添加紧急停止状态
-        diag['emergency_stop'] = self._emergency_stop_requested
+        if isinstance(diag, dict):
+            if 'transform' not in diag:
+                diag['transform'] = {}
+            diag['transform']['tf2_available'] = (
+                getattr(self._tf_bridge, 'is_initialized', False) 
+                if self._tf_bridge else False
+            )
+            diag['transform']['tf2_injected'] = self._is_tf2_injected
+            
+            # 添加紧急停止状态
+            diag['emergency_stop'] = self._emergency_stop_requested
+        else:
+            # Assume it is a DiagnosticsV2 object
+            diag.transform_tf2_available = (
+                getattr(self._tf_bridge, 'is_initialized', False) 
+                if self._tf_bridge else False
+            )
+            diag.transform_tf2_injected = self._is_tf2_injected
+            diag.emergency_stop = self._emergency_stop_requested
         
         self._publish_diagnostics(diag)
     

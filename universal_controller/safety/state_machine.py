@@ -3,6 +3,7 @@ from typing import Dict, Any, Optional, Callable
 from collections import deque
 import logging
 import threading
+import numpy as np
 
 from ..core.enums import ControllerState
 from ..core.diagnostics_input import DiagnosticsInput
@@ -79,7 +80,10 @@ class StateMachine:
         self._state_timeout_callback: Optional[Callable[[ControllerState, float], None]] = None
         # 已触发超时告警的状态（避免重复告警）
         self._timeout_warned_states: set = set()
-        
+
+        # NaN 速度警告标志（避免日志泛滥）
+        self._nan_velocity_warned: bool = False
+
         # 状态处理器映射
         self._state_handlers: Dict[ControllerState, Callable[[DiagnosticsInput], Optional[ControllerState]]] = {
             ControllerState.INIT: self._handle_init,
@@ -437,17 +441,18 @@ class StateMachine:
         """处理 SOFT_DISABLED 状态"""
         if diag.safety_failed:
             return ControllerState.MPC_DEGRADED
-        
-        if not diag.mpc_success:
+
+        # 使用与 NORMAL 状态相同的窗口检测逻辑，保持一致性
+        if self._check_mpc_should_switch_to_backup():
             return ControllerState.BACKUP_ACTIVE
-        
+
         if self._should_degrade_mpc(diag):
             return ControllerState.MPC_DEGRADED
-        
+
         # 尝试恢复到 NORMAL
         if self._check_soft_recovery_to_normal(diag):
             return ControllerState.NORMAL
-        
+
         return None
     
     def _handle_mpc_degraded(self, diag: DiagnosticsInput) -> Optional[ControllerState]:
@@ -476,10 +481,30 @@ class StateMachine:
     
     def _handle_stopping(self, diag: DiagnosticsInput) -> Optional[ControllerState]:
         """处理 STOPPING 状态"""
-        stopped = (
-            abs(diag.v_horizontal) < self.v_stop_thresh and 
-            abs(diag.vz) < self.vz_stop_thresh
-        )
+        # 安全关键: 检查速度值是否为 NaN/Inf
+        # NaN 在比较时总是返回 False，会导致 stopped 永远为 False
+        # 如果速度是 NaN，视为未停止，依赖超时机制强制停止
+        v_horizontal_valid = np.isfinite(diag.v_horizontal)
+        vz_valid = np.isfinite(diag.vz)
+
+        if not v_horizontal_valid or not vz_valid:
+            # 使用节流日志避免泛滥（每5秒最多记录一次）
+            if not self._nan_velocity_warned:
+                logger.warning(
+                    f"NaN/Inf detected in velocity during STOPPING: "
+                    f"v_horizontal={diag.v_horizontal}, vz={diag.vz}. "
+                    f"Relying on timeout for safety."
+                )
+                self._nan_velocity_warned = True
+            # 不认为已停止，让超时机制处理
+            stopped = False
+        else:
+            # 速度有效时重置警告标志
+            self._nan_velocity_warned = False
+            stopped = (
+                abs(diag.v_horizontal) < self.v_stop_thresh and
+                abs(diag.vz) < self.vz_stop_thresh
+            )
         
         if stopped:
             self._stopping_start_time = None
@@ -545,7 +570,7 @@ class StateMachine:
     
     def reset(self) -> None:
         """重置状态机
-        
+
         重置后状态机进入 INIT 状态，并开始新的状态持续时间监控周期。
         """
         self.state = ControllerState.INIT
@@ -555,3 +580,5 @@ class StateMachine:
         # 重置状态持续时间监控，设置进入时间以启用超时检查
         self._state_entry_time = get_monotonic_time()
         self._timeout_warned_states.clear()
+        # 重置 NaN 速度警告标志
+        self._nan_velocity_warned = False

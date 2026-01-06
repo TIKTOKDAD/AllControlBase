@@ -18,7 +18,7 @@ import logging
 
 from universal_controller.manager.controller_manager import ControllerManager
 from universal_controller.core.data_types import (
-    Odometry, Imu, Trajectory, ControlOutput
+    Odometry, Imu, Trajectory, ControlOutput, DiagnosticsV2
 )
 from universal_controller.core.enums import ControllerState
 from ..lifecycle import LifecycleMixin, LifecycleState
@@ -108,9 +108,8 @@ class ControllerBridge(LifecycleMixin):
             由其统一处理并保存完整错误信息到 _last_error。
             如果初始化失败，_manager 会在 _do_shutdown() 中被清理。
         """
-        # 重置时间
-        import time
-        self._last_update_time = time.time()
+        self._last_ros_time = 0.0
+        self._last_monotonic_time = 0.0
         
         self._manager = ControllerManager(self._config)
         self._manager.initialize_default_components()
@@ -130,8 +129,7 @@ class ControllerBridge(LifecycleMixin):
     
     def _do_reset(self) -> None:
         """重置控制器状态"""
-        import time
-        self._last_update_time = time.time()
+        self._last_ros_time = 0.0
         if self._manager is not None:
             self._manager.reset()
             logger.info("Controller bridge reset")
@@ -150,12 +148,13 @@ class ControllerBridge(LifecycleMixin):
             },
         }
     
-    def update(self, odom: Odometry, trajectory: Trajectory, 
+    def update(self, current_time: float, odom: Odometry, trajectory: Trajectory, 
                data_ages: Dict[str, float], imu: Optional[Imu] = None) -> ControlOutput:
         """
         执行一次控制更新
         
         Args:
+            current_time: 当前时间 (ROS/Sim time, seconds)
             odom: 里程计数据 (UC 格式)
             trajectory: 轨迹数据 (UC 格式)
             data_ages: 数据年龄字典 {'odom': ms, 'trajectory': ms, 'imu': ms}
@@ -170,21 +169,31 @@ class ControllerBridge(LifecycleMixin):
         if not self.is_running or self._manager is None:
             raise RuntimeError("Controller not initialized or already shutdown")
         
-        # 频率监控
-        import time
-        now = time.time()
-        dt = now - self._last_update_time
+        # 频率监控 (修正: 使用 ROS Time 监控控制频率，适应仿真变速)
+        # current_time 是从 Node 传入的 ROS 时间 (Sim Time or System Time)
+        if self._last_ros_time > 0:
+            dt_ros = current_time - self._last_ros_time
+            
+            # 1. 处理时钟回退 (如仿真重置)
+            if dt_ros < 0:
+                # 此时不触发警告，直接重置基准时间
+                self._last_ros_time = current_time
+            
+            # 2. 正常的频率检查
+            # 忽略过长的间隔（可能是首次运行、暂停后恢复、时钟跳变）
+            # 注意: 如果仿真暂停，dt_ros 为 0，不应触发警告
+            # 如果仿真变慢 (e.g. 0.1x)，dt_ros 仍然是 0.02s (Sim Time)，不会触发警告 -> 正确行为
+            # 如果计算过慢导致丢帧 (Overrun)，dt_ros 会变成 0.04s, 0.06s -> 触发警告 -> 正确行为
+            elif dt_ros > self._expected_period * self._freq_warn_threshold and dt_ros < 2.0:
+                 logger.warning(
+                    f"Control loop jitter detected (ROS Time): {1.0/dt_ros:.1f}Hz "
+                    f"(expected {1.0/self._expected_period:.1f}Hz, dt={dt_ros*1000:.1f}ms)"
+                )
         
-        # 忽略过长的间隔（可能是首次运行或暂停后恢复）
-        if dt > self._expected_period * self._freq_warn_threshold and dt < 2.0:
-            logger.warning(
-                f"Control loop running slow: {1.0/dt:.1f}Hz "
-                f"(expected {1.0/self._expected_period:.1f}Hz, dt={dt*1000:.1f}ms)"
-            )
+        # 不要使用 time.monotonic()，它无法感知仿真速率
+        self._last_ros_time = current_time
         
-        self._last_update_time = now
-        
-        return self._manager.update(odom, trajectory, data_ages, imu)
+        return self._manager.update(current_time, odom, trajectory, data_ages, imu)
     
     def get_state(self) -> ControllerState:
         """获取控制器状态"""
@@ -192,7 +201,7 @@ class ControllerBridge(LifecycleMixin):
             return ControllerState.INIT
         return self._manager.get_state()
     
-    def get_diagnostics(self) -> Optional[Dict[str, Any]]:
+    def get_diagnostics(self) -> Optional[DiagnosticsV2]:
         """获取诊断信息"""
         if self._manager is None:
             return None
@@ -208,8 +217,6 @@ class ControllerBridge(LifecycleMixin):
         请求控制器进入停止状态
         
         这是唯一允许的外部状态干预，用于紧急停止场景。
-        使用 StateMachine 的官方 request_stop() 接口，状态转换会在
-        下一次 update() 时由状态机统一处理。
         
         Returns:
             是否成功请求停止
@@ -217,11 +224,8 @@ class ControllerBridge(LifecycleMixin):
         if not self.is_running or self._manager is None:
             return False
         
-        if self._manager.state_machine is None:
-            return False
-        
-        # 使用状态机的官方接口请求停止
-        return self._manager.state_machine.request_stop()
+        # 使用经理层的代理方法，不再直接访问内部状态机
+        return self._manager.request_stop()
     
     @property
     def manager(self) -> Optional[ControllerManager]:

@@ -35,6 +35,11 @@ uint8 mode
 # 坐标系由 header.frame_id 指定，通常为 base_link (局部坐标)
 geometry_msgs/Point[] points
 
+# 扁平化位置数组 (性能优化)
+# 格式: [x0, y0, z0, x1, y1, z1, ...]
+# 如果此字段不为空，适配器将优先使用此字段以避免 Python 对象反序列化开销
+float32[] points_flat
+
 # 速度数组 (Soft 模式使用)
 # 格式: [vx_0, vy_0, vz_0, wz_0, vx_1, vy_1, vz_1, wz_1, ...]
 # 长度: len(points) * 4 (Soft 模式) 或 0 (Hard 模式)

@@ -195,12 +195,9 @@ class ControllerNodeROS1(ControllerNodeBase):
     
     def _get_time(self) -> float:
         """Get current ROS time (seconds)"""
-        try:
-            t = rospy.Time.now().to_sec()
-            return t if t > 0 else rospy.get_time()
-        except Exception:
-            import time
-            return time.time()
+        # Always use ROS time.
+        # If rospy is not initialized, this will raise, which is correct (Fail Fast).
+        return rospy.Time.now().to_sec()
     
     def _log_info(self, msg: str):
         rospy.loginfo(msg)

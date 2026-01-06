@@ -27,6 +27,16 @@ from universal_controller.tests.fixtures import (
 from universal_controller.core.data_types import Trajectory, Point3D, Header
 
 
+def _get_point(traj, idx):
+    """获取轨迹点坐标，兼容 numpy 数组和 Point3D 列表"""
+    points = traj.points
+    if isinstance(points, np.ndarray):
+        return points[idx, 0], points[idx, 1], points[idx, 2] if points.shape[1] > 2 else 0.0
+    else:
+        p = points[idx]
+        return p.x, p.y, p.z
+
+
 def test_basic_transform():
     """测试基本坐标变换"""
     config = DEFAULT_CONFIG.copy()
@@ -51,15 +61,17 @@ def test_basic_transform():
     odom_traj, status = transformer.transform_trajectory(local_traj, 'odom', time.time())
     
     # 验证第一个点 (应该在机器人位置)
-    assert abs(odom_traj.points[0].x - robot_x) < 0.01, \
-        f"First point x should be {robot_x}, got {odom_traj.points[0].x}"
-    assert abs(odom_traj.points[0].y - robot_y) < 0.01, \
-        f"First point y should be {robot_y}, got {odom_traj.points[0].y}"
+    p0_x, p0_y, _ = _get_point(odom_traj, 0)
+    assert abs(p0_x - robot_x) < 0.01, \
+        f"First point x should be {robot_x}, got {p0_x}"
+    assert abs(p0_y - robot_y) < 0.01, \
+        f"First point y should be {robot_y}, got {p0_y}"
     
     # 验证轨迹方向 (应该沿着 45° 方向)
     if len(odom_traj.points) > 1:
-        dx = odom_traj.points[1].x - odom_traj.points[0].x
-        dy = odom_traj.points[1].y - odom_traj.points[0].y
+        p1_x, p1_y, _ = _get_point(odom_traj, 1)
+        dx = p1_x - p0_x
+        dy = p1_y - p0_y
         actual_angle = math.atan2(dy, dx)
         expected_angle = robot_theta
         angle_diff = abs(actual_angle - expected_angle)
@@ -153,8 +165,9 @@ def test_empty_frame_fallback():
     world_traj, status = transformer.transform_trajectory(empty_frame_traj, 'odom', time.time())
     
     # 验证变换正确应用
-    assert abs(world_traj.points[0].x - 2.0) < 0.01  # 1.0 + 1.0
-    assert abs(world_traj.points[0].y - 2.0) < 0.01  # 0.0 + 2.0
+    p0_x, p0_y, _ = _get_point(world_traj, 0)
+    assert abs(p0_x - 2.0) < 0.01  # 1.0 + 1.0
+    assert abs(p0_y - 2.0) < 0.01  # 0.0 + 2.0
     
     print("[PASS] test_empty_frame_fallback passed")
 
@@ -186,10 +199,11 @@ def test_transform_with_rotation():
         expected_x = math.cos(theta)
         expected_y = math.sin(theta)
         
-        assert abs(odom_traj.points[0].x - expected_x) < 0.01, \
-            f"theta={theta:.2f}: x should be {expected_x:.2f}, got {odom_traj.points[0].x:.2f}"
-        assert abs(odom_traj.points[0].y - expected_y) < 0.01, \
-            f"theta={theta:.2f}: y should be {expected_y:.2f}, got {odom_traj.points[0].y:.2f}"
+        p0_x, p0_y, _ = _get_point(odom_traj, 0)
+        assert abs(p0_x - expected_x) < 0.01, \
+            f"theta={theta:.2f}: x should be {expected_x:.2f}, got {p0_x:.2f}"
+        assert abs(p0_y - expected_y) < 0.01, \
+            f"theta={theta:.2f}: y should be {expected_y:.2f}, got {p0_y:.2f}"
     
     print("[PASS] test_transform_with_rotation passed")
 
@@ -216,12 +230,15 @@ def test_transform_consistency():
     # 变换局部轨迹
     actual_odom_traj, _ = transformer.transform_trajectory(local_traj, 'odom', time.time())
     
-    # 比较结果
-    for i, (actual, expected) in enumerate(zip(actual_odom_traj.points, expected_odom_traj.points)):
-        assert abs(actual.x - expected.x) < 0.01, \
-            f"Point {i}: x mismatch {actual.x} vs {expected.x}"
-        assert abs(actual.y - expected.y) < 0.01, \
-            f"Point {i}: y mismatch {actual.y} vs {expected.y}"
+    # 比较结果 - 兼容 numpy 数组和 Point3D 列表
+    num_points = len(actual_odom_traj.points)
+    for i in range(num_points):
+        actual_x, actual_y, _ = _get_point(actual_odom_traj, i)
+        expected_x, expected_y, _ = _get_point(expected_odom_traj, i)
+        assert abs(actual_x - expected_x) < 0.01, \
+            f"Point {i}: x mismatch {actual_x} vs {expected_x}"
+        assert abs(actual_y - expected_y) < 0.01, \
+            f"Point {i}: y mismatch {actual_y} vs {expected_y}"
     
     # 比较速度
     if actual_odom_traj.velocities is not None and expected_odom_traj.velocities is not None:

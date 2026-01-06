@@ -55,10 +55,19 @@ from ..core.ros_compat import get_monotonic_time, normalize_angle
 from ..core.constants import EPSILON, MIN_SEGMENT_LENGTH
 from ..config.default_config import PLATFORM_CONFIG, DEFAULT_CONFIG
 from ..config.validation import validate_logical_consistency, ConfigValidationError
+from ..config.utils import deep_update
 from ..safety.timeout_monitor import TimeoutMonitor
 from ..safety.state_machine import StateMachine
 from ..health.mpc_health_monitor import MPCHealthMonitor
 from ..diagnostics.publisher import DiagnosticsPublisher
+from ..estimator.adaptive_ekf import AdaptiveEKFEstimator
+from ..tracker.pure_pursuit import PurePursuitController
+from ..tracker.mpc_controller import MPCController
+from ..consistency.weighted_analyzer import WeightedConsistencyAnalyzer
+from ..safety.safety_monitor import BasicSafetyMonitor
+from ..transition.smooth_transition import ExponentialSmoothTransition, LinearSmoothTransition
+from ..transform.robust_transformer import RobustCoordinateTransformer
+from ..processors.attitude_processor import AttitudeProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +113,8 @@ class ControllerManager:
             profile_config = create_default_config(profile)
             # 简单的字典合并：config 覆盖 profile_config
             # 注意：这里只做浅层合并，实际使用可能需要递归合并
-            profile_config.update(config) 
+            # 使用深度合并，确保嵌套配置（如 MPC 权重）不丢失
+            deep_update(profile_config, config) 
             self.config = profile_config
         else:
             self.config = config
@@ -121,14 +131,14 @@ class ControllerManager:
         
         # 加载 TrajectoryConfig (不再使用全局 TrajectoryDefaults)
         self.trajectory_config = TrajectoryConfig.from_dict(self.config)
-        
-        self.ctrl_freq = config.get('system', {}).get('ctrl_freq', 50)
+
+        self.ctrl_freq = self.config.get('system', {}).get('ctrl_freq', 50)
         self.dt = 1.0 / self.ctrl_freq
-        
-        platform_name = config.get('system', {}).get('platform', 'differential')
+
+        platform_name = self.config.get('system', {}).get('platform', 'differential')
         self.platform_config = PLATFORM_CONFIG.get(platform_name, PLATFORM_CONFIG['differential'])
         self.default_frame_id = self.platform_config.get('output_frame', 'base_link')
-        self.transform_target_frame = config.get('transform', {}).get('target_frame', 'odom')
+        self.transform_target_frame = self.config.get('transform', {}).get('target_frame', 'odom')
         
         # 检查是否为无人机平台（使用 is_ground_vehicle 配置）
         self.is_quadrotor = not self.platform_config.get(
@@ -158,6 +168,8 @@ class ControllerManager:
         self._last_state = ControllerState.INIT
         self._safety_failed = False
         self._safety_check_passed = True  # 安全检查是否通过
+        self._safety_check_passed = True  # 安全检查是否通过
+        self._diagnostics_input = DiagnosticsInput()  # 复用诊断对象以减少 GC
         self._last_diagnostics: Optional[DiagnosticsInput] = None
         self._last_mpc_health = None
         self._last_consistency: Optional[ConsistencyResult] = None
@@ -185,11 +197,13 @@ class ControllerManager:
         self._last_mpc_predicted_state: Optional[np.ndarray] = None
         
         # 诊断发布器（职责分离）
-        self._diagnostics_publisher = DiagnosticsPublisher()
+        # 读取配置中的发布频率，默认 10Hz
+        diag_rate = self.config.get('system', {}).get('diagnostics_rate', 10.0)
+        self._diagnostics_publisher = DiagnosticsPublisher(publish_rate=diag_rate)
         
-        # 尝试初始化 ROS Publisher (向后兼容)
-        self._cmd_pub: Optional[Any] = None
-        self._init_ros_publishers()
+        # 处理器故障计数器
+        self._processor_failure_counts = {}
+        self._processor_max_failures = 10
     
     def _validate_config(self, strict_mode: bool = False) -> None:
         """
@@ -237,18 +251,7 @@ class ControllerManager:
                 for key, msg, _ in error_errors:
                     logger.warning(f'配置问题 [{key}]: {msg} [ERROR]')
     
-    def _init_ros_publishers(self) -> None:
-        """
-        初始化 ROS Publishers (已禁用)
-        
-        注意: 在 ROS 环境下，命令发布由 controller_ros/controller_node.py 处理，
-        使用 UnifiedCmd 消息类型。这里不再创建发布器，避免话题类型冲突。
-        
-        controller_node.py 会调用 _publish_cmd() 方法发布 UnifiedCmd 消息。
-        """
-        # 禁用内部 ROS 发布器，由 controller_node.py 处理
-        self._cmd_pub = None
-    
+
     def set_diagnostics_callback(self, callback: callable) -> None:
         """
         设置诊断回调函数
@@ -319,16 +322,6 @@ class ControllerManager:
         
         子类可以重写此方法以注入自定义组件类，而无需重写整个初始化逻辑。
         """
-        # 本地导入以避免循环依赖
-        from ..estimator.adaptive_ekf import AdaptiveEKFEstimator
-        from ..tracker.pure_pursuit import PurePursuitController
-        from ..tracker.mpc_controller import MPCController
-        from ..consistency.weighted_analyzer import WeightedConsistencyAnalyzer
-        from ..safety.safety_monitor import BasicSafetyMonitor
-        from ..transition.smooth_transition import ExponentialSmoothTransition, LinearSmoothTransition
-        from ..transform.robust_transformer import RobustCoordinateTransformer
-        from ..processors.attitude_processor import AttitudeProcessor
-        
         return {
             'estimator_cls': AdaptiveEKFEstimator,
             'mpc_cls': MPCController,
@@ -426,21 +419,21 @@ class ControllerManager:
                 self.smooth_transition.start_transition(self._last_backup_cmd)
 
     
-    def update(self, odom: Odometry, trajectory: Trajectory, 
+    def update(self, current_time: float, odom: Odometry, trajectory: Trajectory, 
                data_ages: Dict[str, float], imu: Optional[Imu] = None) -> ControlOutput:
         """
         主控制循环
         
         Args:
+            current_time: 当前时间 (秒) - 应使用 ROS Time / Sim Time 以确保 TF 同步
             odom: 里程计数据
             trajectory: 轨迹数据
-            data_ages: 数据年龄字典 {'odom': ms, 'trajectory': ms, 'imu': ms}
+            data_ages: 数据年龄字典 {'odom': sec, 'trajectory': sec, 'imu': sec}
             imu: IMU 数据 (可选)
             
         Returns:
             ControlOutput: 控制输出
         """
-        current_time = get_monotonic_time()
         
         # 1. 时间管理
         actual_dt, skip_prediction = self._compute_time_step(current_time)
@@ -489,7 +482,7 @@ class ControllerManager:
         
         # 13. 发布诊断
         self._publish_diagnostics(
-            state_output, current_timeout_status, tf2_critical, cmd)
+            state_output, current_timeout_status, tf2_critical, cmd, current_time)
         
         # 14. 运行额外处理器 (Processors)
         self._run_processors(state, cmd)
@@ -502,15 +495,67 @@ class ControllerManager:
         self._last_tracking_quality = self._compute_tracking_quality(self._last_tracking_error)
 
     def _run_processors(self, state: np.ndarray, cmd: ControlOutput) -> None:
-        """运行额外处理器"""
+        """运行额外处理器 (带性能监控)"""
+        if not self.processors:
+            return
+            
+        # 优化: 仅在 DEBUG 模式下启用耗时统计，避免生产环境下的 System Call 开销
+        enable_profiling = logger.isEnabledFor(logging.DEBUG)
+
         # 将解耦的平台特定逻辑（如姿态控制）作为处理器运行
         for processor in self.processors:
+            # 使用对象 ID 作为唯一键，避免同类实例冲突
+            proc_id = id(processor)
+            proc_name = processor.__class__.__name__
+            
+            # 检查是否因为连续失败而被禁用
+            if self._processor_failure_counts.get(proc_id, 0) >= self._processor_max_failures:
+                continue
+
             try:
-                extra_result = processor.compute_extra(state, cmd)
+                if enable_profiling:
+                    proc_start = time.monotonic()
+                    extra_result = processor.compute_extra(state, cmd)
+                    proc_duration = (time.monotonic() - proc_start) * 1000
+                    
+                    # 性能告警：处理器耗时超过 5ms
+                    if proc_duration > 5.0:
+                        logger.warning(
+                            f"Processor {proc_name} took too long: {proc_duration:.2f}ms. "
+                            f"This may affect control loop stability."
+                        )
+                else:
+                    # 生产模式: 直接调用，无计时开销
+                    extra_result = processor.compute_extra(state, cmd)
+                
+                # 成功运行，重置失败计数
+                if self._processor_failure_counts.get(proc_id, 0) > 0:
+                    self._processor_failure_counts[proc_id] = 0
+                
                 if extra_result:
                     cmd.extras.update(extra_result)
             except Exception as e:
-                logger.error(f"Processor {processor.__class__.__name__} failed: {e}")
+                # 累加失败计数
+                self._processor_failure_counts[proc_id] = self._processor_failure_counts.get(proc_id, 0) + 1
+                fail_count = self._processor_failure_counts[proc_id]
+                
+                if fail_count >= self._processor_max_failures:
+                    logger.error(f"Processor {proc_name} (id={proc_id}) failed {fail_count} times. Disabling it. Last error: {e}")
+                else:
+                    logger.error(f"Processor {proc_name} (id={proc_id}) failed (count {fail_count}): {e}")
+
+    def request_stop(self) -> bool:
+        """
+        请求控制器进入停止状态
+        
+        代理到状态机的 request_stop 方法
+        
+        Returns:
+            bool: 成功请求返回 True，否则返回 False
+        """
+        if self.state_machine:
+            return self.state_machine.request_stop()
+        return False
 
     def get_timeout_status(self) -> TimeoutStatus:
         """获取当前超时状态 (供外部查询)"""
@@ -554,7 +599,20 @@ class ControllerManager:
                 actual_dt = self.dt
             elif actual_dt > long_pause_threshold:
                 logger.info(f"Medium pause detected ({actual_dt:.2f}s), using multi-step prediction")
+                # 限制最大补算步数，防止死循环 (例如 System Time Step = 20ms, Pause = 60s -> 3000 steps)
+                # 如果暂停太久，与其卡死 CPU 补算，不如只补算最近的一段，或者重置
+                MAX_CATCHUP_STEPS = 20  # Max 0.2s - 0.5s of catchup
+                
                 num_steps = int(actual_dt / self.dt)
+                
+                if num_steps > MAX_CATCHUP_STEPS:
+                    logger.warning(f"Pause ({actual_dt:.2f}s) exceeds catchup limit. Resetting EKF time instead of spinning.")
+                    # 强制重置 EKF 到当前状态（通过 update_odom 会重新对齐时间）
+                    # 或者只跑最后 N 步
+                    steps_to_run = MAX_CATCHUP_STEPS
+                    actual_dt = actual_dt - (num_steps - steps_to_run) * self.dt # Adjust residual
+                    num_steps = steps_to_run
+                
                 if self.state_estimator and num_steps > 1:
                     for _ in range(num_steps - 1):
                         self.state_estimator.predict(self.dt)
@@ -622,6 +680,18 @@ class ControllerManager:
         Returns:
             (transformed_traj, tf2_critical): 变换后轨迹和是否临界
         """
+        # 优化: 仅变换当前 Horizon 所需的轨迹片段，避免全量变换浪费算力
+        # MPC 需要 horizon 个点，预留一定的余量 (BUFFER) 以应对求解器可能的超前访问或 Lookahead
+        # Buffer set to 10 points
+        slice_len = self._current_horizon + 10
+        if len(trajectory.points) > slice_len:
+             # 高性能切片: 使用 Trajectory.get_slice() 获取切片
+             # 这不仅更高效（利用 Numpy View），而且更安全（自动复制所有字段）
+             traj_to_transform = trajectory.get_slice(0, slice_len)
+             
+        else:
+             traj_to_transform = trajectory
+
         if self.coord_transformer:
             # 准备 fallback_state
             fallback_state = None
@@ -629,13 +699,13 @@ class ControllerManager:
                 fallback_state = self.state_estimator.get_state()
             
             transformed_traj, tf_status = self.coord_transformer.transform_trajectory(
-                trajectory, self.transform_target_frame, current_time,
+                traj_to_transform, self.transform_target_frame, current_time,
                 fallback_state=fallback_state)
             tf2_critical = tf_status.is_critical()
         else:
             # 无坐标变换器时，假设轨迹已经在正确的坐标系
             # 这种情况下，轨迹应该已经是世界坐标系
-            transformed_traj = trajectory
+            transformed_traj = traj_to_transform
             tf2_critical = False
             
             # 如果轨迹声明在局部坐标系但没有变换器，发出警告
@@ -684,22 +754,23 @@ class ControllerManager:
                           timeout_status: TimeoutStatus, state: np.ndarray,
                           trajectory: Trajectory, tf2_critical: bool) -> DiagnosticsInput:
         """构建诊断信息"""
-        diagnostics = DiagnosticsInput(
-            alpha=consistency.alpha,
-            data_valid=consistency.data_valid,
-            mpc_health=mpc_health,
-            mpc_success=mpc_cmd.success if mpc_cmd else False,
-            odom_timeout=timeout_status.odom_timeout,
-            traj_timeout_exceeded=timeout_status.traj_grace_exceeded,
-            v_horizontal=np.sqrt(state[3]**2 + state[4]**2),
-            vz=state[5],
-            has_valid_data=len(trajectory.points) > 0,
-            tf2_critical=tf2_critical,
-            safety_failed=self._safety_failed,
-            current_state=self._last_state,
-        )
-        self._last_diagnostics = diagnostics
-        return diagnostics
+        """构建诊断信息 (复用对象)"""
+        d = self._diagnostics_input
+        d.alpha = consistency.alpha
+        d.data_valid = consistency.data_valid
+        d.mpc_health = mpc_health
+        d.mpc_success = mpc_cmd.success if mpc_cmd else False
+        d.odom_timeout = timeout_status.odom_timeout
+        d.traj_timeout_exceeded = timeout_status.traj_grace_exceeded
+        d.v_horizontal = np.sqrt(state[3]**2 + state[4]**2)
+        d.vz = state[5]
+        d.has_valid_data = len(trajectory.points) > 0
+        d.tf2_critical = tf2_critical
+        d.safety_failed = self._safety_failed
+        d.current_state = self._last_state
+        
+        self._last_diagnostics = d
+        return d
     
     def _select_controller_output(self, state: np.ndarray, trajectory: Trajectory,
                                   consistency: ConsistencyResult,
@@ -784,9 +855,8 @@ class ControllerManager:
     
     def _publish_diagnostics(self, state_output: Optional[EstimatorOutput],
                             timeout_status: TimeoutStatus, tf2_critical: bool,
-                            cmd: ControlOutput) -> None:
+                            cmd: ControlOutput, current_time: float) -> None:
         """发布诊断信息"""
-        wall_time = time.time()
         transform_status = self.coord_transformer.get_status() if self.coord_transformer else {
             'fallback_duration_ms': 0.0, 'accumulated_drift': 0.0
         }
@@ -794,7 +864,7 @@ class ControllerManager:
         emergency_stop = self.state_machine.is_stop_requested() if self.state_machine else False
         
         self._diagnostics_publisher.publish(
-            current_time=wall_time,
+            current_time=current_time,
             state=self._last_state,
             cmd=cmd,
             state_output=state_output,
@@ -844,16 +914,20 @@ class ControllerManager:
         else:
             self._last_mpc_predicted_state = None
         
+        # 获取点矩阵 (兼容 numpy 数组和 Point3D 列表)
+        points_matrix = trajectory.get_points_matrix()
+        num_points = len(points_matrix)
+        
         # 空轨迹: 无法计算有意义的误差
-        if len(trajectory.points) == 0:
+        if num_points == 0:
             return {'lateral_error': 0.0, 'longitudinal_error': 0.0, 
                     'heading_error': 0.0, 'prediction_error': prediction_error}
         
         # 单点轨迹: 计算到该点的距离和航向误差
-        if len(trajectory.points) == 1:
-            target = trajectory.points[0]
-            dx = target.x - px
-            dy = target.y - py
+        if num_points == 1:
+            target_x, target_y = points_matrix[0, 0], points_matrix[0, 1]
+            dx = target_x - px
+            dy = target_y - py
             dist = np.sqrt(dx**2 + dy**2)
             
             # 航向误差: 当前航向与指向目标点方向的差值
@@ -868,25 +942,22 @@ class ControllerManager:
                     'heading_error': heading_error, 'prediction_error': prediction_error}
         
         # 正常轨迹 (≥2 点): 完整的横向/纵向误差分解
-        min_dist = float('inf')
-        closest_idx = 0
-        for i, p in enumerate(trajectory.points):
-            dist = np.sqrt((p.x - px)**2 + (p.y - py)**2)
-            if dist < min_dist:
-                min_dist = dist
-                closest_idx = i
+        # 向量化计算最近点
+        dists = np.sqrt((points_matrix[:, 0] - px)**2 + (points_matrix[:, 1] - py)**2)
+        closest_idx = np.argmin(dists)
+        min_dist = dists[closest_idx]
         
         # 确定用于计算误差的线段
-        if closest_idx < len(trajectory.points) - 1:
-            p0 = trajectory.points[closest_idx]
-            p1 = trajectory.points[closest_idx + 1]
+        if closest_idx < num_points - 1:
+            p0_x, p0_y = points_matrix[closest_idx, 0], points_matrix[closest_idx, 1]
+            p1_x, p1_y = points_matrix[closest_idx + 1, 0], points_matrix[closest_idx + 1, 1]
         else:
             # closest_idx 是最后一个点，使用前一个线段
-            p0 = trajectory.points[closest_idx - 1]
-            p1 = trajectory.points[closest_idx]
+            p0_x, p0_y = points_matrix[closest_idx - 1, 0], points_matrix[closest_idx - 1, 1]
+            p1_x, p1_y = points_matrix[closest_idx, 0], points_matrix[closest_idx, 1]
         
-        dx = p1.x - p0.x
-        dy = p1.y - p0.y
+        dx = p1_x - p0_x
+        dy = p1_y - p0_y
         traj_length = np.sqrt(dx**2 + dy**2)
         
         if traj_length < MIN_SEGMENT_LENGTH:
@@ -894,8 +965,8 @@ class ControllerManager:
                     'heading_error': 0.0, 'prediction_error': prediction_error}
         
         tx, ty = dx / traj_length, dy / traj_length
-        ex = px - p0.x
-        ey = py - p0.y
+        ex = px - p0_x
+        ey = py - p0_y
         
         longitudinal_error = abs(ex * tx + ey * ty)
         lateral_error = abs(-ex * ty + ey * tx)
@@ -1016,7 +1087,10 @@ class ControllerManager:
         if self.state_machine: self.state_machine.reset()
         if self.safety_monitor: self.safety_monitor.reset()
         if self.mpc_health_monitor: self.mpc_health_monitor.reset()
-        if hasattr(self, 'attitude_controller') and self.attitude_controller: self.attitude_controller.reset()
+        # 重置所有处理器
+        for processor in self.processors:
+            if hasattr(processor, 'reset'):
+                processor.reset()
         if self.smooth_transition: self.smooth_transition.reset()
         if self.coord_transformer: self.coord_transformer.reset()
         # 重置轨迹跟踪器内部状态（不释放资源）

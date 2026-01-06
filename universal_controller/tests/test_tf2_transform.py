@@ -28,6 +28,16 @@ from universal_controller.config.default_config import DEFAULT_CONFIG
 from universal_controller.tests.fixtures import create_test_trajectory, create_test_odom
 
 
+def _get_point(traj, idx):
+    """获取轨迹点坐标，兼容 numpy 数组和 Point3D 列表"""
+    points = traj.points
+    if isinstance(points, np.ndarray):
+        return points[idx, 0], points[idx, 1], points[idx, 2] if points.shape[1] > 2 else 0.0
+    else:
+        p = points[idx]
+        return p.x, p.y, p.z
+
+
 def test_tf2_transform_basic():
     """测试基本 TF2 变换功能"""
     config = DEFAULT_CONFIG.copy()
@@ -49,9 +59,9 @@ def test_tf2_transform_basic():
     
     # 验证变换结果 (第一个点应该被变换)
     # 原点 (0, 0) 经过旋转 45° 和平移 (1, 2) 后应该在 (1, 2)
-    p0 = transformed_traj.points[0]
-    assert abs(p0.x - 1.0) < 0.01, f"Expected x=1.0, got {p0.x}"
-    assert abs(p0.y - 2.0) < 0.01, f"Expected y=2.0, got {p0.y}"
+    p0_x, p0_y, _ = _get_point(transformed_traj, 0)
+    assert abs(p0_x - 1.0) < 0.01, f"Expected x=1.0, got {p0_x}"
+    assert abs(p0_y - 2.0) < 0.01, f"Expected y=2.0, got {p0_y}"
     
     print("[PASS] test_tf2_transform_basic passed")
 

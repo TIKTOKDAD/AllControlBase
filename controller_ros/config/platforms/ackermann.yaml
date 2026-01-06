@@ -52,6 +52,7 @@ mpc:
   horizon: 20                     # MPC 预测时域
   horizon_degraded: 10            # 降级模式预测时域
   dt: 0.1                         # 时间步长 (秒)
+  solver_cache_max_size: 5        # ACADOS 求解器缓存最大数量 (LRU 策略)
   
   weights:
     position: 10.0                # 位置跟踪权重

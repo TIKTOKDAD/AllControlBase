@@ -350,6 +350,7 @@ t=traj_timeout_ms + traj_grace_ms 宽限期结束，触发安全停止
 | `horizon` | 20 | [1, 100] | MPC 预测时域，必须 < 轨迹点数 |
 | `horizon_degraded` | 10 | [1, 100] | 降级模式预测时域，必须 <= horizon |
 | `dt` | 0.1 | [0.001, 1.0] | 时间步长 (秒)，trajectory.default_dt_sec 自动继承此值 |
+| `solver_cache_max_size` | 5 | [1, 20] | ACADOS 求解器缓存最大数量 (LRU 策略)，防止内存泄漏 |
 
 #### 4.2 代价函数权重
 

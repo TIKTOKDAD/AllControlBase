@@ -186,25 +186,53 @@ class BasicSafetyMonitor(ISafetyMonitor):
         """检查滤波器是否已完成预热"""
         return self._filter_warmup_count >= self._filter_warmup_period
     
-    def check(self, state: np.ndarray, cmd: ControlOutput, 
+    def check(self, state: np.ndarray, cmd: ControlOutput,
               diagnostics: DiagnosticsInput) -> SafetyDecision:
         """检查控制命令安全性
-        
+
         安全检查流程:
-        1. 检查速度限制 (水平、垂直、角速度)
-        2. 检查加速度限制 (使用滤波后的加速度估计)
-        3. 如果违规，使用 emergency_decel 限制减速度
-        
+        1. 检查命令值是否为 NaN/Inf (安全关键)
+        2. 检查速度限制 (水平、垂直、角速度)
+        3. 检查加速度限制 (使用滤波后的加速度估计)
+        4. 如果违规，使用 emergency_decel 限制减速度
+
         emergency_decel 使用说明:
         - 当检测到安全违规时，限制命令的变化率不超过 emergency_decel
         - 这确保了即使在紧急情况下，机器人也能平滑减速而非急停
         """
         diag = diagnostics
-        
+
         reasons = []
         limited_cmd = cmd.copy()
         needs_limiting = False
-        
+
+        # 安全关键: 检查命令值是否为 NaN/Inf
+        # NaN 在比较时总是返回 False，会绕过所有限制检查
+        # 必须在所有其他检查之前进行
+        if not (np.isfinite(cmd.vx) and np.isfinite(cmd.vy) and
+                np.isfinite(cmd.vz) and np.isfinite(cmd.omega)):
+            logger.error(
+                f"NaN/Inf detected in control command: "
+                f"vx={cmd.vx}, vy={cmd.vy}, vz={cmd.vz}, omega={cmd.omega}. "
+                f"Returning zero command for safety."
+            )
+            # 返回零速度命令，这是最安全的选择
+            zero_cmd = ControlOutput(
+                vx=0.0, vy=0.0, vz=0.0, omega=0.0,
+                frame_id=cmd.frame_id, success=False,
+                health_metrics={'error_type': 'nan_detected'}
+            )
+            # 更新内部状态，确保下次加速度计算正确
+            # 使用零命令作为 last_cmd，避免 NaN 传播
+            self._last_cmd = zero_cmd.copy()
+            self._last_time = get_monotonic_time()
+            return SafetyDecision(
+                safe=False,
+                new_state=ControllerState.MPC_DEGRADED,
+                reason="NaN/Inf detected in control command",
+                limited_cmd=zero_cmd
+            )
+
         # 检查水平速度限制
         v_horizontal = cmd.v_horizontal
         if v_horizontal > self.v_max * self.velocity_margin:
@@ -231,40 +259,58 @@ class BasicSafetyMonitor(ISafetyMonitor):
         current_time = get_monotonic_time()
         if self._last_cmd is not None and self._last_time is not None:
             dt = current_time - self._last_time
-            # 使用非严格不等式，确保边界值也被正确处理
-            # min_dt_for_accel: 避免除零和数值不稳定
-            # max_dt_for_accel: 避免长时间间隔导致的不准确加速度估计
+            
+            # 初始化加速度值为 0 或上次的值
+            ax, ay, az, alpha = 0.0, 0.0, 0.0, 0.0
+            should_check_accel = False
+            
+            # 获取当前滤波器状态 (如果有)
+            if hasattr(self, '_last_filtered_accel'):
+                ax, ay, az, alpha = self._last_filtered_accel
+            
+            # 策略：
+            # 1. 正常范围: 更新滤波器并检查
+            # 2. 过小 (< min): 不更新滤波器（防止除零/噪声），但使用上次的值进行检查 (Zero-Order Hold)
+            # 3. 过大 (> max): 可能是暂停或丢帧。不更新滤波器（防止极小加速度产生误导），也不检查（数据不可靠）
+            
             if self.min_dt_for_accel <= dt <= self.max_dt_for_accel:
-                # 计算原始加速度
+                # 正常计算
                 raw_ax = (cmd.vx - self._last_cmd.vx) / dt
                 raw_ay = (cmd.vy - self._last_cmd.vy) / dt
                 raw_az = (cmd.vz - self._last_cmd.vz) / dt if self.is_3d else 0.0
                 raw_alpha = (cmd.omega - self._last_cmd.omega) / dt
                 
-                # 应用滤波
+                # 更新滤波器
                 ax, ay, az, alpha = self._filter_acceleration(raw_ax, raw_ay, raw_az, raw_alpha)
+                # 保存状态
+                self._last_filtered_accel = (ax, ay, az, alpha)
+                should_check_accel = True
                 
-                # 预热期间使用更宽松的阈值，而非完全跳过检查
-                # 这样可以防止启动时的极端加速度，同时避免误报
+            elif dt < self.min_dt_for_accel:
+                # dt 过小，沿用上次的加速度值进行检查
+                should_check_accel = True
+            
+            else:
+                # dt 过大，重置或跳过
+                logger.debug(f"dt too large ({dt:.3f}s), skipping accel check")
+                should_check_accel = False
+
+            if should_check_accel:
+                # 预热期间使用更宽松的阈值
                 if self.is_filter_warmed_up():
                     accel_margin_effective = self.accel_margin
                 else:
-                    # 预热期间使用配置的裕度倍数，但不超过上限
-                    # 这确保即使配置错误，安全检查也不会过于宽松
                     effective_multiplier = min(self.accel_warmup_margin_multiplier, self.accel_warmup_margin_max)
                     accel_margin_effective = self.accel_margin * effective_multiplier
                 
                 # 绝对加速度上限检查 - 无论预热状态如何都执行
-                # 这是一个硬性安全限制，防止任何情况下的危险加速度
                 accel_absolute_limit = self.a_max * self.accel_absolute_max_multiplier
-                alpha_absolute_limit = self.alpha_max * self.accel_absolute_max_multiplier
                 
                 accel_horizontal = np.sqrt(ax**2 + ay**2)
                 
                 # 首先检查绝对上限（硬性限制）
                 if accel_horizontal > accel_absolute_limit:
                     reasons.append(f"a_horizontal {accel_horizontal:.2f} exceeds absolute limit {accel_absolute_limit:.2f}")
-                    # 使用 emergency_decel 限制减速度
                     limited_cmd = self._apply_emergency_decel_limit(
                         limited_cmd, self._last_cmd, dt, 'horizontal')
                     needs_limiting = True
@@ -291,6 +337,7 @@ class BasicSafetyMonitor(ISafetyMonitor):
                         needs_limiting = True
                 
                 # 角加速度绝对上限检查
+                alpha_absolute_limit = self.alpha_max * self.accel_absolute_max_multiplier
                 if abs(alpha) > alpha_absolute_limit:
                     reasons.append(f"alpha {alpha:.2f} exceeds absolute limit {alpha_absolute_limit:.2f}")
                     limited_cmd = self._apply_emergency_decel_limit(

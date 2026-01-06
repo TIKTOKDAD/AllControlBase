@@ -200,28 +200,26 @@ class TestConfigurationConsistency:
     
     def test_frame_id_default(self):
         """Test default frame_id matches trajectory_adapter"""
-        from universal_controller.core.data_types import TrajectoryDefaults
+        from universal_controller.core.data_types import TrajectoryConfig
         
+        config = TrajectoryConfig()
         # Both should default to 'base_link'
-        assert TrajectoryDefaults.default_frame_id == 'base_link'
+        assert config.default_frame_id == 'base_link'
     
     def test_dt_inheritance(self):
         """Test dt_sec inheritance from mpc.dt"""
-        from universal_controller.core.data_types import TrajectoryDefaults
+        from universal_controller.core.data_types import TrajectoryConfig
         
-        config = {
+        config_dict = {
             'trajectory': {},
             'mpc': {'dt': 0.15},
         }
         
-        # Configure and verify dt inheritance
-        TrajectoryDefaults.configure(config)
+        # Create config and verify dt inheritance
+        config = TrajectoryConfig.from_dict(config_dict)
         
         # Should inherit from mpc.dt when trajectory.default_dt_sec is not set
-        assert TrajectoryDefaults.dt_sec == 0.15
-        
-        # Reset to default for other tests
-        TrajectoryDefaults.dt_sec = 0.1
+        assert config.dt_sec == 0.15
     
     def test_max_coord_consistency(self):
         """Test max_coord is consistent across modules"""

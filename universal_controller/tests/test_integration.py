@@ -50,7 +50,8 @@ def test_controller_manager_update():
     data_ages = {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.0}
     
     # 执行更新
-    cmd = manager.update(odom, trajectory, data_ages)
+    current_time = time.time()
+    cmd = manager.update(current_time, odom, trajectory, data_ages)
     
     assert isinstance(cmd, ControlOutput)
     assert cmd.frame_id != ""
@@ -70,7 +71,8 @@ def test_controller_manager_with_imu():
     data_ages = {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.01}
     
     # 执行更新
-    cmd = manager.update(odom, trajectory, data_ages, imu)
+    current_time = time.time()
+    cmd = manager.update(current_time, odom, trajectory, data_ages, imu)
     
     assert isinstance(cmd, ControlOutput)
     
@@ -87,7 +89,8 @@ def test_diagnostics_publish():
     trajectory = create_test_trajectory()
     data_ages = {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.0}
     
-    manager.update(odom, trajectory, data_ages)
+    current_time = time.time()
+    manager.update(current_time, odom, trajectory, data_ages)
     
     # 验证诊断数据已发布（通过 get_last_published_diagnostics 获取）
     last_diag = manager.get_last_published_diagnostics()
@@ -130,7 +133,8 @@ def test_state_transition():
     data_ages = {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.0}
     
     for _ in range(3):
-        manager.update(odom, trajectory, data_ages)
+        current_time = time.time()
+        manager.update(current_time, odom, trajectory, data_ages)
     
     # 状态应该已经改变
     state = manager.get_state()
@@ -148,7 +152,8 @@ def test_reset_and_shutdown():
     odom = create_test_odom(vx=1.0)
     trajectory = create_test_trajectory()
     data_ages = {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.0}
-    manager.update(odom, trajectory, data_ages)
+    current_time = time.time()
+    manager.update(current_time, odom, trajectory, data_ages)
     
     # 重置
     manager.reset()
@@ -171,7 +176,8 @@ def test_tracking_error_computation():
     trajectory = create_test_trajectory()
     data_ages = {'odom': 0.01, 'trajectory': 0.01, 'imu': 0.0}
     
-    manager.update(odom, trajectory, data_ages)
+    current_time = time.time()
+    manager.update(current_time, odom, trajectory, data_ages)
     
     # 检查跟踪误差
     assert manager._last_tracking_error is not None

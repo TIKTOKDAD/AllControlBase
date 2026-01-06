@@ -62,6 +62,7 @@ def test_imu_adapter_to_uc():
 def test_trajectory_adapter_to_uc():
     """测试轨迹适配器 ROS → UC"""
     from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+    import numpy as np
     
     adapter = TrajectoryAdapter()
     ros_msg = MockRosTrajectory()
@@ -70,8 +71,14 @@ def test_trajectory_adapter_to_uc():
     
     assert isinstance(uc_traj, Trajectory)
     assert len(uc_traj.points) == 10
-    assert uc_traj.points[0].x == 0.0
-    assert abs(uc_traj.points[1].x - 0.1) < 0.001
+    # points 现在是 numpy 数组
+    if isinstance(uc_traj.points, np.ndarray):
+        assert uc_traj.points[0, 0] == 0.0  # x
+        assert abs(uc_traj.points[1, 0] - 0.1) < 0.001  # x
+    else:
+        # Legacy Point3D 列表格式
+        assert uc_traj.points[0].x == 0.0
+        assert abs(uc_traj.points[1].x - 0.1) < 0.001
     assert uc_traj.dt_sec == 0.1
     assert uc_traj.confidence == 0.9
     assert uc_traj.soft_enabled == False

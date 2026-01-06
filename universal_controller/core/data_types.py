@@ -58,6 +58,7 @@ class TrajectoryConfig:
     max_point_distance: float = 10.0
     velocity_decay_threshold: float = 0.1
     validate_enabled: bool = True
+    legacy_points_enabled: bool = False
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> 'TrajectoryConfig':
@@ -76,7 +77,8 @@ class TrajectoryConfig:
             min_points=traj_config.get('min_points', 2),
             max_points=traj_config.get('max_points', 100),
             max_point_distance=traj_config.get('max_point_distance', 10.0),
-            velocity_decay_threshold=traj_config.get('velocity_decay_threshold', 0.1)
+            velocity_decay_threshold=traj_config.get('velocity_decay_threshold', 0.1),
+            legacy_points_enabled=traj_config.get('legacy_points_enabled', False)
         )
 
 
@@ -109,7 +111,7 @@ class Twist3D:
 @dataclass
 class Trajectory:
     """轨迹数据类
-    
+
     Attributes:
         header: 消息头，包含时间戳和坐标系
         points: Hard 轨迹点列表
@@ -119,12 +121,18 @@ class Trajectory:
         mode: 轨迹模式
         soft_enabled: Soft Head 是否启用
         low_speed_thresh: 低速阈值，用于角速度计算
-    
+
     缓存机制:
         get_hard_velocities() 使用内部缓存，避免重复计算。
         缓存在以下情况下失效：
         - 首次调用
         - points 或 dt_sec 发生变化（通过 _cache_key 检测）
+
+    线程安全性:
+        此类不是线程安全的。如果需要在多线程环境中使用：
+        - 方案1: 在外部加锁保护对 Trajectory 对象的访问
+        - 方案2: 使用 copy() 方法创建副本，每个线程使用独立副本
+        - 方案3: 只在单线程中修改，其他线程只读（读取缓存结果是安全的）
     """
     header: Header
     points: List[Point3D]
@@ -139,11 +147,35 @@ class Trajectory:
     _hard_velocities_cache: Optional[np.ndarray] = field(default=None, repr=False, compare=False, init=False)
     _points_matrix_cache: Optional[np.ndarray] = field(default=None, repr=False, compare=False, init=False)
     _version: int = field(default=0, repr=False, compare=False, init=False)
-    
+    _points_are_numpy: bool = field(default=False, repr=False, compare=False, init=False)
+
     def __post_init__(self):
         # 初始化 version 和 cache_key
-        object.__setattr__(self, '_version', 0)
-        object.__setattr__(self, '_cache_key', None)
+        # 修复 Bug: 不要重置 version，如果 __setattr__ 已经设置过了
+        if not hasattr(self, '_version'):
+            object.__setattr__(self, '_version', 0)
+        if not hasattr(self, '_cache_key'):
+            object.__setattr__(self, '_cache_key', None)
+        
+        # 优化: 移除已被 __setattr__ 处理过的冗余逻辑
+        # 仅处理尚未被处理的情况 (例如直接调用 __init__ 而非通过属性赋值时，尽管 Dataclass 会触发 setattr)
+        # 为由于 Dataclass 生成的 __init__ 会对每个字段调用 setattr，
+        # 此时 self.points 已经被 __setattr__ 处理并转为 numpy array 和 只读
+        # 这里只需要进行最终的卫语句检查
+        
+        # 确保维度正确 (安全检查)
+        if self.points.ndim != 2 or self.points.shape[1] != 3:
+            if self.points.ndim == 1 and self.points.size == 0:
+                # 修复形状
+                object.__setattr__(self, 'points', np.zeros((0, 3), dtype=np.float64))
+                self.points.flags.writeable = False
+        
+        # 标记为 numpy (已废弃 _points_are_numpy 检查，现在总是 API Contract)
+        object.__setattr__(self, '_points_are_numpy', True)
+        
+        # 保护性编程: 禁止原地修改以保证缓存一致性
+        if isinstance(self.points, np.ndarray):
+            self.points.flags.writeable = False
         
         # 验证 confidence
         if self.confidence is None or not np.isfinite(self.confidence):
@@ -156,12 +188,17 @@ class Trajectory:
             self.dt_sec = 0.1
             
         # 验证 Velocities 维度
-        if self.velocities is not None and len(self.points) > 0:
-            if len(self.velocities) != len(self.points):
-                if len(self.velocities) > len(self.points):
-                    self.velocities = self.velocities[:len(self.points)]
+        num_points = len(self.points)
+        if self.velocities is not None and num_points > 0:
+            # 确保 velocities 也是 numpy
+            if not isinstance(self.velocities, np.ndarray):
+                self.velocities = np.array(self.velocities, dtype=np.float64)
+                 
+            if len(self.velocities) != num_points:
+                if len(self.velocities) > num_points:
+                    self.velocities = self.velocities[:num_points]
                 else:
-                    pad_len = len(self.points) - len(self.velocities)
+                    pad_len = num_points - len(self.velocities)
                     self.velocities = np.pad(self.velocities, ((0, pad_len), (0, 0)), 'constant')
     
     def __setattr__(self, name: str, value: Any) -> None:
@@ -173,15 +210,49 @@ class Trajectory:
         对于原地修改，用户必须手动调用 mark_dirty()。
         """
         if name in ('points', 'dt_sec', 'confidence', 'velocities', 'soft_enabled', 'low_speed_thresh'):
-            # 使用 object.__setattr__ 避免无限递归
-            # 安全地获取当前 version，如果尚未初始化则为 0
-            try:
-                current_ver = object.__getattribute__(self, '_version')
-            except AttributeError:
-                current_ver = 0
-            object.__setattr__(self, '_version', current_ver + 1)
-        
-        super().__setattr__(name, value)
+            # 处理 points 的特殊赋值逻辑：确保它是 Read-only Numpy Array
+            if name == 'points':
+                # 类型转换与验证 (复用 __post_init__ 中的逻辑)
+                if isinstance(value, np.ndarray):
+                    if value.dtype != np.float64:
+                        value = value.astype(np.float64)
+                    # 确保是 C 连续的，有利于底层性能
+                    if not value.flags['C_CONTIGUOUS']:
+                        value = np.ascontiguousarray(value)
+                else:
+                    # 列表转换
+                    if not value:
+                        value = np.zeros((0, 3), dtype=np.float64)
+                    else:
+                        try:
+                            value = np.array(value, dtype=np.float64)
+                        except Exception:
+                            # 简化的回退逻辑
+                            value = np.array([[p.x, p.y, p.z] for p in value], dtype=np.float64)
+                
+                # 维度检查
+                # 维度检查
+                if value.ndim != 2 or value.shape[1] != 3:
+                    if value.ndim == 1 and value.size == 0:
+                        value = value.reshape(0, 3)
+                
+                # 锁定数组
+                if hasattr(value, 'flags'):
+                     value.flags.writeable = False
+                
+            # 直接更新 version，移除 try-except 开销 (如果 Trajectory 被频繁创建/修改)
+            # 因为 _version 在 __post_init__ 保证存在
+            if name != '_version':
+                 curr = self.__dict__.get('_version', 0)
+                 self.__dict__['_version'] = curr + 1
+            
+            # 使用 object.__setattr__
+            object.__setattr__(self, name, value)
+            return
+
+        # 其他属性直接设置
+        object.__setattr__(self, name, value)
+
 
     def mark_dirty(self) -> None:
         """
@@ -192,25 +263,60 @@ class Trajectory:
         """
         object.__setattr__(self, '_version', self._version + 1)
     
-    def validate(self, config: 'TrajectoryConfig') -> None:
+    def validate(self, config: 'TrajectoryConfig') -> bool:
         """
-        验证轨迹数据的有效性
+        验证轨迹数据的有效性 (Vectorized)
         
         Args:
             config: 配置对象，提供验证阈值
+            
+        Returns:
+            bool: 验证是否通过
         """
         from .constants import TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC
         
-        # 验证 dt_sec
-        self.dt_sec = np.clip(self.dt_sec, TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC)
+        # 优化: 如果版本没有改变，直接返回上次验证结果
+        current_version = getattr(self, '_version', 0)
+        last_validated_ver = getattr(self, '_last_validated_version', -1)
+        if current_version == last_validated_ver:
+            return getattr(self, '_last_validation_result', True)
         
-        # 验证相邻点距离
+        is_valid = True
+        
+        # 验证 dt_sec
+        if self.dt_sec < TRAJECTORY_MIN_DT_SEC or self.dt_sec > TRAJECTORY_MAX_DT_SEC:
+            logger.warning(
+                f"Trajectory dt_sec={self.dt_sec} out of range "
+                f"[{TRAJECTORY_MIN_DT_SEC}, {TRAJECTORY_MAX_DT_SEC}], clipping"
+            )
+            self.dt_sec = np.clip(self.dt_sec, TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC)
+            is_valid = False
+        
+        # 向量化验证相邻点距离
+        # 使用 get_points_matrix() 获取统一的 numpy 视图，避免处理类型差异
         if config.validate_enabled and len(self.points) >= 2:
-            max_dist = config.max_point_distance
-            p0, p1 = self.points[0], self.points[1]
-            dist_sq = (p1.x - p0.x)**2 + (p1.y - p0.y)**2 + (p1.z - p0.z)**2
-            if dist_sq > max_dist**2:
-                logger.warning(f"Trajectory jump detected: {np.sqrt(dist_sq):.2f}m > {max_dist}m")
+            points_mat = self.get_points_matrix()
+            max_dist_sq = config.max_point_distance ** 2
+            
+            # 计算相邻点距离平方 [N-1]
+            diffs = points_mat[1:] - points_mat[:-1]
+            dist_sq = np.sum(diffs**2, axis=1)
+            
+            # 查找跳变
+            jump_indices = np.where(dist_sq > max_dist_sq)[0]
+            if len(jump_indices) > 0:
+                first_idx = jump_indices[0]
+                logger.warning(
+                    f"Trajectory jump detected at index {first_idx}->{first_idx+1}: "
+                    f"{np.sqrt(dist_sq[first_idx]):.2f}m > {config.max_point_distance}m"
+                )
+                is_valid = False
+        
+        # 更新缓存
+        object.__setattr__(self, '_last_validated_version', current_version)
+        object.__setattr__(self, '_last_validation_result', is_valid)
+        
+        return is_valid
     
     def __len__(self) -> int:
         return len(self.points)
@@ -224,25 +330,75 @@ class Trajectory:
         return (self._version, self.dt_sec)
             
     def get_points_matrix(self) -> np.ndarray:
-        """获取点坐标矩阵 [N, 3]"""
-        current_key = self._compute_cache_key()
-        if self._points_matrix_cache is not None and self._cache_key == current_key:
-            return self._points_matrix_cache
+        """获取点坐标矩阵 [N, 3] (Strict Numpy Zero-Copy)"""
+        # 由于 __post_init__ 保证了 self.points 是 numpy array
+        return self.points
+    
+    def get_slice(self, start: int, end: int) -> 'Trajectory':
+        """
+        获取轨迹切片（高效 Numpy View, O(1)）
+        
+        Args:
+            start: 起始索引
+            end: 结束索引
             
-        if not self.points:
-            return np.zeros((0, 3))
+        Returns:
+            Trajectory: 切片后的新轨迹对象
+        """
+        # 处理索引边界
+        # 即使 end > len，numpy slicing 也会自动处理，但手动 clamp 更加显式
+        total_points = len(self.points)
+        if start < 0: start = 0
+        if end > total_points: end = total_points
+        if start > end: start = end
+        
+        # Numpy Slice (View, O(1))
+        # 移除了所有 List 检查分支
+        new_points = self.points[start:end]
+        
+        # 2. 切片 Velocities
+        new_velocities = None
+        if self.velocities is not None:
+            # 处理 velocities 长度一致性
+            v_len = len(self.velocities)
+            v_start = start if start < v_len else v_len
+            v_end = end if end < v_len else v_len
+            new_velocities = self.velocities[v_start:v_end]
             
-        matrix = np.array([(p.x, p.y, p.z) for p in self.points], dtype=np.float64)
-        self._points_matrix_cache = matrix
-        self._cache_key = current_key
-        return matrix
+        # 3. 创建新实例
+        # 3. 创建新实例 (高性能路径: 绕过 __init__ 和 __post_init__)
+        # 因为我们已经确保了数据是合法的 numpy array，不需要再次检查
+        new_traj = object.__new__(Trajectory)
+        
+        # 直接赋值
+        object.__setattr__(new_traj, 'header', self.header)
+        object.__setattr__(new_traj, 'points', new_points)
+        object.__setattr__(new_traj, 'velocities', new_velocities)
+        object.__setattr__(new_traj, 'dt_sec', self.dt_sec)
+        object.__setattr__(new_traj, 'confidence', self.confidence)
+        object.__setattr__(new_traj, 'mode', self.mode)
+        object.__setattr__(new_traj, 'soft_enabled', self.soft_enabled)
+        object.__setattr__(new_traj, 'low_speed_thresh', self.low_speed_thresh)
+        
+        # 初始化内部字段
+        object.__setattr__(new_traj, '_version', 0)
+        object.__setattr__(new_traj, '_cache_key', None)
+        object.__setattr__(new_traj, '_hard_velocities_cache', None)
+        object.__setattr__(new_traj, '_points_matrix_cache', new_points) # 直接缓存切片后的点
+        object.__setattr__(new_traj, '_points_are_numpy', True)
+        
+        return new_traj
     
     def copy(self) -> 'Trajectory':
         new_header = Header(stamp=self.header.stamp, frame_id=self.header.frame_id, seq=self.header.seq)
         new_velocities = None if self.velocities is None else np.array(self.velocities, copy=True)
+        
+        # Deep copy points (Always Numpy now)
+        new_points = np.array(self.points, copy=True)
+
         return Trajectory(
             header=new_header,
-            points=[Point3D(p.x, p.y, p.z) for p in self.points],
+            points=new_points,
             velocities=new_velocities,
             dt_sec=self.dt_sec,
             confidence=self.confidence,
@@ -572,9 +728,24 @@ class DiagnosticsV2:
     safety_check_passed: bool = True
     emergency_stop: bool = False
     
+    # 内部缓存字典，避免重复创建
+    _cached_ros_msg: Dict[str, Any] = field(default=None, repr=False, init=False)
+    _dirty: bool = field(default=True, repr=False, init=False)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """重写 setattr 以标记 dirty"""
+        # 注意: 这里用 object.__setattr__ 避免递归
+        if name != '_cached_ros_msg' and name != '_dirty':
+            object.__setattr__(self, '_dirty', True)
+        super().__setattr__(name, value)
+
     def to_ros_msg(self) -> Dict[str, Any]:
-        """转换为 ROS 消息格式的字典"""
-        return {
+        """转换为 ROS 消息格式的字典 (带缓存)"""
+        # 如果缓存有效且未修改，直接返回
+        if not getattr(self, '_dirty', True) and getattr(self, '_cached_ros_msg', None) is not None:
+            return self._cached_ros_msg
+
+        msg = {
             'header': {'stamp': self.header.stamp, 'frame_id': self.header.frame_id},
             'state': self.state,
             'mpc_success': self.mpc_success,
@@ -640,6 +811,10 @@ class DiagnosticsV2:
             'safety_check_passed': self.safety_check_passed,
             'emergency_stop': self.emergency_stop
         }
+        
+        object.__setattr__(self, '_cached_ros_msg', msg)
+        object.__setattr__(self, '_dirty', False)
+        return msg
 
 
 # 模拟 ROS 消息类型

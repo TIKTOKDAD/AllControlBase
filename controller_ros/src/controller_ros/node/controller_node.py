@@ -9,6 +9,7 @@
 from typing import Dict, Any, Optional
 
 import rclpy
+import time
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
@@ -58,6 +59,10 @@ class ControllerNode(ControllerNodeBase, Node):
         # 紧急停止专用回调组 (高优先级，互斥)
         # 使用单独的组确保即使传感器组积压，E-Stop 也能被调度
         self._estop_cb_group = MutuallyExclusiveCallbackGroup()
+
+        # 2.1 配置 ROS2 日志桥接 (High Performance Logging)
+        from ..utils.ros_compat import setup_ros2_logging
+        setup_ros2_logging(self)
         
         # 3. 初始化核心组件（基类方法）
         self._initialize()
@@ -74,12 +79,15 @@ class ControllerNode(ControllerNodeBase, Node):
         # 7. 创建控制定时器
         # 从 system.ctrl_freq 读取控制频率
         control_rate = self._params.get('system', {}).get('ctrl_freq', 50)
-        control_period = 1.0 / control_rate
+        self._control_period = 1.0 / control_rate
         self._control_timer = self.create_timer(
-            control_period,
+            self._control_period,
             self._control_callback,
             callback_group=self._control_cb_group
         )
+        
+        # 8. 加载计算预算警告阈值 (Default 70%)
+        self._cpu_budget_ratio = self._params.get('system', {}).get('cpu_budget_ratio', 0.7)
         
         self.get_logger().info(
             f'Controller node initialized (platform={self._platform_type}, '
@@ -135,7 +143,7 @@ class ControllerNode(ControllerNodeBase, Node):
                 RosImu,
                 imu_topic,
                 self._imu_callback,
-                10,
+                100, # Increased queue size for high-frequency IMU data
                 callback_group=self._sensor_cb_group
             )
             self.get_logger().info(f"Subscribed to imu: {imu_topic}")
@@ -205,8 +213,22 @@ class ControllerNode(ControllerNodeBase, Node):
     
     def _control_callback(self):
         """控制循环回调"""
+        t_start = time.monotonic()
+        
         # 关闭检查已在基类 _control_loop_core() 中统一处理
         cmd = self._control_loop_core()
+        
+        t_end = time.monotonic()
+        t_duration = t_end - t_start
+        
+        # 监控执行时间 (阈值: 配置的比例，默认 70%)
+        limit_duration = self._control_period * self._cpu_budget_ratio
+        if t_duration > limit_duration: 
+            self._log_warn_throttle(
+                2.0, 
+                f"Control loop computation too slow: {t_duration*1000:.1f}ms "
+                f"(limit: {limit_duration*1000:.1f}ms, ratio: {self._cpu_budget_ratio:.0%})"
+            )
         
         if cmd is not None:
             # 发布控制命令
@@ -216,12 +238,9 @@ class ControllerNode(ControllerNodeBase, Node):
     
     def _get_time(self) -> float:
         """获取当前 ROS 时间（秒）"""
-        clock_time = self.get_clock().now().nanoseconds * 1e-9
-        # 仿真时间模式下可能为 0
-        if clock_time > 0:
-            return clock_time
-        import time
-        return time.time()
+        # 始终使用 ROS 时钟，确保仿真时间和系统时间的一致性
+        # 如果是 SimTime 且未开始，返回 0 是预期的行为（Bridge 会处理）
+        return self.get_clock().now().nanoseconds * 1e-9
     
     def _log_info(self, msg: str):
         """记录信息日志"""

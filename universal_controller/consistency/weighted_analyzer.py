@@ -88,7 +88,8 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         
         # 计算各维度一致性
         # 返回值: (value, is_sufficient) - is_sufficient 表示数据是否充足
-        kappa_hard, kappa_hard_sufficient = self._compute_curvature_from_points(trajectory.points)
+        points_mat = trajectory.get_points_matrix()
+        kappa_hard, kappa_hard_sufficient = self._compute_curvature_from_points(points_mat)
         kappa_soft, kappa_soft_sufficient = self._compute_curvature_from_velocities(
             soft_velocities, trajectory.dt_sec)
         
@@ -206,7 +207,7 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         # 调用者会根据 data_valid=False 来调整权重
         return 1.0, False
     
-    def _compute_curvature_from_points(self, points: List[Point3D]) -> Tuple[float, bool]:
+    def _compute_curvature_from_points(self, points: np.ndarray) -> Tuple[float, bool]:
         """
         从轨迹点计算曲率
         
@@ -224,9 +225,9 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         if len(points) < 3:
             return 0.0, False
         
-        p0 = np.array([points[0].x, points[0].y])
-        p1 = np.array([points[1].x, points[1].y])
-        p2 = np.array([points[2].x, points[2].y])
+        p0 = points[0, :2]
+        p1 = points[1, :2]
+        p2 = points[2, :2]
         v1, v2 = p1 - p0, p2 - p1
         l1, l2 = np.linalg.norm(v1), np.linalg.norm(v2)
         

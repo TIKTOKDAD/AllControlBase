@@ -34,7 +34,12 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         
         self.source_frame = transform_config.get('source_frame', 'base_link')
         self.default_target_frame = transform_config.get('target_frame', 'odom')
-        self.timeout_sec = transform_config.get('timeout_sec', 0.05)
+        # 支持 timeout_ms (毫秒，配置文件标准) 和 timeout_sec (秒，向后兼容)
+        timeout_ms = transform_config.get('timeout_ms', None)
+        if timeout_ms is not None:
+            self.timeout_sec = timeout_ms / 1000.0
+        else:
+            self.timeout_sec = transform_config.get('timeout_sec', 0.05)
         
         # 降级阈值配置
         self.fallback_duration_limit = transform_config.get('fallback_duration_limit_ms', 500) / 1000.0
@@ -87,7 +92,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         Returns:
             (变换后的轨迹, 状态码)
         """
-        if not traj.points:
+        if len(traj.points) == 0:
             return traj, TransformStatus.TF2_OK
             
         source_frame = traj.header.frame_id
@@ -194,32 +199,31 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         # 如果有状态估计器数据，使用它进行变换
         if fallback_state is not None:
             # 假设 fallback_state 是在 target_frame (odom) 下的 state
-            # state: [x, y, z, vx, vy, vz, theta, omega]
-            # 我们需要构建 base_link -> odom 的变换
-            # 即机器人在 odom 下的位姿
             
             est_pos = fallback_state.state[0:3]
             est_theta = fallback_state.state[6]
             
-            # 由于这是 2D 平面假设居多，我们主要关注 x, y, theta
-            # 构建变换矩阵 (2D 旋转 + 平移)
-            # T = [ R  p ]
-            #     [ 0  1 ]
+            # 构建 4x4 变换矩阵
+            matrix = np.eye(4)
+            
+            # 平移部分
+            matrix[0, 3] = est_pos[0]
+            matrix[1, 3] = est_pos[1]
+            matrix[2, 3] = est_pos[2]
+            
+            # 旋转部分: 区分 2D 和 3D 模式的 fallback 逻辑
+            # 这里我们尝试简单地根据平台类型或数据完整性来判断
+            # 如果是纯 2D 降级（地面车），只恢复 Yaw
+            # 如果需要 3D（无人机），理论上 estimator 应该提供完整姿态
             
             cos_t = np.cos(est_theta)
             sin_t = np.sin(est_theta)
             
-            # 构建 4x4 矩阵
-            matrix = np.eye(4)
+            # Z 轴旋转矩阵
             matrix[0, 0] = cos_t
             matrix[0, 1] = -sin_t
-            matrix[0, 3] = est_pos[0]
-            
             matrix[1, 0] = sin_t
             matrix[1, 1] = cos_t
-            matrix[1, 3] = est_pos[1]
-            
-            matrix[2, 3] = est_pos[2] # Z
             
             # 应用变换
             new_traj = apply_transform_to_trajectory(traj, matrix, target_frame)

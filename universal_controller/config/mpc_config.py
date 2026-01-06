@@ -23,6 +23,7 @@ MPC_CONFIG = {
     'horizon_degraded': 10,       # 降级时的预测时域
     'dt': 0.1,                    # 时间步长 (秒) - 主配置，trajectory.default_dt_sec 自动继承
     'horizon_change_min_interval': 1.0,  # Horizon 调整节流间隔 (秒) - 防止频繁重新初始化求解器
+    'solver_cache_max_size': 5,   # ACADOS 求解器缓存最大数量 (LRU 策略)
     
     # 代价函数权重
     'weights': {
@@ -68,6 +69,7 @@ MPC_VALIDATION_RULES = {
     'mpc.horizon_degraded': (1, 100, 'MPC 降级预测时域'),
     'mpc.dt': (0.001, 1.0, 'MPC 时间步长 (秒)'),
     'mpc.horizon_change_min_interval': (0.0, 60.0, 'Horizon 调整节流间隔 (秒)'),
+    'mpc.solver_cache_max_size': (1, 20, 'ACADOS 求解器缓存最大数量'),
     # Fallback 求解器参数 (MPC 特有)
     'mpc.fallback.lookahead_steps': (1, 50, 'Fallback 前瞻步数'),
     # MPC 权重 (必须为非负数)

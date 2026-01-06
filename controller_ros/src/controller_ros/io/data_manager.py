@@ -235,10 +235,10 @@ class DataManager(LifecycleMixin):
             event = ClockJumpEvent(self._last_time, now, delta, invalidated)
             self._clock_jumped_back = True
             
-            # 记录事件 (简化版：不再维护复杂队列，仅保留日志和回调触发源)
+            # 记录事件
             self._clock_jump_events.append(event)
-            # 简化队列维护：只保留最近 1 个事件作为最后状态，避免内存泄漏风险
-            if len(self._clock_jump_events) > 1:
+            # 维护队列长度
+            if len(self._clock_jump_events) > self._max_clock_jump_events:
                 self._clock_jump_events.pop(0)
             
             logger.warning(
@@ -273,9 +273,9 @@ class DataManager(LifecycleMixin):
             
             event = ClockJumpEvent(self._last_time, now, delta, invalidated)
             
-            # 记录事件 (简化版)
+            # 记录事件
             self._clock_jump_events.append(event)
-            if len(self._clock_jump_events) > 1:
+            if len(self._clock_jump_events) > self._max_clock_jump_events:
                 self._clock_jump_events.pop(0)
             
             return event

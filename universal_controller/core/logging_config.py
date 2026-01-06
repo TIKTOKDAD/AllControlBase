@@ -9,20 +9,20 @@
 方式 1: 标准 Python 日志 (推荐)
     import logging
     logger = logging.getLogger(__name__)
-    
+
     # 这是最简单的方式，符合 Python 最佳实践
     # 日志配置由应用层统一设置
 
 方式 2: 使用 get_logger() (可选)
     from universal_controller.core.logging_config import get_logger
     logger = get_logger(__name__)
-    
+
     # 提供额外的配置功能，适合需要独立配置的模块
 
 方式 3: 使用 ThrottledLogger (频繁日志场景)
     from universal_controller.core.logging_config import ThrottledLogger
     throttled = ThrottledLogger(logger, min_interval=5.0)
-    
+
     # 用于避免频繁触发的日志消息导致日志泛滥
     # 例如：TF2 查找失败、传感器数据异常等
 
@@ -65,6 +65,8 @@ CRITICAL:
 """
 import logging
 import sys
+import threading
+import time
 from typing import Optional
 
 # 默认日志格式
@@ -136,16 +138,19 @@ MODULE_NAMES = {
 
 class ThrottledLogger:
     """
-    节流日志器
-    
+    线程安全的节流日志器
+
     用于避免频繁触发的日志消息导致日志泛滥。
-    
+
+    线程安全性:
+        此类是线程安全的，可以从多个线程同时调用。
+
     使用示例:
         throttled = ThrottledLogger(logger, min_interval=5.0)
         # 以下消息最多每 5 秒记录一次
         throttled.warning("TF2 lookup failed", key="tf2_fail")
     """
-    
+
     def __init__(self, logger: logging.Logger, min_interval: float = 1.0):
         """
         Args:
@@ -155,33 +160,33 @@ class ThrottledLogger:
         self._logger = logger
         self._min_interval = min_interval
         self._last_log_times: dict = {}
-    
+        self._lock = threading.Lock()
+
     def _should_log(self, key: str) -> bool:
-        """检查是否应该记录日志"""
-        import time
+        """检查是否应该记录日志（线程安全）"""
         current_time = time.monotonic()
-        last_time = self._last_log_times.get(key, 0)
-        
-        if current_time - last_time >= self._min_interval:
-            self._last_log_times[key] = current_time
-            return True
-        return False
-    
+        with self._lock:
+            last_time = self._last_log_times.get(key, 0)
+            if current_time - last_time >= self._min_interval:
+                self._last_log_times[key] = current_time
+                return True
+            return False
+
     def debug(self, msg: str, key: str = None, *args, **kwargs) -> None:
         """记录 DEBUG 级别日志（带节流）"""
         if key is None or self._should_log(key):
             self._logger.debug(msg, *args, **kwargs)
-    
+
     def info(self, msg: str, key: str = None, *args, **kwargs) -> None:
         """记录 INFO 级别日志（带节流）"""
         if key is None or self._should_log(key):
             self._logger.info(msg, *args, **kwargs)
-    
+
     def warning(self, msg: str, key: str = None, *args, **kwargs) -> None:
         """记录 WARNING 级别日志（带节流）"""
         if key is None or self._should_log(key):
             self._logger.warning(msg, *args, **kwargs)
-    
+
     def error(self, msg: str, key: str = None, *args, **kwargs) -> None:
         """记录 ERROR 级别日志（带节流）"""
         if key is None or self._should_log(key):

@@ -104,7 +104,7 @@ class PurePursuitController(ITrajectoryTracker):
         # 默认使用 alpha_max * dt，但可以单独配置
         # -1 或 None 表示自动计算
         omega_rate_config = backup_config.get('omega_rate_limit')
-        if omega_rate_config is not None and omega_rate_config > 0:
+        if omega_rate_config is not None and omega_rate_config >= 0:
             self.omega_rate_limit = omega_rate_config
         else:
             self.omega_rate_limit = self.alpha_max * self.dt
@@ -131,6 +131,10 @@ class PurePursuitController(ITrajectoryTracker):
             a_max=self.a_max, az_max=self.az_max, 
             alpha_max=self.alpha_max, dt=self.dt
         )
+        
+        # 索引重置启发式参数
+        self.reset_search_bias = 0.8  # 起点距离偏置因子 (如果 dist_start < dist_curr * 0.8 -> reset)
+        self.reset_search_max_dist_sq = 25.0  # 最大局部搜索距离平方 (5米^2)
     
     def _parse_heading_mode(self, mode_str: str) -> HeadingMode:
         mode_map = {
@@ -171,23 +175,27 @@ class PurePursuitController(ITrajectoryTracker):
         current_v = np.sqrt(state[3]**2 + state[4]**2)
         theta = state[6]
         
+        # 使用 get_points_matrix() 获取统一的 numpy 视图
+        points_mat = trajectory.get_points_matrix()
+        
         self._current_position = np.array([px, py, pz])
         
         lookahead = self._compute_lookahead(current_v)
         lookahead_point, target_idx = self._find_lookahead_point(
-            trajectory.points, px, py, lookahead)
+            points_mat, px, py, lookahead)
         
         if lookahead_point is None:
             return self._smooth_stop_command()
         
-        dx = lookahead_point.x - px
-        dy = lookahead_point.y - py
+        # lookahead_point is np.array [x, y, z]
+        dx = lookahead_point[0] - px
+        dy = lookahead_point[1] - py
         dist_to_target = np.sqrt(dx**2 + dy**2)
         target_v = self._compute_target_velocity(trajectory, target_idx, consistency.alpha)
         
         vz = 0.0
-        if self.is_3d and target_idx < len(trajectory.points):
-            target_z = trajectory.points[target_idx].z
+        if self.is_3d and target_idx < len(points_mat):
+            target_z = points_mat[target_idx, 2]
             vz = self.kp_z * (target_z - pz)
             vz = np.clip(vz, -self.vz_max, self.vz_max)
         
@@ -239,6 +247,13 @@ class PurePursuitController(ITrajectoryTracker):
         """获取角速度限制，使用线性插值避免阶跃切换"""
         # 使用配置的低速过渡因子
         low_speed_boundary = self.v_low_thresh * self.low_speed_transition_factor
+
+        # 边界条件保护：当 low_speed_transition_factor >= 1.0 时
+        # low_speed_boundary >= v_low_thresh，此时没有过渡区域
+        if low_speed_boundary >= self.v_low_thresh:
+            # 无过渡区域，直接根据阈值切换
+            return self.omega_max_low if current_v < self.v_low_thresh else self.omega_max
+
         if current_v < low_speed_boundary:
             # 非常低速时使用低速限制
             return self.omega_max_low
@@ -281,114 +296,18 @@ class PurePursuitController(ITrajectoryTracker):
             target_angle = np.arctan2(local_y, local_x)
             abs_target_angle = abs(target_angle)
             
+            # 1. 后方处理逻辑 (Reversing Strategy)
             if abs_target_angle > self.heading_control_angle_thresh:
-                # 目标点在车辆后方，使用航向误差控制
-                # 差速车可以原地转向，所以先转向再前进
-                target_heading = np.arctan2(dy, dx)
-                heading_error = angle_difference(target_heading, theta)
-                abs_heading_error = abs(heading_error)
-                
-                # 正后方跳变处理：当目标点几乎在正后方时
-                # heading_error 可能在 +π 和 -π 之间跳变
-                # 使用一致的转向方向避免震荡
-                if abs_heading_error > self.rear_angle_thresh:
-                    # 目标点几乎在正后方
-                    if self._last_turn_direction is not None:
-                        # 保持上一次的转向方向
-                        omega_desired = self._last_turn_direction * omega_limit
-                    elif self.last_cmd is not None and abs(self.last_cmd.omega) > 0.1:
-                        # 根据当前转向方向继续
-                        self._last_turn_direction = 1 if self.last_cmd.omega > 0 else -1
-                        omega_desired = self._last_turn_direction * omega_limit
-                    else:
-                        # 首次遇到正后方情况，选择较短的转向方向
-                        # 使用 local_y 的符号来决定（目标点偏左还是偏右）
-                        # 使用配置的阈值，确保在噪声环境下判断稳定
-                        rear_direction_thresh = max(self.min_distance_thresh * 0.5, self.rear_direction_min_thresh)
-                        if abs(local_y) > rear_direction_thresh:
-                            self._last_turn_direction = 1 if local_y > 0 else -1
-                        else:
-                            # 完全在正后方，使用配置的默认转向方向
-                            self._last_turn_direction = self.default_turn_direction
-                        omega_desired = self._last_turn_direction * omega_limit
-                else:
-                    # 不在正后方，清除转向方向记录
-                    self._last_turn_direction = None
-                    # 计算期望角速度
-                    omega_desired = self.kp_heading * heading_error
-                    omega_desired = np.clip(omega_desired, -omega_limit, omega_limit)
-                
-                # 应用角速度变化率限制，防止跳变
-                if self.last_cmd is not None:
-                    omega_change = omega_desired - self.last_cmd.omega
-                    omega_change = np.clip(omega_change, -self.omega_rate_limit, self.omega_rate_limit)
-                    omega = self.last_cmd.omega + omega_change
-                else:
-                    omega = omega_desired
-                
-                omega = np.clip(omega, -omega_limit, omega_limit)
-                
-                # 当航向误差较大时，减速或停止前进
-                # 使用平滑的速度衰减函数，避免突变
-                if abs_heading_error > self.heading_error_thresh:
-                    # 航向误差大于阈值，完全停止前进，专注于旋转
-                    vx = 0.0
-                else:
-                    # 航向误差小于阈值，使用余弦函数平滑过渡
-                    # 当 heading_error = 0 时，heading_factor = 1
-                    # 当 heading_error = heading_error_thresh 时，heading_factor ≈ 0.5
-                    heading_factor = np.cos(abs_heading_error)
-                    # 额外的线性衰减，确保在阈值处速度较低
-                    linear_factor = 1.0 - abs_heading_error / self.heading_error_thresh * 0.5
-                    vx = target_v * heading_factor * linear_factor
-                
-                return ControlOutput(vx=vx, vy=0.0, vz=0.0, omega=omega, 
-                                    frame_id=self.output_frame, success=True)
+                return self._handle_reversing_strategy(
+                    dx, dy, local_y, theta, target_v, omega_limit)
             
+            # 2. 侧方过渡逻辑 (Side Transition)
             elif abs_target_angle > self.pure_pursuit_angle_thresh:
-                # 过渡区域：目标点在侧前方
-                # 混合 Pure Pursuit 和航向误差控制
-                # 使用余弦平滑插值代替线性插值，避免控制律突变
-                linear_factor = (abs_target_angle - self.pure_pursuit_angle_thresh) / (self.heading_control_angle_thresh - self.pure_pursuit_angle_thresh)
-                # Cosine easing: Maps [0, 1] to [0, 1] with zero slope at ends
-                blend_factor = 0.5 * (1 - np.cos(np.pi * linear_factor))
-                
-                # Pure Pursuit 部分
-                curvature = 2.0 * local_y / L_sq
-                curvature = np.clip(curvature, -self.max_curvature, self.max_curvature)
-                
-                if abs(curvature) > self.curvature_speed_limit_thresh:
-                    v_curvature = min(omega_limit / abs(curvature), self.v_max)
-                    pp_target_v = min(target_v, v_curvature)
-                else:
-                    pp_target_v = target_v
-                
-                pp_omega = pp_target_v * curvature
-                pp_omega = np.clip(pp_omega, -omega_limit, omega_limit)
-                
-                # 航向误差控制部分
-                target_heading = np.arctan2(dy, dx)
-                heading_error = angle_difference(target_heading, theta)
-                hc_omega = self.kp_heading * heading_error
-                hc_omega = np.clip(hc_omega, -omega_limit, omega_limit)
-                
-                # 混合
-                omega = (1 - blend_factor) * pp_omega + blend_factor * hc_omega
-                omega = np.clip(omega, -omega_limit, omega_limit)
-                
-                # 速度也需要混合：Pure Pursuit 使用 pp_target_v，航向控制使用降低的速度
-                abs_heading_error = abs(heading_error)
-                if abs_heading_error > self.heading_error_thresh:
-                    hc_vx = 0.0
-                else:
-                    heading_factor = np.cos(abs_heading_error)
-                    linear_factor = 1.0 - abs_heading_error / self.heading_error_thresh * 0.5
-                    hc_vx = target_v * heading_factor * linear_factor
-                
-                vx = (1 - blend_factor) * pp_target_v + blend_factor * hc_vx
-                
-                return ControlOutput(vx=vx, vy=0.0, vz=0.0, omega=omega, 
-                                    frame_id=self.output_frame, success=True)
+                return self._handle_side_transition(
+                    dx, dy, local_y, L_sq, theta, target_v, omega_limit, 
+                    abs_target_angle, target_angle)
+            
+            # 3. 前方追踪逻辑 (Forward Tracking)
             else:
                 # 目标点在车辆前方，使用标准 Pure Pursuit 曲率控制
                 curvature = 2.0 * local_y / L_sq
@@ -406,6 +325,132 @@ class PurePursuitController(ITrajectoryTracker):
         omega = np.clip(omega, -omega_limit, omega_limit)
         
         return ControlOutput(vx=target_v, vy=0.0, vz=0.0, omega=omega, 
+                            frame_id=self.output_frame, success=True)
+
+    def _handle_reversing_strategy(self, dx: float, dy: float, local_y: float, theta: float, 
+                                   target_v: float, omega_limit: float) -> ControlOutput:
+        """
+        处理目标点在车辆后方的策略 (原地转向)
+        
+        包含滞后 (Hysteresis) 和转向记忆逻辑。
+        """
+        target_heading = np.arctan2(dy, dx)
+        heading_error = angle_difference(target_heading, theta)
+        abs_heading_error = abs(heading_error)
+        
+        # 正后方跳变处理：当目标点几乎在正后方时
+        # heading_error 可能在 +π 和 -π 之间跳变
+        
+        # 引入滞后 (Hysteresis) 机制防止在阈值附近震荡
+        # 进入阈值: self.rear_angle_thresh
+        # 退出阈值: self.rear_angle_thresh - 0.2 (约 11度)
+        active_thresh = self.rear_angle_thresh
+        if self._last_turn_direction is not None:
+            # 已经在旋转模式中，降低退出门槛，保持模式粘性
+            active_thresh = max(0.0, self.rear_angle_thresh - 0.2)
+        
+        if abs_heading_error > active_thresh:
+            # 目标点几乎在正后方
+            if self._last_turn_direction is not None:
+                # 保持上一次的转向方向
+                omega_desired = self._last_turn_direction * omega_limit
+            elif self.last_cmd is not None and abs(self.last_cmd.omega) > 0.1:
+                # 根据当前转向方向继续
+                self._last_turn_direction = 1 if self.last_cmd.omega > 0 else -1
+                omega_desired = self._last_turn_direction * omega_limit
+            else:
+                # 首次遇到正后方情况，选择较短的转向方向
+                # 使用 local_y 的符号来决定（目标点偏左还是偏右）
+                # 使用配置的阈值，确保在噪声环境下判断稳定
+                rear_direction_thresh = max(self.min_distance_thresh * 0.5, self.rear_direction_min_thresh)
+                if abs(local_y) > rear_direction_thresh:
+                    self._last_turn_direction = 1 if local_y > 0 else -1
+                else:
+                    # 完全在正后方，使用配置的默认转向方向
+                    self._last_turn_direction = self.default_turn_direction
+                omega_desired = self._last_turn_direction * omega_limit
+        else:
+            # 不在正后方，清除转向方向记录
+            self._last_turn_direction = None
+            # 计算期望角速度
+            omega_desired = self.kp_heading * heading_error
+            omega_desired = np.clip(omega_desired, -omega_limit, omega_limit)
+        
+        # 应用角速度变化率限制，防止跳变
+        if self.last_cmd is not None:
+            omega_change = omega_desired - self.last_cmd.omega
+            omega_change = np.clip(omega_change, -self.omega_rate_limit, self.omega_rate_limit)
+            omega = self.last_cmd.omega + omega_change
+        else:
+            omega = omega_desired
+        
+        omega = np.clip(omega, -omega_limit, omega_limit)
+        
+        # 当航向误差较大时，减速或停止前进
+        # 使用平滑的速度衰减函数，避免突变
+        if abs_heading_error > self.heading_error_thresh:
+            # 航向误差大于阈值，完全停止前进，专注于旋转
+            vx = 0.0
+        else:
+            # 航向误差小于阈值，使用余弦函数平滑过渡
+            # 当 heading_error = 0 时，heading_factor = 1
+            # 当 heading_error = heading_error_thresh 时，heading_factor ≈ 0.5
+            heading_factor = np.cos(abs_heading_error)
+            # 额外的线性衰减，确保在阈值处速度较低
+            linear_factor = 1.0 - abs_heading_error / self.heading_error_thresh * 0.5
+            vx = target_v * heading_factor * linear_factor
+        
+        return ControlOutput(vx=vx, vy=0.0, vz=0.0, omega=omega, 
+                            frame_id=self.output_frame, success=True)
+
+    def _handle_side_transition(self, dx: float, dy: float, local_y: float, L_sq: float,
+                                theta: float, target_v: float, omega_limit: float,
+                                abs_target_angle: float, target_angle: float) -> ControlOutput:
+        """
+        处理侧方过渡逻辑 (混合 Pure Pursuit 和 航向控制)
+        """
+        # 过渡区域：目标点在侧前方
+        # 混合 Pure Pursuit 和航向误差控制
+        # 使用余弦平滑插值代替线性插值，避免控制律突变
+        linear_factor = (abs_target_angle - self.pure_pursuit_angle_thresh) / (self.heading_control_angle_thresh - self.pure_pursuit_angle_thresh)
+        # Cosine easing: Maps [0, 1] to [0, 1] with zero slope at ends
+        blend_factor = 0.5 * (1 - np.cos(np.pi * linear_factor))
+        
+        # Pure Pursuit 部分
+        curvature = 2.0 * local_y / L_sq
+        curvature = np.clip(curvature, -self.max_curvature, self.max_curvature)
+        
+        if abs(curvature) > self.curvature_speed_limit_thresh:
+            v_curvature = min(omega_limit / abs(curvature), self.v_max)
+            pp_target_v = min(target_v, v_curvature)
+        else:
+            pp_target_v = target_v
+        
+        pp_omega = pp_target_v * curvature
+        pp_omega = np.clip(pp_omega, -omega_limit, omega_limit)
+        
+        # 航向误差控制部分
+        target_heading = np.arctan2(dy, dx)
+        heading_error = angle_difference(target_heading, theta)
+        hc_omega = self.kp_heading * heading_error
+        hc_omega = np.clip(hc_omega, -omega_limit, omega_limit)
+        
+        # 混合
+        omega = (1 - blend_factor) * pp_omega + blend_factor * hc_omega
+        omega = np.clip(omega, -omega_limit, omega_limit)
+        
+        # 速度也需要混合：Pure Pursuit 使用 pp_target_v，航向控制使用降低的速度
+        abs_heading_error = abs(heading_error)
+        if abs_heading_error > self.heading_error_thresh:
+            hc_vx = 0.0
+        else:
+            heading_factor = np.cos(abs_heading_error)
+            linear_factor = 1.0 - abs_heading_error / self.heading_error_thresh * 0.5
+            hc_vx = target_v * heading_factor * linear_factor
+        
+        vx = (1 - blend_factor) * pp_target_v + blend_factor * hc_vx
+        
+        return ControlOutput(vx=vx, vy=0.0, vz=0.0, omega=omega, 
                             frame_id=self.output_frame, success=True)
     
     def _compute_omni_output(self, dx: float, dy: float, theta: float,
@@ -457,10 +502,11 @@ class PurePursuitController(ITrajectoryTracker):
             else:
                 omega = 0.0
         elif self.heading_mode == HeadingMode.TARGET_POINT:
-            if len(trajectory.points) > 0 and self._current_position is not None:
-                end_point = trajectory.points[-1]
+            points_mat = trajectory.get_points_matrix()
+            if len(points_mat) > 0 and self._current_position is not None:
+                end_point = points_mat[-1]
                 px, py = self._current_position[0], self._current_position[1]
-                target_heading = np.arctan2(end_point.y - py, end_point.x - px)
+                target_heading = np.arctan2(end_point[1] - py, end_point[0] - px)
                 heading_error = angle_difference(target_heading, theta)
                 omega = self.kp_heading * heading_error
             else:
@@ -491,76 +537,99 @@ class PurePursuitController(ITrajectoryTracker):
         lookahead = self.lookahead_dist + self.lookahead_ratio * current_v
         return np.clip(lookahead, self.min_lookahead, self.max_lookahead)
     
-    def _find_lookahead_point(self, points: List[Point3D], px: float, py: float, 
-                              lookahead: float) -> Tuple[Optional[Point3D], int]:
+    def _find_lookahead_point(self, points: np.ndarray, px: float, py: float, 
+                              lookahead: float) -> Tuple[Optional[np.ndarray], int]:
         n_points = len(points)
         if n_points == 0:
             return None, 0
-        
-        # 优化策略：基于上一次的索引进行局部搜索
-        # 假设机器人通常沿着轨迹向前移动，或者进行小的倒车
-        
-        # 1. 索引边界检查与重置
-        if self._last_closest_idx >= n_points:
-            self._last_closest_idx = 0
             
-        start_idx = self._last_closest_idx
+        pos = np.array([px, py])
         
-        # 2. 启发式检查：如果当前最优索引对应的点距离机器人过远（> 5m），
-        # 或者 0 号点比当前点明显更近（重置），则回退到 0 开始
-        # 这种启发式有助于处理轨迹重置或跳变
-        dist_current = (points[start_idx].x - px)**2 + (points[start_idx].y - py)**2
-        dist_start = (points[0].x - px)**2 + (points[0].y - py)**2
+        # 优化: 窗口搜索 (Windowed Search)
+        # O(1) 复杂度，假设机器人不会在单帧内跳变太远
+        # 窗口大小默认为 50 点 (对于 0.1m 密度的轨迹，覆盖 5m 范围)
+        SEARCH_WINDOW = 50
         
-        # 如果起点显著更近 (bias factor 0.8)，或者当前点太远 (> 25m^2)，重置搜索
-        if dist_start < dist_current * 0.8 or dist_current > 25.0:
-            start_idx = 0
-            dist_current = dist_start
+        start_idx = 0
+        end_idx = n_points
         
-        best_idx = start_idx
-        min_dist_sq = dist_current
+        # 仅当有历史索引且轨迹足够长时启用窗口
+        # 同时检查索引有效性防越界
+        if (self._last_closest_idx is not None and 
+            n_points > SEARCH_WINDOW and 
+            self._last_closest_idx < n_points):
+            
+             start_idx = max(0, self._last_closest_idx - SEARCH_WINDOW // 2)
+             end_idx = min(n_points, self._last_closest_idx + SEARCH_WINDOW)
         
-        # 3. 局部双向搜索 (Local Bidirectional Search)
-        # 向前搜索
-        curr = start_idx + 1
-        while curr < n_points:
-            d_sq = (points[curr].x - px)**2 + (points[curr].y - py)**2
-            if d_sq < min_dist_sq:
-                min_dist_sq = d_sq
-                best_idx = curr
-                curr += 1
-            else:
-                # 距离开始增加，停止搜索 (凸性假设)
-                # 为了鲁棒性，多看几个点？这里假设轨迹平滑，直接停止通常足够
-                break
+        # 1. 寻找最近点 (Windowed Argmin)
+        # 注意：points 是 [N, 3]，取前两列
+        points_window = points[start_idx:end_idx, :2]
+        dists_sq_window = np.sum((points_window - pos)**2, axis=1)
         
-        # 只有在没有向前搜索或者向前搜索立即停止时，才尝试向后搜索
-        # 如果向前也没找到更好的，可能是已经在局部最小值，或者需要向后
-        if best_idx == start_idx and start_idx > 0:
-            curr = start_idx - 1
-            while curr >= 0:
-                d_sq = (points[curr].x - px)**2 + (points[curr].y - py)**2
-                if d_sq < min_dist_sq:
-                    min_dist_sq = d_sq
-                    best_idx = curr
-                    curr -= 1
-                else:
-                    break
+        local_min_idx = np.argmin(dists_sq_window)
+        min_idx = start_idx + local_min_idx
         
-        # 更新状态
-        self.closest_idx = best_idx # Store for debug/vis if needed
-        self._last_closest_idx = best_idx
+        # 安全检查: 如果局部最小值落在窗口边界上，且该边界不是轨迹的终点/起点，
+        # 则说明真正的最小值可能在窗口之外（例如轨迹发生了重置或大幅跳变）。
+        # 此时回退到全局搜索以确保安全。
+        # 2. 边缘检测与回退优化
+        # 如果局部最小值落在窗口边缘，说明真正的最小值可能在窗口外
+        # 或者我们"跟丢"了目标点
         
-        # 4. 查找 Lookahead Point (从最近点开始向前)
-        lookahead_sq = lookahead * lookahead
+        # 定义边缘缓冲区，防止在边缘处反复横跳
+        EDGE_BUFFER = 2 
         
-        # 通常 lookahead point 就在最近点前面几个点
-        for i in range(best_idx, n_points):
-            p = points[i]
-            d_sq = (p.x - px)**2 + (p.y - py)**2
-            if d_sq >= lookahead_sq:
-                return p, i
+        is_edge_case = False
+        if start_idx > 0 and (min_idx - start_idx) < EDGE_BUFFER:
+            is_edge_case = True
+        elif end_idx < n_points and (end_idx - min_idx) < EDGE_BUFFER + 1: # +1 for 0-indexing
+            is_edge_case = True
+            
+        if is_edge_case:
+             # Fallback to global search
+             # 全局搜索实际上非常快 (NumPy SIMD)，在 1000 个点以内通常 < 0.1ms
+             # 所以不要吝啬这个回退
+             dists_sq_global = np.sum((points[:, :2] - pos)**2, axis=1)
+             min_idx = np.argmin(dists_sq_global)
+             
+             # 如果 Global 结果与窗口结果差异很大，说明窗口确实跟丢了
+             # 更新 last_closest_idx 以重置窗口中心
         
+        self.closest_idx = min_idx
+        self._last_closest_idx = min_idx
+        
+        # 2. 寻找前瞻点
+        # 从最近点开始向后搜索
+        lookahead_sq = lookahead**2
+        
+        # 2.1 先在当前窗口的剩余部分搜索
+        # window_future_dists: [local_min_idx, end of window]
+        # 注意：如果触发了 global search，dists_sq_window 可能已经失效，
+        # 但为了简单起见，我们直接计算从 min_idx 开始的切片
+        
+        # Check buffer validity first
+        if not is_edge_case:
+             window_future_dists_sq = dists_sq_window[local_min_idx:]
+             candidates_mask = window_future_dists_sq >= lookahead_sq
+             
+             if np.any(candidates_mask):
+                 offset = np.argmax(candidates_mask)
+                 target_idx = min_idx + offset
+                 return points[target_idx], target_idx
+        
+        # 2.2 如果窗口内未找到 (或者发生了 fallback)，搜索剩余部分
+        # 从 min_idx 开始向后搜索 (Universal Logic)
+        remaining_points = points[min_idx:, :2]
+        remaining_dists_sq = np.sum((remaining_points - pos)**2, axis=1)
+        candidates_mask = remaining_dists_sq >= lookahead_sq
+        
+        if np.any(candidates_mask):
+             offset = np.argmax(candidates_mask)
+             target_idx = min_idx + offset
+             return points[target_idx], target_idx
+
+        # 未找到更远的点，返回终点
         return points[-1], n_points - 1
     
     def _compute_target_velocity(self, trajectory: Trajectory, target_idx: int, 

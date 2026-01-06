@@ -43,7 +43,7 @@ class TFBridge:
         self._tf2_compat = TF2Compat(node)
     
     def lookup_transform(self, target_frame: str, source_frame: str,
-                        time=None, timeout_sec: float = 0.01) -> Optional[dict]:
+                        time=None, timeout_sec: float = 0.0) -> Optional[dict]:
         """
         查询坐标变换
         
@@ -61,7 +61,7 @@ class TFBridge:
         )
     
     def can_transform(self, target_frame: str, source_frame: str,
-                     time=None, timeout_sec: float = 0.01) -> bool:
+                     time=None, timeout_sec: float = 0.0) -> bool:
         """检查是否可以进行坐标变换"""
         return self._tf2_compat.can_transform(
             target_frame, source_frame, time, timeout_sec
