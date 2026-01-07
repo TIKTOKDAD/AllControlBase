@@ -11,7 +11,7 @@ from ..core.data_types import Trajectory, ControlOutput, ConsistencyResult
 from ..core.indices import MPCStateIdx, MPCInputIdx, MPCSlices
 from ..core.enums import PlatformType
 from ..core.ros_compat import normalize_angle, angle_difference, get_monotonic_time
-from ..core.velocity_smoother import VelocitySmoother
+
 from ..core.constants import (
     EPSILON,
     MPC_QP_SOLVER,
@@ -150,14 +150,7 @@ class MPCController(ITrajectoryTracker):
         # 性能优化: 预分配 Buffer
         self._yref_buffer: Optional[np.ndarray] = None
         
-        # 速度平滑器
-        ctrl_freq = config.get('system', {}).get('ctrl_freq', 50)
-        smoother_dt = 1.0 / ctrl_freq
-        az_max = constraints.get('az_max', 1.0)
-        self._velocity_smoother = VelocitySmoother(
-            a_max=self.a_max, az_max=az_max,
-            alpha_max=self.alpha_max, dt=smoother_dt
-        )
+        self._yref_buffer: Optional[np.ndarray] = None
     
     @staticmethod
     def _cleanup_resources(cache):
@@ -228,13 +221,31 @@ class MPCController(ITrajectoryTracker):
         if self.is_omni or self.is_3d:
             # 使用 StateIdx 保证顺序一致性
             theta_fn = theta
+            
+            # Fix: Omni/3D 模型动力学
+            # 输入 u = [ax, ay, az, alpha] 是 Body Frame 下的加速度
+            # 状态 x (速度部分) = [vx, vy, vz] 是 World Frame 下的速度 (ACADOS 习惯)
+            # 因此: xdot_v_world = R(theta) * a_body
+            
+            # 旋转矩阵 (Yaw Only)
+            c_th = ca.cos(theta_fn)
+            s_th = ca.sin(theta_fn)
+            
+            # ax, ay 是 Body accel
+            ax_world = ax * c_th - ay * s_th
+            ay_world = ax * s_th + ay * c_th
+            
+            # 3D 平台 (Quadrotor) 通常忽略 Pitch/Roll 对水平动力学的非线性影响(简化模型)，或者假设已补偿
+            # 对于完整 3D 动力学，需要四元数状态，这里保持 MPC 模型简化为 2.5D (Yaw-rotation only for dynamics)
+            # 因为 az 对于 Quadrotor 也是 body frame (thrust)，但假设 tilt 很小，az ≈ az_world
+            
             xdot_expr = [0] * 8
             xdot_expr[MPCStateIdx.X] = vx
             xdot_expr[MPCStateIdx.Y] = vy
             xdot_expr[MPCStateIdx.Z] = vz
-            xdot_expr[MPCStateIdx.VX] = ax
-            xdot_expr[MPCStateIdx.VY] = ay
-            xdot_expr[MPCStateIdx.VZ] = az
+            xdot_expr[MPCStateIdx.VX] = ax_world
+            xdot_expr[MPCStateIdx.VY] = ay_world
+            xdot_expr[MPCStateIdx.VZ] = az # Simplified
             xdot_expr[MPCStateIdx.THETA] = omega
             xdot_expr[MPCStateIdx.OMEGA] = alpha
             xdot = ca.vertcat(*xdot_expr)
@@ -410,35 +421,100 @@ class MPCController(ITrajectoryTracker):
         alpha = consistency.alpha
         
         # 获取混合速度 [H, 4]
-        # 注意: get_blended_velocities_slice 返回的是 copy，安全修改
-        blended_vels = trajectory.get_blended_velocities_slice(0, self.horizon, alpha)
+        # 严重 Bug 修复: 检查 trajectory.dt_sec 与 self.dt 的一致性
+        # 如果不一致，必须进行重采样，否则时间尺度会缩放 (e.g. traj_dt=0.2, self.dt=0.1 => 速度翻倍)
         
-        # 填充不足的部分
-        actual_len = len(blended_vels)
-        if actual_len < self.horizon:
-            # 需要填充的长度
-            pad_len = self.horizon - actual_len
-            if actual_len > 0:
-                # 速度用 0 填充
-                padding = np.zeros((pad_len, 4))
-                blended_vels = np.vstack([blended_vels, padding])
-            else:
+        traj_dt = trajectory.dt_sec
+        mpc_dt = self.dt
+        
+        # 判断是否需要重采样
+        needs_resampling = abs(traj_dt - mpc_dt) > 1e-4 and traj_dt > 0
+        
+        if needs_resampling:
+            # -------------------------------------------------------------
+            # 高性能重采样逻辑 (Zero-copy where possible)
+            # -------------------------------------------------------------
+            # 1. 构建时间网格
+            # 目标时间点: t_mpc = [0, dt, 2*dt, ..., (H-1)*dt]
+            target_times = np.arange(self.horizon, dtype=np.float64) * mpc_dt
+            
+            # 源数据长度
+            src_len = len(trajectory.points) # 这里假设 velocities 和 points 长度一致(Trajectory保证)
+            if src_len < 2:
+                # 数据太少，无法插值，退化为填充 0
                 blended_vels = np.zeros((self.horizon, 4))
-                
-        # 提取点坐标 [N, 3] -> 截取前 Horizon 个点并填充
-        # get_points_matrix() 有缓存，速度快
-        points_all = trajectory.get_points_matrix()
-        points_slice = points_all[:self.horizon]
-        
-        points_len = len(points_slice)
-        if points_len < self.horizon:
-            # 使用最后一个点填充剩余部分 (保持位置不变)
-            if points_len > 0:
-                last_pt = points_slice[-1]
-                pad_pts = np.tile(last_pt, (self.horizon - points_len, 1))
-                points_slice = np.vstack([points_slice, pad_pts])
+                # points_slice will be handled later? No, points also need resampling
+                # Let's handle points and velocities together mostly
             else:
-                points_slice = np.zeros((self.horizon, 3))
+                # 源时间点: t_traj = [0, traj_dt, ..., (N-1)*traj_dt]
+                # max_time = (src_len - 1) * traj_dt
+                
+                # 获取源数据
+                src_vels = trajectory.get_blended_velocities_slice(0, src_len, alpha)
+                
+                # 2. 向量化线性插值 (Linear Interpolation)
+                # np.interp(x, xp, fp)
+                # x: target_times
+                # xp: implicit [0, 1, ... N] * traj_dt -> can map x to indices
+                
+                # 映射 target_times 到源索引空间: idx = t / traj_dt
+                target_indices = target_times / traj_dt
+                
+                # 限制索引范围，防止越界 (Extrapolation)
+                # MPC Horizon 可能会超出 Trajectory 长度，此时应保持最后一个点的值 (Zero-order hold for vel?)
+                # np.interp 默认 extrapolation 是 constant boundary (left=fp[0], right=fp[-1])
+                # 这对于速度和位置都是合理的默认行为 (保持末端状态)
+                src_indices = np.arange(src_len, dtype=np.float64)
+                
+                # 插值速度 [vx, vy, vz, omega]
+                blended_vels = np.zeros((self.horizon, 4))
+                for k in range(4):
+                    blended_vels[:, k] = np.interp(target_indices, src_indices, src_vels[:, k])
+                
+        else:
+            # 快速路径: 直接切片
+            blended_vels = trajectory.get_blended_velocities_slice(0, self.horizon, alpha)
+            
+            # 填充不足的部分
+            actual_len = len(blended_vels)
+            if actual_len < self.horizon:
+                pad_len = self.horizon - actual_len
+                if actual_len > 0:
+                    # 使用最后一个速度填充 (Zero-Order Hold) 而不是填 0
+                    last_vel = blended_vels[-1]
+                    padding = np.tile(last_vel, (pad_len, 1))
+                    blended_vels = np.vstack([blended_vels, padding])
+                else:
+                    blended_vels = np.zeros((self.horizon, 4))
+
+        # -------------------------------------------------------------
+        # 提取并重采样点坐标 [N, 3] 
+        # -------------------------------------------------------------
+        if needs_resampling and src_len >= 2:
+             # 对 points 也进行插值
+             src_points = trajectory.get_points_matrix()
+             points_slice = np.zeros((self.horizon, 3))
+             for k in range(3):
+                 points_slice[:, k] = np.interp(target_indices, src_indices, src_points[:, k])
+        else:
+            # 快速路径
+            points_all = trajectory.get_points_matrix()
+            points_slice = points_all[:self.horizon]
+            
+            points_len = len(points_slice)
+            if points_len < self.horizon:
+                if points_len > 0:
+                    last_pt = points_slice[-1]
+                    pad_pts = np.tile(last_pt, (self.horizon - points_len, 1))
+                    points_slice = np.vstack([points_slice, pad_pts])
+                else:
+                    points_slice = np.zeros((self.horizon, 3))
+       
+        # Refactored: points_slice logic merged above to handle resampling case correctly.
+        # Original padding logic for points was:
+        # points_slice = points_all[:self.horizon] ... padding
+        
+        # ----------------------------------------------------------
                 
         # ----------------------------------------------------------
         # 3. 计算参考航向角 theta_ref (重构: 优先使用几何一致性)
@@ -605,10 +681,23 @@ class MPCController(ITrajectoryTracker):
             x1 = self._solver.get(1, "x")
             self._last_predicted_next_state = x1
             
+            # result construction
+            
+            if self.is_omni or self.is_3d:
+                # Fix for Omni/3D: 
+                # Model State vx, vy are World Frame.
+                # However, for Omni robots, we typically want Body Frame Velocity command as output (cmd_vel).
+                # The previous generic logic (below) ALREADY performs this rotation using `current_theta`.
+                # So we don't need special handling here, just rely on the rotation logic below.
+                pass 
+
             # 严重 Bug 修复: 
             # ACADOS 状态中的 vx, vy 是 World Frame (Odom) 下的速度
             # ControlOutput (cmd_vel) 需要 Body Frame (base_link) 下的速度
             # 必须进行坐标旋转: V_body = R(theta)^T * V_world
+            
+            # 注意：此处使用 state (当前状态) 的 theta，而不是预测状态的 theta
+            # 这是一个近似，但对于 instantaneous cmd_vel 是正确的 (相对于当前车身发送指令)
             
             vx_world = x1[MPCStateIdx.VX]
             vy_world = x1[MPCStateIdx.VY]
@@ -685,11 +774,6 @@ class MPCController(ITrajectoryTracker):
         
         try:
             result = self._solve_with_acados(state, trajectory, consistency)
-
-            # Centralized Velocity Smoothing
-            # Limits acceleration/jerk using the shared VelocitySmoother
-            # This applies to both successful and failed (zero-vel) solver outputs
-            result = self._velocity_smoother.smooth(result, self._last_cmd)
 
             result.solve_time_ms = (time.time() - start_time) * 1000
             self._last_solve_time_ms = result.solve_time_ms

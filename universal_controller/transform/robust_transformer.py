@@ -211,19 +211,43 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             matrix[1, 3] = est_pos[1]
             matrix[2, 3] = est_pos[2]
             
-            # 旋转部分: 区分 2D 和 3D 模式的 fallback 逻辑
-            # 这里我们尝试简单地根据平台类型或数据完整性来判断
-            # 如果是纯 2D 降级（地面车），只恢复 Yaw
-            # 如果需要 3D（无人机），理论上 estimator 应该提供完整姿态
+            # 旋转部分: 根据 EstimatorOutput 提供的四元数构建 3D 旋转
+            # 如果可用，优先使用 EstimatorOutput 中的 orientation_quat (x,y,z,w)
+            # 否则从 Yaw 角构建 2D 旋转 (Backward Compatibility)
             
-            cos_t = np.cos(est_theta)
-            sin_t = np.sin(est_theta)
+            used_full_quat = False
+            if hasattr(fallback_state, 'orientation_quat') and fallback_state.orientation_quat is not None:
+                q = fallback_state.orientation_quat
+                # Quaternion to Matrix
+                qx, qy, qz, qw = q[0], q[1], q[2], q[3]
+                
+                # Check validity
+                if abs(qx*qx + qy*qy + qz*qz + qw*qw - 1.0) < 0.1:
+                    # R = ...
+                    matrix[0, 0] = 1 - 2*qy**2 - 2*qz**2
+                    matrix[0, 1] = 2*qx*qy - 2*qz*qw
+                    matrix[0, 2] = 2*qx*qz + 2*qy*qw
+                    
+                    matrix[1, 0] = 2*qx*qy + 2*qz*qw
+                    matrix[1, 1] = 1 - 2*qx**2 - 2*qz**2
+                    matrix[1, 2] = 2*qy*qz - 2*qx*qw
+                    
+                    matrix[2, 0] = 2*qx*qz - 2*qy*qw
+                    matrix[2, 1] = 2*qy*qz + 2*qx*qw
+                    matrix[2, 2] = 1 - 2*qx**2 - 2*qy**2
+                    
+                    used_full_quat = True
             
-            # Z 轴旋转矩阵
-            matrix[0, 0] = cos_t
-            matrix[0, 1] = -sin_t
-            matrix[1, 0] = sin_t
-            matrix[1, 1] = cos_t
+            if not used_full_quat:
+                # 2D Fallback
+                cos_t = np.cos(est_theta)
+                sin_t = np.sin(est_theta)
+                
+                # Z 轴旋转矩阵
+                matrix[0, 0] = cos_t
+                matrix[0, 1] = -sin_t
+                matrix[1, 0] = sin_t
+                matrix[1, 1] = cos_t
             
             # 应用变换
             new_traj = apply_transform_to_trajectory(traj, matrix, target_frame)

@@ -32,8 +32,11 @@ from universal_controller.core.enums import ControllerState, PlatformType
 
 from ..bridge import ControllerBridge
 from ..io.data_manager import DataManager
+from ..io.protocols import PublisherProtocol, ServiceProtocol
 from ..utils import ErrorHandler, TF2InjectionManager
 from ..lifecycle import LifecycleMixin, LifecycleState, HealthChecker
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +68,9 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         self._health_checker: Optional[HealthChecker] = None
         
         # ROS 版本特定的管理器和订阅器
-        # 类型为 Any 因为 ROS1 和 ROS2 有不同的实现类
-        self._publishers: Optional[Any] = None   # PublisherManager (ROS2) 或 ROS1PublisherManager
-        self._services: Optional[Any] = None     # ServiceManager (ROS2) 或 ROS1ServiceManager
+        # 使用 Protocol 定义接口
+        self._publishers: Optional[PublisherProtocol] = None
+        self._services: Optional[ServiceProtocol] = None
         self._timer: Optional[Any] = None        # rclpy.Timer (ROS2) 或 rospy.Timer (ROS1)
         self._control_timer: Optional[Any] = None
         self._odom_sub: Optional[Any] = None
@@ -83,7 +86,7 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         self._emergency_stop_time: Optional[float] = None
         
         self._is_quadrotor: bool = False
-        self._last_attitude_cmd: Optional[AttitudeCommand] = None
+        # self._last_attitude_cmd removed (dead code)
         self._attitude_yaw_mode: int = 0
 
     def _initialize(self):
@@ -99,6 +102,10 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         self._default_frame_id = platform_config.get('output_frame', 'base_link')
         
         self._is_quadrotor = platform_config.get('type') == PlatformType.QUADROTOR
+        
+        # 加载 Attitude 配置
+        attitude_config = self._params.get('attitude', {})
+        self._attitude_yaw_mode = attitude_config.get('yaw_mode', 0)
         
         diag_config = self._params.get('diagnostics', {})
         self._error_handler = ErrorHandler(
@@ -174,7 +181,6 @@ class ControllerNodeBase(LifecycleMixin, ABC):
             
             self._waiting_for_data = True
             # Note: Do NOT clear emergency stop state here for safety
-            self._last_attitude_cmd = None
             
         self._log_info('Controller node reset complete (emergency stop state preserved)')
     
@@ -201,6 +207,9 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         
         if self._health_checker is not None:
             details['health_summary'] = self._health_checker.get_summary()
+            
+        if self._publishers is not None:
+            details['publisher_stats'] = self._publishers.get_stats()
         
         return details
     
@@ -334,13 +343,12 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         if self._is_quadrotor and 'attitude_cmd' in cmd.extras:
             attitude_cmd = cmd.extras['attitude_cmd']
             if attitude_cmd is not None:
-                self._last_attitude_cmd = attitude_cmd
                 # 获取悬停状态 (如果处理器提供了的话)
                 is_hovering = cmd.extras.get('is_hovering', False)
                 
                 self._publishers.publish_attitude_cmd(
                     attitude_cmd,
-                    yaw_mode=self._attitude_yaw_mode if hasattr(self, '_attitude_yaw_mode') else 0,
+                    yaw_mode=self._attitude_yaw_mode,
                     is_hovering=is_hovering
                 )
         
@@ -401,6 +409,17 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         # 0.1 检查紧急停止 (无锁检查，最为快速)
         if self._emergency_stop_requested:
             self._publish_stop_cmd()
+            
+            # [CRITICAL FIX] Ensure internal state is STOPPING.
+            # Handles the case where the callback failed to acquire the lock.
+            # Since we are in the main control loop, we can safely request state change.
+            if self._controller_bridge is not None:
+                 # Check current state first to avoid redundant calls
+                 current_state = self._controller_bridge.get_state()
+                 if current_state not in (ControllerState.STOPPING, ControllerState.STOPPED):
+                      self._log_warn_throttle(2.0, "Synchronizing internal state to STOPPING due to E-Stop request")
+                      self._controller_bridge.request_stop()
+                      
             return None
         
         # 0.2 检查轨迹消息类型

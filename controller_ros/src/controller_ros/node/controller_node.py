@@ -235,6 +235,14 @@ class ControllerNode(ControllerNodeBase, Node):
             )
         
         if cmd is not None:
+            # RACECONDITION FIX: 再次检查紧急停止
+            # 防止在计算过程中(耗时任务)触发了急停，计算完后仍错误地发布了非零速度
+            if self._is_emergency_stopped():
+                # 这种情况下应该已经由 callback 发布了 stop_cmd，
+                # 但为了双重保险我们可以再发一次或者静默跳过。
+                # 既然是 Control 循环，静默跳过旧命令是最安全的。
+                return
+                
             # 发布控制命令
             self._publish_cmd(cmd)
     

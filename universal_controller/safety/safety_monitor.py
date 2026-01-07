@@ -286,8 +286,26 @@ class BasicSafetyMonitor(ISafetyMonitor):
             
             if dt >= self.min_dt_for_accel and dt <= self.max_dt_for_accel:
                 # 正常计算
-                raw_ax = (cmd.vx - self._last_cmd.vx) / dt
-                raw_ay = (cmd.vy - self._last_cmd.vy) / dt
+                # 1. 计算线性加速度分量 (Linear Acceleration)
+                linear_ax = (cmd.vx - self._last_cmd.vx) / dt
+                linear_ay = (cmd.vy - self._last_cmd.vy) / dt
+                
+                # 2. 计算向心/科氏加速度分量 (Centripetal/Coriolis Acceleration)
+                # a_c = omega x v
+                # ax_total = linear_ax - vy * omega
+                # ay_total = linear_ay + vx * omega
+                # 使用平均值以提高精度 (Trapezoidal integration approximation)
+                avg_vx = 0.5 * (cmd.vx + self._last_cmd.vx)
+                avg_vy = 0.5 * (cmd.vy + self._last_cmd.vy)
+                avg_omega = 0.5 * (cmd.omega + self._last_cmd.omega)
+                
+                centripetal_ax = -avg_vy * avg_omega
+                centripetal_ay =  avg_vx * avg_omega
+                
+                # 3. 合成总加速度
+                raw_ax = linear_ax + centripetal_ax
+                raw_ay = linear_ay + centripetal_ay
+                
                 raw_az = (cmd.vz - self._last_cmd.vz) / dt if self.is_3d else 0.0
                 raw_alpha = (cmd.omega - self._last_cmd.omega) / dt
                 

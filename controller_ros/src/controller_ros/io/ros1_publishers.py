@@ -92,6 +92,7 @@ class ROS1PublisherManager:
         self._last_debug_path_time = 0.0
         self._last_mpc_path_time = 0.0  # MPC 路径发布节流
         self._debug_path_interval = 0.5  # 2Hz Limit
+        self._dropped_vis_frames = 0
 
     def _create_publishers(self):
         """创建所有发布器"""
@@ -257,6 +258,7 @@ class ROS1PublisherManager:
                 (self._do_publish_debug_path_sync, (trajectory, stamp))
             )
         except queue.Full:
+            self._dropped_vis_frames += 1
             pass
 
     def _do_publish_debug_path_sync(self, trajectory: Trajectory, stamp):
@@ -324,6 +326,7 @@ class ROS1PublisherManager:
                 (self._do_publish_mpc_path_sync, (predicted_states, frame_id, stamp))
             )
         except queue.Full:
+            self._dropped_vis_frames += 1
             pass
 
     def _do_publish_mpc_path_sync(self, predicted_states, frame_id, stamp):
@@ -405,6 +408,13 @@ class ROS1PublisherManager:
         if self._attitude_pub is not None:
             self._attitude_pub.unregister()
             self._attitude_pub = None
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get publisher statistics"""
+        return {
+            'dropped_vis_frames': self._dropped_vis_frames,
+            'vis_queue_size': self._vis_queue.qsize() if self._vis_queue else 0
+        }
         
         self._output_adapter = None
         self._attitude_adapter = None

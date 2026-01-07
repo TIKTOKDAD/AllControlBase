@@ -362,10 +362,61 @@ def apply_transform_to_trajectory(traj: 'Trajectory', transform_matrix: np.ndarr
     if traj.velocities is not None and len(traj.velocities) > 0:
         # velocities: [N, 4] = [vx, vy, vz, wz]
         # 线速度需要旋转，角速度 wz 在 2D 情况下不变
-        linear_vels = traj.velocities[:, :3]  # [N, 3]
-        angular_vels = traj.velocities[:, 3:4]  # [N, 1]
+        # Velocities: [vx, vy, vz, wx, wy, wz] or [vx, vy, vz, wz]
+        # 线速度和角速度都需要旋转
+        # v_world = R @ v_body
+        # w_world = R @ w_body
         
+        linear_vels = traj.velocities[:, :3]  # [N, 3]
         transformed_linear = (R @ linear_vels.T).T  # [N, 3]
-        new_traj.velocities = np.hstack([transformed_linear, angular_vels])
+        
+        if traj.velocities.shape[1] >= 6:
+            # Full 6D velocity [vx, vy, vz, wx, wy, wz]
+            angular_vels = traj.velocities[:, 3:6] # [N, 3]
+            transformed_angular = (R @ angular_vels.T).T
+            new_traj.velocities = np.hstack([transformed_linear, transformed_angular])
+        else:
+            # 4D velocity [vx, vy, vz, wz] (common in 2D nav)
+            # 假设 wx=0, wy=0 in local frame
+            # w_vec = [0, 0, wz]
+            # w_world = R @ w_vec
+            wz = traj.velocities[:, 3:4] # [N, 1]
+            zeros = np.zeros_like(wz)
+            angular_vecs = np.hstack([zeros, zeros, wz]) # [N, 3]
+            transformed_angular_vecs = (R @ angular_vecs.T).T # [N, 3]
+            
+            # 我们只需要保留 wz (rotated) 或者扩展为完整 6D?
+            # 为了保持兼容性，如果输入是 4D，我们尽量保持 4D，但旋转可能会引入 wx, wy
+            # 如果 R 包含 roll/pitch，wx, wy 将不为 0。
+            # 如果 Trajectory 结构支持动态维度，最好扩展。
+            # 这里假设下游不仅支持 4D。如果 strict 4D，我们只能取 z 分量（有损）。
+            
+            # 鉴于 Trajectory 定义通常是 flexible numpy array，我们尝试保持 4D 结构
+            # 仅当 Z 轴平行时（2D 变换），wz_new = wz_old。
+            # 对于 3D 变换，我们取 transformed_angular_vecs 的模长 * sign? 或者 z 分量?
+            # 正确的做法是如果变成 3D 旋转，应该升级为 6D 速度。
+            # 但为了最小化破坏，我们只更新 z 分量 (Projection to Z)，并发出警告如果 x/y 分量很大?
+            # 或者，Given "Elegant Improvement", we should rotate the full vector.
+            # Let's verify Trajectory class definition usually just stores ndarray.
+            
+            # 简单起见，且为了 2D 兼容性 (2D 旋转 R 形式为 [[c -s 0], [s c 0], [0 0 1]])
+            # 这种情况下 angular_vecs 旋转后 x,y 仍为 0，z 不变。
+            # 对于 3D 旋转，投影到 Z 轴可能不准确。
+            # 让我们采用：仅当发生实际 3D 旋转时才会有问题。
+            # 既然是 'Elegant improvement'，我们直接替换回 4D 格式的 Z 分量，
+            # 但要注意这是 "Projection onto World Z"。
+            
+            # Better approach: 
+            # transformed_angular = (R @ angular_vecs.T).T
+            # new_vz_rot = transformed_angular[:, 2:3]
+            # new_traj.velocities = np.hstack([transformed_linear, new_vz_rot])
+            
+            # 完整实现：
+            angular_vels_full = np.hstack([np.zeros((len(traj.points), 2)), traj.velocities[:, 3:4]])
+            transformed_angular = (R @ angular_vels_full.T).T
+            
+            # 仅保留 Z 分量以维持 4D 结构 (Traj standard format often 4 cols)
+            # 这是一个折衷，但在不改变 Data Type 定义的情况下是最安全的
+            new_traj.velocities = np.hstack([transformed_linear, transformed_angular[:, 2:3]])
     
     return new_traj

@@ -777,7 +777,16 @@ class ControllerManager:
         # 2. Pure Pursuit Lookahead (e.g. 3m @ 0.05m = 60 pts)
         # 3. Solver Buffer
         # 采用 max(Horizon * 4, 150) 作为保守且高效的阈值
-        safe_slice_len = max(self._current_horizon * 4, 150)
+        if traj.dt_sec > 1e-6:
+            # 基于时间窗口切片，而不是固定点数
+            # 5.0s 通常足够覆盖 MPC horizon (2s) 和 PurePursuit lookahead
+            time_window = 5.0 
+            safe_slice_len = int(np.ceil(time_window / traj.dt_sec))
+            # 确保至少覆盖 MPC Horizon 的 4 倍（历史逻辑保留作为下限）
+            safe_slice_len = max(safe_slice_len, self._current_horizon * 4)
+        else:
+            # Fallback for invalid dt
+            safe_slice_len = 500
         
         if len(trajectory.points) > safe_slice_len:
              # 高性能切片: 使用 Trajectory.get_slice() 获取独立副本

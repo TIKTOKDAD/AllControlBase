@@ -77,6 +77,7 @@ class PublisherManager:
         self._last_debug_path_time = 0.0
         self._last_mpc_path_time = 0.0  # MPC 路径发布节流
         self._debug_path_interval = 0.5  # 2Hz Limit
+        self._dropped_vis_frames = 0  # Counter for dropped visualization frames
         
         # 异步可视化工作线程
         self._vis_queue = queue.Queue(maxsize=2)  # 小缓冲区实现自动背压
@@ -268,6 +269,7 @@ class PublisherManager:
                 "Debug path visualization queue full, dropping frame (visualization/network too slow).",
                 throttle_duration_sec=30.0
             )
+            self._dropped_vis_frames += 1
 
     def _do_publish_debug_path_sync(self, trajectory: Trajectory, stamp_msg, step: int = 1):
         """同步执行路径转换和发布 (由 Worker 线程调用)"""
@@ -357,6 +359,7 @@ class PublisherManager:
                 "MPC path visualization queue full, dropping frame.",
                 throttle_duration_sec=30.0
             )
+            self._dropped_vis_frames += 1
 
     def _do_publish_mpc_path_sync(self, predicted_states, frame_id, stamp_msg, step: int = 1):
         """同步发布 MPC 预测路径 (由 Worker 线程调用)"""
@@ -437,6 +440,13 @@ class PublisherManager:
         self._path_pub = None
         self._mpc_path_pub = None
         self._attitude_pub = None
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get publisher statistics"""
+        return {
+            'dropped_vis_frames': self._dropped_vis_frames,
+            'vis_queue_size': self._vis_queue.qsize() if self._vis_queue else 0
+        }
         
         # 3. 清空适配器和节流器 (与 ROS1 版本保持一致)
         self._output_adapter = None

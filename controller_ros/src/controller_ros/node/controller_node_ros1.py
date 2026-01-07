@@ -199,6 +199,9 @@ class ControllerNodeROS1(ControllerNodeBase):
         """Control timer callback"""
         cmd = self._control_loop_core()
         if cmd is not None:
+            # RACECONDITION FIX: Check emergency stop again
+            if self._is_emergency_stopped():
+                return
             self._publish_cmd(cmd)
     
     # ==================== Abstract Method Implementations ====================

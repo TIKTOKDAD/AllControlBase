@@ -10,6 +10,7 @@ from ..core.data_types import EstimatorOutput, Odometry, Imu
 from ..config.default_config import PLATFORM_CONFIG
 from ..core.ros_compat import euler_from_quaternion, get_monotonic_time, normalize_angle
 from ..core.indices import StateIdx
+from ..core.enums import PlatformType
 from ..core.constants import (
     QUATERNION_NORM_SQ_MIN,
     QUATERNION_NORM_SQ_MAX,
@@ -83,6 +84,7 @@ class AdaptiveEKFEstimator(IStateEstimator):
         platform_name = config.get('system', {}).get('platform', 'differential')
         self.platform_config = PLATFORM_CONFIG.get(platform_name, PLATFORM_CONFIG['differential'])
         self.velocity_heading_coupled = self.platform_config.get('velocity_heading_coupled', True)
+        self.is_quadrotor = self.platform_config.get('type') == PlatformType.QUADROTOR
         
         # 重力加速度 - 使用物理常量
         self.gravity = DEFAULT_GRAVITY
@@ -159,6 +161,15 @@ class AdaptiveEKFEstimator(IStateEstimator):
         # 约束配置
         constraints = ekf_config.get('constraints', {})
         self.enable_non_holonomic_constraint = constraints.get('non_holonomic', True)
+        
+        # 智能配置修正: 全向平台不应启用非完整约束
+        if platform_name in ('omni', 'mecanum') and self.enable_non_holonomic_constraint:
+            logger.warning(
+                f"Platform '{platform_name}' detected but non_holonomic constraint is ENABLED. "
+                f"Auto-disabling non-holonomic constraint to allow lateral movement."
+            )
+            self.enable_non_holonomic_constraint = False
+            
         self.non_holonomic_slip_threshold = constraints.get('non_holonomic_slip_threshold', 0.5)
         
         # 状态变量
@@ -185,6 +196,8 @@ class AdaptiveEKFEstimator(IStateEstimator):
         
         self.last_imu_time: Optional[float] = None
         self._imu_available = True
+        self._time_since_last_odom = 1.0  # Time since last odom update (init high)
+        self._last_imu_orientation = np.array([0.0, 0.0, 0.0, 1.0])  # Default Identity Quat
         
         # 日志节流标志 - 避免重复警告
         # 使用字典统一管理，便于 reset() 时清理
@@ -373,6 +386,9 @@ class AdaptiveEKFEstimator(IStateEstimator):
             self.x[StateIdx.YAW] += self.x[StateIdx.YAW_RATE] * dt
             self.x[StateIdx.YAW] = normalize_angle(self.x[StateIdx.YAW])
 
+            # 累计 Odom 陈旧时间
+            self._time_since_last_odom += dt
+
             # 对于速度-航向耦合平台（差速车/阿克曼车），强制速度方向与航向一致
             if self.velocity_heading_coupled and self.enable_non_holonomic_constraint:
                 v_magnitude = np.sqrt(self.x[StateIdx.VX]**2 + self.x[StateIdx.VY]**2)
@@ -422,6 +438,9 @@ class AdaptiveEKFEstimator(IStateEstimator):
         """
         self._acquire_lock()
         try:
+            # 重置陈旧时间
+            self._time_since_last_odom = 0.0
+            
             # 资源有效性检查
             if self._F is None:
                 return
@@ -538,10 +557,33 @@ class AdaptiveEKFEstimator(IStateEstimator):
             cos_theta = np.cos(theta)
             sin_theta = np.sin(theta)
 
-            # 转换到世界系用于 EKF 更新 (观测方程 z = Hx, x 是世界系状态)
             vx_world = vx_body * cos_theta - vy_body * sin_theta
             vy_world = vx_body * sin_theta + vy_body * cos_theta
-            vz_world = vz_body
+            
+            if self.is_quadrotor:
+                # 3D 平台 (无人机) 使用完整的四元数旋转
+                # 之前简单的 2D 投影会导致 Pitch/Roll 倾斜时垂直速度估计严重错误
+                # v_world = R * v_body
+                
+                # 提取四元数
+                q = odom.pose_orientation
+                qx, qy, qz, qw = q[0], q[1], q[2], q[3]
+                
+                # 向量旋转公式: v' = v + 2 * cross(q_xyz, cross(q_xyz, v) + q_w * v)
+                # v = [vx_body, vy_body, vz_body]
+                # t = 2 * cross(q_xyz, v)
+                # v' = v + qw * t + cross(q_xyz, t)
+                
+                tx = 2.0 * (qy * vz_body - qz * vy_body)
+                ty = 2.0 * (qz * vx_body - qx * vz_body)
+                tz = 2.0 * (qx * vy_body - qy * vx_body)
+                
+                vx_world = vx_body + qw * tx + (qy * tz - qz * ty)
+                vy_world = vy_body + qw * ty + (qz * tx - qx * tz)
+                vz_world = vz_body + qw * tz + (qx * ty - qy * tx)
+            else:
+                # 地面车辆假设 Pitch/Roll 接近 0，使用高效的 2D 投影
+                vz_world = vz_body
 
             self.last_odom_time = current_time
             self._update_odom_covariance(v_body)
@@ -652,6 +694,19 @@ class AdaptiveEKFEstimator(IStateEstimator):
     def _update_imu_internal(self, imu: Imu, accel, gyro, current_time: float) -> None:
         """IMU 更新的内部实现（已在锁保护下调用）"""
         self.gyro_z = imu.angular_velocity[2]
+        
+        # 缓存最新的 IMU 姿态（如果有效）
+        if imu.orientation is not None:
+             try:
+                # 简单的有效性检查和转换
+                q = imu.orientation
+                if hasattr(q, '__len__') and len(q) == 4:
+                     q_arr = np.array(q, dtype=np.float64)
+                     if np.isfinite(q_arr).all() and abs(np.sum(q_arr**2) - 1.0) < 0.1:
+                         self._last_imu_orientation = q_arr
+             except Exception:
+                 pass
+                 
         theta = self.x[StateIdx.YAW]  # yaw 角
         cos_theta = np.cos(theta)
         sin_theta = np.sin(theta)
@@ -1136,12 +1191,21 @@ class AdaptiveEKFEstimator(IStateEstimator):
         if self.slip_detected:
             anomalies.append("SLIP_DETECTED")
 
-        # Use raw odom velocity for drift detection to avoid circular dependency
-        # If EKF is drifting, _is_stationary() (based on self.x) might return False, masking the drift.
-        # Fix: Check both linear and angular velocity for stationarity to support in-place rotation
-        is_linear_stationary = self._raw_odom_twist_norm < self.stationary_thresh
+        if self.slip_detected:
+            anomalies.append("SLIP_DETECTED")
+
+        # Fix: Check Odom freshness before using _raw_odom_twist_norm
+        # If Odom is stale, we cannot rely on it to determine if we are stopped.
+        # Assumption: If odom timeout, is_linear_stationary is effectively Unknown.
+        # Strict logic: We only flag IMU_DRIFT if we are CONFIDENT we are stationary.
+        odom_is_fresh = self._time_since_last_odom < self.accel_freshness_thresh * 5.0 # e.g. 0.5s
+
+        is_linear_stationary = False
+        if odom_is_fresh:
+            is_linear_stationary = self._raw_odom_twist_norm < self.stationary_thresh
+        
         is_angular_stationary = True
-        if hasattr(self, '_raw_odom_angular_velocity'):
+        if hasattr(self, '_raw_odom_angular_velocity') and odom_is_fresh:
              is_angular_stationary = abs(self._raw_odom_angular_velocity) < self.stationary_thresh
              
         is_physically_stationary = is_linear_stationary and is_angular_stationary
@@ -1190,6 +1254,28 @@ class AdaptiveEKFEstimator(IStateEstimator):
         finally:
             self._release_lock()
 
+
+
+    def _get_orientation_quat(self) -> np.ndarray:
+        """获取方位角四元数 (Robust)
+        
+        如果 IMU 可用且有效，使用 IMU 数据。
+        否则 (Odom Only 模式)，从状态向量 x 中的 Yaw 角合成一个水平四元数。
+        这解决了 "Ghost Locking" 问题：
+        即无 IMU 时，Transformer 会读取到默认的 Identity Quaternion (Yaw=0)，
+        而忽略了 EKF 状态中已经正确估计出的 Yaw。
+        """
+        if self._imu_available and self._last_imu_orientation is not None:
+             # 简单的有效性检查 (非零)
+            if np.sum(np.abs(self._last_imu_orientation)) > 1e-3:
+                return self._last_imu_orientation.copy()
+        
+        # Fallback: Synthesize from Yaw
+        yaw = self.x[StateIdx.YAW]
+        half_yaw = yaw * 0.5
+        # [x, y, z, w] -> [0, 0, sin(y/2), cos(y/2)]
+        return np.array([0.0, 0.0, np.sin(half_yaw), np.cos(half_yaw)], dtype=np.float64)
+
     def get_state(self) -> EstimatorOutput:
         """获取当前状态估计结果（线程安全）"""
         self._acquire_lock()
@@ -1209,7 +1295,9 @@ class AdaptiveEKFEstimator(IStateEstimator):
                 slip_probability=self.slip_probability,
                 anomalies=self._detect_anomalies_unlocked(),
                 imu_available=self._imu_available,
-                imu_drift_detected=self._imu_drift_detected
+                imu_drift_detected=self._imu_drift_detected,
+                # Fix Ghost Locking: Use helper function to guaranteed valid orientation
+                orientation_quat=self._get_orientation_quat()
             )
         finally:
             self._release_lock()

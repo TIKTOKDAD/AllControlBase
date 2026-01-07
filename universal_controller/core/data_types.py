@@ -289,13 +289,17 @@ class Trajectory:
         
         # 验证 dt_sec
         if self.dt_sec < TRAJECTORY_MIN_DT_SEC or self.dt_sec > TRAJECTORY_MAX_DT_SEC:
-            logger.debug(
-                f"Trajectory dt_sec={self.dt_sec} out of range "
-                f"[{TRAJECTORY_MIN_DT_SEC}, {TRAJECTORY_MAX_DT_SEC}], clipping"
-            )
-            self.dt_sec = np.clip(self.dt_sec, TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC)
-            # 自动修复被视为有效，不置为 False
-            # is_valid = False
+            if self.dt_sec <= 0 or not np.isfinite(self.dt_sec):
+                 logger.error(f"Invalid Trajectory dt_sec={self.dt_sec}. Must be positive.")
+                 is_valid = False
+            else:
+                 # 仅当值在合理范围内偏离时才进行 Clip (例如 0.0009 -> 0.001)
+                 # 避免极小值导致的除零风险
+                 logger.debug(
+                    f"Trajectory dt_sec={self.dt_sec} out of range "
+                    f"[{TRAJECTORY_MIN_DT_SEC}, {TRAJECTORY_MAX_DT_SEC}], clipping"
+                 )
+                 self.dt_sec = np.clip(self.dt_sec, TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC)
         
         # 向量化验证相邻点距离
         # 使用 get_points_matrix() 获取统一的 numpy 视图，避免处理类型差异
@@ -557,6 +561,7 @@ class EstimatorOutput:
     anomalies: List[str]
     imu_available: bool = True
     imu_drift_detected: bool = False
+    orientation_quat: Optional[np.ndarray] = None  # [x, y, z, w] for 3D fallback
 
 
 @dataclass(slots=True)

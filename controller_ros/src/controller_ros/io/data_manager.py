@@ -14,6 +14,7 @@ from typing import Dict, Any, Optional, Callable, List
 import threading
 import time
 import logging
+from collections import deque
 
 from universal_controller.core.data_types import Odometry, Imu, Trajectory
 from ..adapters import OdomAdapter, ImuAdapter, TrajectoryAdapter
@@ -158,7 +159,8 @@ class DataManager(LifecycleMixin):
         # 时钟回退检测
         self._last_time: float = 0.0
         self._clock_jumped_back: bool = False
-        self._clock_jump_events: List[ClockJumpEvent] = []
+        # efficient FIFO queue for events
+        self._clock_jump_events: deque = deque(maxlen=self._max_clock_jump_events)
         
         # 数据有效性标记 - 时钟回退后各数据分别标记为无效
         # 设计说明：使用分离的有效性标记，确保每种数据只有在收到新数据后才恢复有效
@@ -237,9 +239,7 @@ class DataManager(LifecycleMixin):
             
             # 记录事件
             self._clock_jump_events.append(event)
-            # 维护队列长度
-            if len(self._clock_jump_events) > self._max_clock_jump_events:
-                self._clock_jump_events.pop(0)
+            # 维护队列长度 (deque 自动处理)
             
             logger.warning(
                 f"Clock jumped backward by {abs(delta):.3f}s "
@@ -275,8 +275,7 @@ class DataManager(LifecycleMixin):
             
             # 记录事件
             self._clock_jump_events.append(event)
-            if len(self._clock_jump_events) > self._max_clock_jump_events:
-                self._clock_jump_events.pop(0)
+            # deque handles max len automatically
             
             return event
         
@@ -620,7 +619,7 @@ class DataManager(LifecycleMixin):
             时钟跳变事件列表（最多保留最近 10 个）
         """
         with self._lock:
-            return self._clock_jump_events.copy()
+            return list(self._clock_jump_events)
     
     def get_last_clock_jump(self) -> Optional[ClockJumpEvent]:
         """

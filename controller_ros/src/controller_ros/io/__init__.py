@@ -10,8 +10,17 @@ ROS 版本支持:
 - ROS1 Noetic: 主要支持版本
 """
 from .data_manager import DataManager
+from .protocols import PublisherProtocol, ServiceProtocol
 
-# ROS1 管理器直接导入
+# ROS2 Managers (Might fail on ROS1 environment)
+try:
+    from .publishers import PublisherManager
+    from .services import ServiceManager
+except ImportError:
+    PublisherManager = None
+    ServiceManager = None
+
+# ROS1 Managers (Might fail on ROS2 environment)
 try:
     from .ros1_publishers import ROS1PublisherManager
     from .ros1_services import ROS1ServiceManager
@@ -21,6 +30,10 @@ except ImportError:
 
 __all__ = [
     'DataManager',
+    'PublisherProtocol',
+    'ServiceProtocol',
+    'PublisherManager',
+    'ServiceManager',
     'ROS1PublisherManager',
     'ROS1ServiceManager',
 ]
