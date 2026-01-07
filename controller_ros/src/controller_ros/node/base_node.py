@@ -32,7 +32,7 @@ from universal_controller.core.enums import ControllerState, PlatformType
 
 from ..bridge import ControllerBridge
 from ..io.data_manager import DataManager
-from ..utils import ErrorHandler
+from ..utils import ErrorHandler, TF2InjectionManager
 from ..lifecycle import LifecycleMixin, LifecycleState, HealthChecker
 
 logger = logging.getLogger(__name__)
@@ -59,8 +59,8 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         self._data_manager: Optional[DataManager] = None
         self._tf_bridge: Any = None
         
-        # Simple flag to track TF2 injection state
-        self._is_tf2_active = False
+        # TF2 注入管理器 - 管理 TF2 回调注入和重试逻辑
+        self._tf2_injection_manager: Optional[TF2InjectionManager] = None
         
         self._health_checker: Optional[HealthChecker] = None
         
@@ -148,8 +148,10 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         
         if self._health_checker is not None:
             self._health_checker = None
-            
-        self._is_tf2_active = False
+        
+        # TF2InjectionManager 不需要显式 shutdown，只需清除引用
+        self._tf2_injection_manager = None
+        
         self._log_info('Controller node shutdown complete')
     
     def _do_reset(self) -> None:
@@ -160,12 +162,13 @@ class ControllerNodeBase(LifecycleMixin, ABC):
                 self._data_manager.reset()
             if self._error_handler is not None:
                 self._error_handler.reset()
-                
-            # Reset TF2 flag
+            
+            # Reset TF2 injection manager retry state
             # Note: We do not need to re-inject TF2 callback here as the manager instance persists.
             # Only full re-initialization requires re-binding.
-            # BUG FIX: Do NOT set _is_tf2_active = False here, as the callback is still bound in Manager.
-            # self._is_tf2_active = False 
+            # The injection state is preserved because the callback is still bound in Manager.
+            if self._tf2_injection_manager is not None:
+                self._tf2_injection_manager.reset()
             
             self._waiting_for_data = True
             # Note: Do NOT clear emergency stop state here for safety
@@ -189,7 +192,10 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         if self._data_manager is not None:
             details['data_manager'] = self._data_manager.get_health_status()
         
-        details['tf2_injected'] = self._is_tf2_active
+        # TF2 注入状态
+        details['tf2_injected'] = self._is_tf2_injected
+        if self._tf2_injection_manager is not None:
+            details['tf2_injection'] = self._tf2_injection_manager.get_status()
         
         if self._health_checker is not None:
             details['health_summary'] = self._health_checker.get_summary()
@@ -207,14 +213,64 @@ class ControllerNodeBase(LifecycleMixin, ABC):
     def _inject_tf2_to_controller(self, blocking: bool = True):
         """
         Initial TF2 injection.
+        
+        创建 TF2InjectionManager（如果尚未创建）并执行注入。
+        
+        Args:
+            blocking: 是否阻塞等待 TF buffer 预热
         """
-        self._bind_tf2_interface()
+        self._ensure_tf2_injection_manager()
+        if self._tf2_injection_manager is not None:
+            self._tf2_injection_manager.inject(blocking=blocking)
     
     def _try_tf2_reinjection(self):
         """
         Runtime reinjection attempt.
+        
+        在控制循环中调用，检查是否需要重试注入。
+        使用指数退避策略避免频繁重试。
         """
-        self._bind_tf2_interface()
+        if self._tf2_injection_manager is not None:
+            self._tf2_injection_manager.try_reinjection_if_needed()
+    
+    def _ensure_tf2_injection_manager(self):
+        """
+        确保 TF2InjectionManager 已创建
+        
+        延迟创建，因为在 __init__ 时 _tf_bridge 和 _controller_bridge 可能尚未设置。
+        """
+        if self._tf2_injection_manager is not None:
+            return
+        
+        if self._tf_bridge is None or self._controller_bridge is None:
+            return
+        
+        if self._controller_bridge.manager is None:
+            return
+        
+        # 从配置中获取 transform 相关参数
+        transform_config = self._params.get('transform', {})
+        
+        self._tf2_injection_manager = TF2InjectionManager(
+            tf_bridge=self._tf_bridge,
+            controller_manager=self._controller_bridge.manager,
+            config=transform_config,
+            transform_config=transform_config,
+            log_info=self._log_info,
+            log_warn=self._log_warn,
+            get_time_func=self._get_time,
+        )
+    
+    @property
+    def _is_tf2_injected(self) -> bool:
+        """
+        检查 TF2 是否已注入
+        
+        提供向后兼容的属性访问。
+        """
+        if self._tf2_injection_manager is not None:
+            return self._tf2_injection_manager.is_injected
+        return False
     
     # ==================== 紧急停止处理 ====================
     
@@ -328,27 +384,6 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         return manager.get_attitude_rate_limits()
     
     # ==================== 控制循环 ====================
-    
-    def _bind_tf2_interface(self):
-        """
-        绑定 TF2 接口到控制器管理器
-        
-        将 ROS 层的 TF2 查询能力注入到算法层的坐标变换器中。
-        """
-        if self._is_tf2_active:
-             return
-
-        if self._tf_bridge is None or not self._tf_bridge.is_initialized:
-            return
-            
-        # 检查 Manager 是否配置了 TF 回调
-        if self._controller_bridge and self._controller_bridge.manager:
-             transformer = getattr(self._controller_bridge.manager, 'coord_transformer', None)
-             if transformer and hasattr(transformer, 'set_tf2_lookup_callback'):
-                 # 幂等注入，不需要复杂的状态跟踪
-                 # 直接设置回调，开销极小
-                 transformer.set_tf2_lookup_callback(self._tf_bridge.lookup_transform)
-                 self._is_tf2_active = True
 
     def _control_loop_core(self) -> Optional[ControlOutput]:
         """
@@ -505,11 +540,6 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         # 4. 发布停止命令和错误诊断
         self._publish_stop_cmd()
         self._publish_diagnostics(full_diag, force=True)
-    
-    @property
-    def _is_tf2_injected(self) -> bool:
-        """检查 TF2 是否已注入"""
-        return self._is_tf2_active
     
     def _on_diagnostics(self, diag: Any):
         """诊断回调"""

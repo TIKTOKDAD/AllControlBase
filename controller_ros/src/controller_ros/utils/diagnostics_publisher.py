@@ -199,18 +199,27 @@ def _fill_from_dict(msg: Any, d: Dict[str, Any]) -> None:
 
 
 # 记录已验证的类型，避免重复检查
-_VALIDATED_TYPES = set()
+# 线程安全说明：使用 frozenset 的 copy-on-write 模式实现无锁线程安全
+# 这比使用锁更高效，因为读操作（99.9%的情况）完全无开销
+_VALIDATED_TYPES: frozenset = frozenset()
 
 
 def _fill_from_object(msg: Any, o: Any) -> None:
     """从对象填充 (兼容路径，使用 getattr)"""
     # 1. 结构验证 (仅首次运行时检查)
     # 这为了防止 silent failure: 如果底层字段改名了，getattr 会默默返回 0
+    # 
+    # 线程安全设计：
+    # - 使用 immutable frozenset + 原子赋值实现 copy-on-write
+    # - 最坏情况：同一类型被验证多次（无害，只是多打几次日志）
+    # - 优势：读路径零开销，无锁竞争
     global _VALIDATED_TYPES
     obj_type = type(o)
     if obj_type not in _VALIDATED_TYPES:
         _validate_object_structure(o)
-        _VALIDATED_TYPES.add(obj_type)
+        # 原子赋值：创建新的 frozenset 并替换引用
+        # Python 的引用赋值是原子的，无需锁
+        _VALIDATED_TYPES = _VALIDATED_TYPES | {obj_type}
 
     # 根级别
     msg.state = int(getattr(o, 'state', 0))

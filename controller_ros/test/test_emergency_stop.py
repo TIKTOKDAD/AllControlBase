@@ -213,8 +213,12 @@ class TestEmergencyStop:
         
         error = Exception("Test")
         
-        # 注意：新 API 不再接受 timeouts 参数，超时状态从 ControllerManager 获取
-        diag = mock.node._create_error_diagnostics(error)
+        # 通过 _handle_control_error 触发错误处理，它会发布诊断
+        mock.node._handle_control_error(error)
+        
+        # 检查发布的诊断
+        assert len(mock.node._published_diags) > 0
+        diag, _ = mock.node._published_diags[-1]
         
         assert diag['emergency_stop'] == True
 

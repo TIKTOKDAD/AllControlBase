@@ -180,7 +180,6 @@ class ControllerManager:
         self._last_state = ControllerState.INIT
         self._safety_failed = False
         self._safety_check_passed = True  # 安全检查是否通过
-        self._safety_check_passed = True  # 安全检查是否通过
         self._diagnostics_input = DiagnosticsInput()  # 复用诊断对象以减少 GC
         self._last_diagnostics: Optional[DiagnosticsInput] = None
         self._last_mpc_health = None
@@ -268,14 +267,15 @@ class ControllerManager:
         """
         设置诊断回调函数
         
-        回调函数签名: callback(diagnostics: Dict[str, Any]) -> None
+        回调函数签名: callback(diagnostics: DiagnosticsV2) -> None
         
-        用于非 ROS 环境下获取诊断数据，或用于日志记录、监控等
+        用于非 ROS 环境下获取诊断数据，或用于日志记录、监控等。
+        如需字典格式，可在回调中调用 diagnostics.to_ros_msg()。
         """
         self._diagnostics_publisher.add_callback(callback)
     
-    def get_last_published_diagnostics(self) -> Optional[Dict[str, Any]]:
-        """获取最后发布的诊断数据"""
+    def get_last_published_diagnostics(self) -> Optional['DiagnosticsV2']:
+        """获取最后发布的诊断数据（DiagnosticsV2 对象）"""
         return self._diagnostics_publisher.get_last_published()
     
     # ==================== 数据接收通知接口 ====================
@@ -753,8 +753,8 @@ class ControllerManager:
         safe_slice_len = max(self._current_horizon * 4, 150)
         
         if len(trajectory.points) > safe_slice_len:
-             # 高性能切片: 使用 Trajectory.get_slice() 获取切片
-             # 这不仅更高效（利用 Numpy View），而且更安全（自动复制所有字段）
+             # 高性能切片: 使用 Trajectory.get_slice() 获取独立副本
+             # 这确保了数据隔离，避免原轨迹修改影响切片数据
              traj_to_transform = trajectory.get_slice(0, safe_slice_len)
              
         else:

@@ -342,36 +342,41 @@ class Trajectory:
     
     def get_slice(self, start: int, end: int) -> 'Trajectory':
         """
-        获取轨迹切片（高效 Numpy View, O(1)）
+        获取轨迹切片（返回独立副本，确保数据隔离）
         
         Args:
             start: 起始索引
             end: 结束索引
             
         Returns:
-            Trajectory: 切片后的新轨迹对象
+            Trajectory: 切片后的新轨迹对象（独立副本）
+            
+        Note:
+            为确保数据安全，切片返回的是独立副本而非视图。
+            这避免了原轨迹修改影响切片数据的风险。
+            对于性能敏感场景，numpy 的小数组复制开销可忽略不计。
         """
         # 处理索引边界
-        # 即使 end > len，numpy slicing 也会自动处理，但手动 clamp 更加显式
         total_points = len(self.points)
         if start < 0: start = 0
         if end > total_points: end = total_points
         if start > end: start = end
         
-        # Numpy Slice (View, O(1))
-        # 移除了所有 List 检查分支
-        new_points = self.points[start:end]
+        # 创建独立副本而非视图，确保数据隔离
+        # np.array(..., copy=True) 显式创建副本
+        new_points = np.array(self.points[start:end], copy=True)
+        # 设置为只读，保持与原 Trajectory 一致的不可变语义
+        new_points.flags.writeable = False
         
-        # 2. 切片 Velocities
+        # 切片 Velocities（同样创建副本）
         new_velocities = None
         if self.velocities is not None:
-            # 处理 velocities 长度一致性
             v_len = len(self.velocities)
-            v_start = start if start < v_len else v_len
-            new_velocities = self.velocities[v_start:v_end]
+            v_start = min(start, v_len)
+            v_end = min(end, v_len)
+            new_velocities = np.array(self.velocities[v_start:v_end], copy=True)
             
-        # 3. 创建新实例 (高性能路径: 绕过 __init__ 和 __post_init__)
-        # 因为我们已经确保了数据是合法的 numpy array，不需要再次检查
+        # 创建新实例（高性能路径：绕过 __init__ 和 __post_init__）
         new_traj = object.__new__(Trajectory)
         
         # 直接赋值
@@ -388,33 +393,30 @@ class Trajectory:
         object.__setattr__(new_traj, '_version', 0)
         object.__setattr__(new_traj, '_cache_key', None)
         
-        # 优化: 尝试复用 Hard Cache
-        # 如果父对象已有 cache 且 key 匹配，则切片复用
-        # 这避免了对切片后的轨迹再次进行差分计算
+        # 复用 Hard Cache（创建独立副本）
         new_hard_vels = None
         current_version = getattr(self, '_version', 0)
         
-        # 简单的 key 检查 (version + dt)
         if (self._hard_velocities_cache is not None and 
             getattr(self, '_cache_key', None) == (current_version, self.dt_sec)):
             
-            # 确保 cache 长度足够覆盖 slice
             cache_len = len(self._hard_velocities_cache)
-            # 计算对应的 cache range (通常 points 和 cache 是一一对应的)
-            c_start = start if start < cache_len else cache_len
-            c_end = end if end < cache_len else cache_len
+            c_start = min(start, cache_len)
+            c_end = min(end, cache_len)
             
             if c_end > c_start:
-                new_hard_vels = self._hard_velocities_cache[c_start:c_end]
+                # 创建独立副本，避免缓存污染
+                new_hard_vels = np.array(self._hard_velocities_cache[c_start:c_end], copy=True)
         
         object.__setattr__(new_traj, '_hard_velocities_cache', new_hard_vels)
         
-        # 如果复用了 cache，需要设置 cache_key 以标记其有效性
         if new_hard_vels is not None:
              object.__setattr__(new_traj, '_cache_key', (0, self.dt_sec))
              
-        object.__setattr__(new_traj, '_points_matrix_cache', new_points) # 直接缓存切片后的点
+        object.__setattr__(new_traj, '_points_matrix_cache', new_points)
         object.__setattr__(new_traj, '_points_are_numpy', True)
+        object.__setattr__(new_traj, '_last_validated_version', -1)
+        object.__setattr__(new_traj, '_last_validation_result', True)
         
         return new_traj
     

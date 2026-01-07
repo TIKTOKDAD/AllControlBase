@@ -133,6 +133,42 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str,
         """添加错误到列表"""
         errors.append((key, msg, severity))
     
+    def validate_enum(key: str, value: Any, valid_values: tuple, description: str,
+                      severity: ValidationSeverity = ValidationSeverity.ERROR) -> None:
+        """验证枚举值"""
+        if value is not None and value not in valid_values:
+            add_error(key, 
+                      f"{description} 值 '{value}' 无效，有效值为: {valid_values}",
+                      severity)
+    
+    # ==========================================================================
+    # 枚举值验证 (ERROR 级别)
+    # ==========================================================================
+    
+    # transition.type 验证
+    transition_type = get_config_value(config, 'transition.type')
+    validate_enum('transition.type', transition_type, 
+                  ('exponential', 'linear'),
+                  '过渡类型')
+    
+    # backup.heading_mode 验证
+    heading_mode = get_config_value(config, 'backup.heading_mode')
+    validate_enum('backup.heading_mode', heading_mode,
+                  ('follow_velocity', 'fixed', 'target_point', 'manual'),
+                  '航向模式')
+    
+    # backup.default_turn_direction 验证
+    turn_direction = get_config_value(config, 'backup.default_turn_direction')
+    validate_enum('backup.default_turn_direction', turn_direction,
+                  ('left', 'right'),
+                  '默认转向方向')
+    
+    # system.platform 验证
+    platform = get_config_value(config, 'system.platform')
+    validate_enum('system.platform', platform,
+                  ('differential', 'ackermann', 'omni', 'quadrotor'),
+                  '平台类型')
+    
     # ==========================================================================
     # 安全关键参数禁用警告 (WARNING 级别)
     # ==========================================================================
@@ -232,6 +268,25 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str,
             add_error('mpc.horizon_degraded', 
                       f'降级 horizon ({horizon_degraded}) 不应大于正常 horizon ({horizon})',
                       ValidationSeverity.ERROR)
+        if horizon_degraded < 1:
+            add_error('mpc.horizon_degraded',
+                      f'降级 horizon ({horizon_degraded}) 必须至少为 1',
+                      ValidationSeverity.ERROR)
+    
+    # MPC 健康监控阈值一致性
+    time_warning = get_config_value(config, 'mpc.health_monitor.time_warning_thresh_ms')
+    time_critical = get_config_value(config, 'mpc.health_monitor.time_critical_thresh_ms')
+    time_recovery = get_config_value(config, 'mpc.health_monitor.time_recovery_thresh_ms')
+    if _is_numeric(time_warning) and _is_numeric(time_critical):
+        if time_warning >= time_critical:
+            add_error('mpc.health_monitor.time_warning_thresh_ms',
+                      f'警告阈值 ({time_warning}ms) 应小于临界阈值 ({time_critical}ms)',
+                      ValidationSeverity.ERROR)
+    if _is_numeric(time_recovery) and _is_numeric(time_warning):
+        if time_recovery >= time_warning:
+            add_error('mpc.health_monitor.time_recovery_thresh_ms',
+                      f'恢复阈值 ({time_recovery}ms) 应小于警告阈值 ({time_warning}ms)',
+                      ValidationSeverity.ERROR)
     
     # MPC horizon 与轨迹点数的关系验证
     min_points = get_config_value(config, 'trajectory.min_points')
@@ -276,6 +331,45 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str,
             add_error('constraints.omega_max_low', 
                       f'低速最大角速度 ({omega_max_low}) 不应大于最大角速度 ({omega_max})',
                       ValidationSeverity.ERROR)
+    
+    # 状态机 MPC 失败检测参数一致性
+    mpc_fail_window = get_config_value(config, 'safety.state_machine.mpc_fail_window_size')
+    mpc_fail_thresh = get_config_value(config, 'safety.state_machine.mpc_fail_thresh')
+    mpc_fail_ratio = get_config_value(config, 'safety.state_machine.mpc_fail_ratio_thresh')
+    if _is_numeric(mpc_fail_window) and _is_numeric(mpc_fail_thresh):
+        if mpc_fail_thresh > mpc_fail_window:
+            add_error('safety.state_machine.mpc_fail_thresh',
+                      f'MPC 失败次数阈值 ({mpc_fail_thresh}) 不应大于窗口大小 ({mpc_fail_window})',
+                      ValidationSeverity.ERROR)
+    if _is_numeric(mpc_fail_ratio):
+        if mpc_fail_ratio < 0 or mpc_fail_ratio > 1:
+            add_error('safety.state_machine.mpc_fail_ratio_thresh',
+                      f'MPC 失败率阈值 ({mpc_fail_ratio}) 应在 [0, 1] 范围内',
+                      ValidationSeverity.ERROR)
+    
+    # 状态机 MPC 恢复检测参数一致性
+    mpc_recovery_recent = get_config_value(config, 'safety.state_machine.mpc_recovery_recent_count')
+    mpc_recovery_tolerance = get_config_value(config, 'safety.state_machine.mpc_recovery_tolerance')
+    mpc_recovery_ratio = get_config_value(config, 'safety.state_machine.mpc_recovery_success_ratio')
+    if _is_numeric(mpc_recovery_recent) and _is_numeric(mpc_recovery_tolerance):
+        if mpc_recovery_tolerance >= mpc_recovery_recent:
+            add_error('safety.state_machine.mpc_recovery_tolerance',
+                      f'MPC 恢复容错次数 ({mpc_recovery_tolerance}) 应小于最近检查次数 ({mpc_recovery_recent})',
+                      ValidationSeverity.ERROR)
+    if _is_numeric(mpc_recovery_ratio):
+        if mpc_recovery_ratio < 0 or mpc_recovery_ratio > 1:
+            add_error('safety.state_machine.mpc_recovery_success_ratio',
+                      f'MPC 恢复成功率阈值 ({mpc_recovery_ratio}) 应在 [0, 1] 范围内',
+                      ValidationSeverity.ERROR)
+    
+    # 状态超时参数一致性
+    degraded_timeout = get_config_value(config, 'safety.state_machine.degraded_state_timeout')
+    backup_timeout = get_config_value(config, 'safety.state_machine.backup_state_timeout')
+    if _is_numeric(degraded_timeout) and _is_numeric(backup_timeout):
+        if degraded_timeout > 0 and backup_timeout > 0 and degraded_timeout > backup_timeout:
+            add_error('safety.state_machine.degraded_state_timeout',
+                      f'MPC_DEGRADED 超时 ({degraded_timeout}s) 不应大于 BACKUP_ACTIVE 超时 ({backup_timeout}s)',
+                      ValidationSeverity.WARNING)
     
     # 垂直加速度约束验证
     az_max = get_config_value(config, 'constraints.az_max')
@@ -382,6 +476,51 @@ def validate_logical_consistency(config: Dict[str, Any]) -> List[Tuple[str, str,
                 add_error('tracking.weights',
                           f"权重总和 ({weight_sum:.2f}) 不等于 1.0，建议调整",
                           ValidationSeverity.WARNING)
+    
+    # 一致性检查权重验证
+    consistency_weights = get_config_value(config, 'consistency.weights', {})
+    if isinstance(consistency_weights, dict):
+        kappa_w = consistency_weights.get('kappa', 1.0)
+        velocity_w = consistency_weights.get('velocity', 1.5)
+        temporal_w = consistency_weights.get('temporal', 0.8)
+        for name, weight in [('kappa', kappa_w), ('velocity', velocity_w), ('temporal', temporal_w)]:
+            if _is_numeric(weight) and weight < 0:
+                add_error(f'consistency.weights.{name}',
+                          f'一致性权重 {name} ({weight}) 不应为负数',
+                          ValidationSeverity.ERROR)
+    
+    # Alpha 参数一致性
+    alpha_min = get_config_value(config, 'consistency.alpha_min')
+    alpha_recovery = get_config_value(config, 'safety.state_machine.alpha_recovery_value')
+    alpha_disable = get_config_value(config, 'safety.state_machine.alpha_disable_thresh')
+    if _is_numeric(alpha_min) and _is_numeric(alpha_recovery):
+        if alpha_recovery < alpha_min:
+            add_error('safety.state_machine.alpha_recovery_value',
+                      f'Alpha 恢复值 ({alpha_recovery}) 不应小于 alpha_min ({alpha_min})',
+                      ValidationSeverity.WARNING)
+    if _is_numeric(alpha_disable) and _is_numeric(alpha_recovery):
+        if alpha_disable > 0 and alpha_recovery > alpha_disable:
+            add_error('safety.state_machine.alpha_recovery_value',
+                      f'Alpha 恢复值 ({alpha_recovery}) 不应大于禁用阈值 ({alpha_disable})',
+                      ValidationSeverity.WARNING)
+    
+    # EKF 测量噪声验证 (必须为正数)
+    ekf_meas_noise = get_config_value(config, 'ekf.measurement_noise', {})
+    if isinstance(ekf_meas_noise, dict):
+        for key, value in ekf_meas_noise.items():
+            if _is_numeric(value) and value <= 0:
+                add_error(f'ekf.measurement_noise.{key}',
+                          f'EKF 测量噪声 {key} ({value}) 必须为正数',
+                          ValidationSeverity.ERROR)
+    
+    # EKF 过程噪声验证 (必须为正数)
+    ekf_proc_noise = get_config_value(config, 'ekf.process_noise', {})
+    if isinstance(ekf_proc_noise, dict):
+        for key, value in ekf_proc_noise.items():
+            if _is_numeric(value) and value <= 0:
+                add_error(f'ekf.process_noise.{key}',
+                          f'EKF 过程噪声 {key} ({value}) 必须为正数',
+                          ValidationSeverity.ERROR)
     
     return errors
 

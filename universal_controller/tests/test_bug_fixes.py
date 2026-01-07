@@ -172,14 +172,17 @@ def test_safety_monitor_warmup():
     
     state = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     
+    # 默认测试时间步长
+    dt = 0.02
+    
     # 第一次调用，建立基准
     cmd1 = ControlOutput(vx=0.0, vy=0.0, vz=0.0, omega=0.0)
-    decision1 = monitor.check(state, cmd1, diagnostics)
+    decision1 = monitor.check(state, cmd1, diagnostics, dt)
     
     # 第二次调用，使用极端加速度 (超过 2 倍限制)
     # 即使在预热期间，这也应该被检测到
     cmd2 = ControlOutput(vx=10.0, vy=0.0, vz=0.0, omega=0.0)  # 极端速度变化
-    decision2 = monitor.check(state, cmd2, diagnostics)
+    decision2 = monitor.check(state, cmd2, diagnostics, dt)
     
     # 预热期间使用 2 倍裕度，但极端情况仍应被检测
     # 注意: 由于滤波器的存在，第一次可能不会触发

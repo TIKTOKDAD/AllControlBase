@@ -10,6 +10,7 @@ import queue
 import time
 import math
 
+import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
@@ -112,8 +113,6 @@ class PublisherManager:
         """创建所有发布器"""
         # 统一控制命令发布
         cmd_topic = self._topics.get('cmd_unified', TOPICS_DEFAULTS['cmd_unified'])
-        # 统一控制命令发布
-        cmd_topic = self._topics.get('cmd_unified', TOPICS_DEFAULTS['cmd_unified'])
         if UnifiedCmd is not None:
             self._cmd_pub = self._node.create_publisher(
                 UnifiedCmd, cmd_topic, 10
@@ -123,8 +122,6 @@ class PublisherManager:
             self._node.get_logger().warn("UnifiedCmd message not available")
             self._cmd_pub = None
         
-        # 诊断发布
-        diag_topic = self._topics.get('diagnostics', TOPICS_DEFAULTS['diagnostics'])
         # 诊断发布
         diag_topic = self._topics.get('diagnostics', TOPICS_DEFAULTS['diagnostics'])
         if DiagnosticsV2 is not None:
@@ -156,8 +153,6 @@ class PublisherManager:
         )
         
         # 姿态命令发布器 (四旋翼平台)
-        if self._is_quadrotor:
-            attitude_topic = self._topics.get('attitude_cmd', TOPICS_DEFAULTS['attitude_cmd'])
         if self._is_quadrotor:
             attitude_topic = self._topics.get('attitude_cmd', TOPICS_DEFAULTS['attitude_cmd'])
             if AttitudeCmd is not None:

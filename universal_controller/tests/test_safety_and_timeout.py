@@ -28,6 +28,9 @@ from universal_controller.safety.timeout_monitor import TimeoutMonitor
 class TestSafetyMonitorVelocityLimits:
     """测试安全监控器速度限制"""
     
+    # 默认测试时间步长
+    DEFAULT_DT = 0.02
+    
     def test_velocity_within_limits(self):
         """测试速度在限制范围内"""
         config = DEFAULT_CONFIG.copy()
@@ -38,7 +41,7 @@ class TestSafetyMonitorVelocityLimits:
         cmd = ControlOutput(vx=0.5, vy=0.0, vz=0.0, omega=0.3, frame_id="base_link")
         diagnostics = DiagnosticsInput()
         
-        decision = monitor.check(state, cmd, diagnostics)
+        decision = monitor.check(state, cmd, diagnostics, self.DEFAULT_DT)
         
         assert decision.safe
         assert decision.limited_cmd is None
@@ -56,7 +59,7 @@ class TestSafetyMonitorVelocityLimits:
         cmd = ControlOutput(vx=v_max * 2, vy=0.0, vz=0.0, omega=0.0, frame_id="base_link")
         diagnostics = DiagnosticsInput()
         
-        decision = monitor.check(state, cmd, diagnostics)
+        decision = monitor.check(state, cmd, diagnostics, self.DEFAULT_DT)
         
         assert not decision.safe
         assert decision.limited_cmd is not None
@@ -75,7 +78,7 @@ class TestSafetyMonitorVelocityLimits:
         cmd = ControlOutput(vx=0.0, vy=0.0, vz=0.0, omega=omega_max * 2, frame_id="base_link")
         diagnostics = DiagnosticsInput()
         
-        decision = monitor.check(state, cmd, diagnostics)
+        decision = monitor.check(state, cmd, diagnostics, self.DEFAULT_DT)
         
         assert not decision.safe
         assert decision.limited_cmd is not None
@@ -94,7 +97,7 @@ class TestSafetyMonitorVelocityLimits:
         cmd = ControlOutput(vx=v_min * 2, vy=0.0, vz=0.0, omega=0.0, frame_id="base_link")
         diagnostics = DiagnosticsInput()
         
-        decision = monitor.check(state, cmd, diagnostics)
+        decision = monitor.check(state, cmd, diagnostics, self.DEFAULT_DT)
         
         # 应该被限制
         if decision.limited_cmd:
@@ -103,6 +106,9 @@ class TestSafetyMonitorVelocityLimits:
 
 class TestSafetyMonitorPlatformSpecific:
     """测试不同平台的安全监控"""
+    
+    # 默认测试时间步长
+    DEFAULT_DT = 0.02
     
     def test_differential_platform(self):
         """测试差速平台"""
@@ -114,7 +120,7 @@ class TestSafetyMonitorPlatformSpecific:
         cmd = ControlOutput(vx=1.0, vy=0.0, vz=0.0, omega=0.5, frame_id="base_link")
         diagnostics = DiagnosticsInput()
         
-        decision = monitor.check(state, cmd, diagnostics)
+        decision = monitor.check(state, cmd, diagnostics, self.DEFAULT_DT)
         
         assert decision is not None
     
@@ -129,7 +135,7 @@ class TestSafetyMonitorPlatformSpecific:
         cmd = ControlOutput(vx=0.5, vy=0.5, vz=0.0, omega=0.3, frame_id="base_link")
         diagnostics = DiagnosticsInput()
         
-        decision = monitor.check(state, cmd, diagnostics)
+        decision = monitor.check(state, cmd, diagnostics, self.DEFAULT_DT)
         
         assert decision is not None
     
@@ -144,7 +150,7 @@ class TestSafetyMonitorPlatformSpecific:
         cmd = ControlOutput(vx=0.5, vy=0.5, vz=0.5, omega=0.3, frame_id="base_link")
         diagnostics = DiagnosticsInput()
         
-        decision = monitor.check(state, cmd, diagnostics)
+        decision = monitor.check(state, cmd, diagnostics, self.DEFAULT_DT)
         
         assert decision is not None
 
@@ -325,6 +331,9 @@ class TestTimeoutMonitorReset:
 class TestSafetyMonitorHealthMetrics:
     """测试安全监控器健康指标"""
     
+    # 默认测试时间步长
+    DEFAULT_DT = 0.02
+    
     def test_health_metrics_preserved(self):
         """测试健康指标被保留"""
         config = DEFAULT_CONFIG.copy()
@@ -339,7 +348,7 @@ class TestSafetyMonitorHealthMetrics:
         )
         diagnostics = DiagnosticsInput()
         
-        decision = monitor.check(state, cmd, diagnostics)
+        decision = monitor.check(state, cmd, diagnostics, self.DEFAULT_DT)
         
         if decision.limited_cmd:
             assert 'test_key' in decision.limited_cmd.health_metrics

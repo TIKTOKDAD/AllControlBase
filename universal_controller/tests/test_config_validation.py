@@ -147,5 +147,178 @@ def test_validate_config_az_max_constraint():
     assert any('az_max' in key for key, _ in errors)
 
 
+# =============================================================================
+# 新增: 枚举值验证测试
+# =============================================================================
+
+def test_validate_config_enum_transition_type():
+    """测试过渡类型枚举验证"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['transition'] = DEFAULT_CONFIG['transition'].copy()
+    config['transition']['type'] = 'invalid_type'
+    
+    errors = validate_logical_consistency(config)
+    assert len(errors) > 0
+    assert any('transition.type' in key for key, _, _ in errors)
+
+
+def test_validate_config_enum_heading_mode():
+    """测试航向模式枚举验证"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['backup'] = DEFAULT_CONFIG['backup'].copy()
+    config['backup']['heading_mode'] = 'invalid_mode'
+    
+    errors = validate_logical_consistency(config)
+    assert len(errors) > 0
+    assert any('heading_mode' in key for key, _, _ in errors)
+
+
+def test_validate_config_enum_platform():
+    """测试平台类型枚举验证"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['system'] = DEFAULT_CONFIG['system'].copy()
+    config['system']['platform'] = 'invalid_platform'
+    
+    errors = validate_logical_consistency(config)
+    assert len(errors) > 0
+    assert any('platform' in key for key, _, _ in errors)
+
+
+def test_validate_config_enum_turn_direction():
+    """测试转向方向枚举验证"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['backup'] = DEFAULT_CONFIG['backup'].copy()
+    config['backup']['default_turn_direction'] = 'up'  # 无效值
+    
+    errors = validate_logical_consistency(config)
+    assert len(errors) > 0
+    assert any('turn_direction' in key for key, _, _ in errors)
+
+
+# =============================================================================
+# 新增: MPC 健康监控阈值交叉验证测试
+# =============================================================================
+
+def test_validate_config_mpc_health_thresholds():
+    """测试 MPC 健康监控阈值一致性"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['mpc'] = DEFAULT_CONFIG['mpc'].copy()
+    config['mpc']['health_monitor'] = DEFAULT_CONFIG['mpc']['health_monitor'].copy()
+    
+    # 警告阈值 >= 临界阈值 (错误)
+    config['mpc']['health_monitor']['time_warning_thresh_ms'] = 20
+    config['mpc']['health_monitor']['time_critical_thresh_ms'] = 15
+    
+    errors = validate_logical_consistency(config)
+    assert any('time_warning_thresh_ms' in key for key, _, _ in errors)
+
+
+def test_validate_config_mpc_recovery_threshold():
+    """测试 MPC 恢复阈值一致性"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['mpc'] = DEFAULT_CONFIG['mpc'].copy()
+    config['mpc']['health_monitor'] = DEFAULT_CONFIG['mpc']['health_monitor'].copy()
+    
+    # 恢复阈值 >= 警告阈值 (错误)
+    config['mpc']['health_monitor']['time_recovery_thresh_ms'] = 10
+    config['mpc']['health_monitor']['time_warning_thresh_ms'] = 8
+    
+    errors = validate_logical_consistency(config)
+    assert any('time_recovery_thresh_ms' in key for key, _, _ in errors)
+
+
+# =============================================================================
+# 新增: 状态机参数交叉验证测试
+# =============================================================================
+
+def test_validate_config_mpc_fail_window():
+    """测试 MPC 失败检测窗口参数一致性"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['safety'] = DEFAULT_CONFIG['safety'].copy()
+    config['safety']['state_machine'] = DEFAULT_CONFIG['safety']['state_machine'].copy()
+    
+    # 失败阈值 > 窗口大小 (错误)
+    config['safety']['state_machine']['mpc_fail_window_size'] = 10
+    config['safety']['state_machine']['mpc_fail_thresh'] = 15
+    
+    errors = validate_logical_consistency(config)
+    assert any('mpc_fail_thresh' in key for key, _, _ in errors)
+
+
+def test_validate_config_mpc_fail_ratio():
+    """测试 MPC 失败率阈值范围"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['safety'] = DEFAULT_CONFIG['safety'].copy()
+    config['safety']['state_machine'] = DEFAULT_CONFIG['safety']['state_machine'].copy()
+    
+    # 失败率 > 1 (错误)
+    config['safety']['state_machine']['mpc_fail_ratio_thresh'] = 1.5
+    
+    errors = validate_logical_consistency(config)
+    assert any('mpc_fail_ratio_thresh' in key for key, _, _ in errors)
+
+
+def test_validate_config_mpc_recovery_tolerance():
+    """测试 MPC 恢复容错参数一致性"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['safety'] = DEFAULT_CONFIG['safety'].copy()
+    config['safety']['state_machine'] = DEFAULT_CONFIG['safety']['state_machine'].copy()
+    
+    # 容错次数 >= 最近检查次数 (错误)
+    config['safety']['state_machine']['mpc_recovery_recent_count'] = 5
+    config['safety']['state_machine']['mpc_recovery_tolerance'] = 5
+    
+    errors = validate_logical_consistency(config)
+    assert any('mpc_recovery_tolerance' in key for key, _, _ in errors)
+
+
+# =============================================================================
+# 新增: EKF 噪声参数验证测试
+# =============================================================================
+
+def test_validate_config_ekf_measurement_noise():
+    """测试 EKF 测量噪声必须为正数"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['ekf'] = DEFAULT_CONFIG['ekf'].copy()
+    config['ekf']['measurement_noise'] = DEFAULT_CONFIG['ekf']['measurement_noise'].copy()
+    config['ekf']['measurement_noise']['odom_position'] = -0.01  # 负值
+    
+    errors = validate_logical_consistency(config)
+    assert any('measurement_noise' in key for key, _, _ in errors)
+
+
+def test_validate_config_ekf_process_noise():
+    """测试 EKF 过程噪声必须为正数"""
+    from universal_controller.config.validation import validate_logical_consistency
+    
+    config = DEFAULT_CONFIG.copy()
+    config['ekf'] = DEFAULT_CONFIG['ekf'].copy()
+    config['ekf']['process_noise'] = DEFAULT_CONFIG['ekf']['process_noise'].copy()
+    config['ekf']['process_noise']['velocity'] = 0  # 零值
+    
+    errors = validate_logical_consistency(config)
+    assert any('process_noise' in key for key, _, _ in errors)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

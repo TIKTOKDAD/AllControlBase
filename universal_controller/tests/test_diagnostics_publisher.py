@@ -20,7 +20,10 @@ def test_diagnostics_publisher_init():
 
 
 def test_diagnostics_publisher_callback():
-    """测试诊断回调功能"""
+    """测试诊断回调功能
+    
+    验证回调接收的是 DiagnosticsV2 对象，可直接访问属性。
+    """
     publisher = DiagnosticsPublisher()
     
     received_data = []
@@ -53,8 +56,10 @@ def test_diagnostics_publisher_callback():
     )
     
     assert len(received_data) == 1
-    assert received_data[0]['state'] == int(ControllerState.NORMAL)
-    assert received_data[0]['cmd']['vx'] == 1.0
+    # DiagnosticsV2 对象直接访问属性
+    diag = received_data[0]
+    assert diag.state == int(ControllerState.NORMAL)
+    assert diag.cmd_vx == 1.0
     
     print("✓ test_diagnostics_publisher_callback passed")
 
@@ -161,7 +166,10 @@ def test_diagnostics_publisher_clear_callbacks():
 
 
 def test_diagnostics_publisher_with_full_data():
-    """测试完整数据发布"""
+    """测试完整数据发布
+    
+    验证 DiagnosticsV2 对象的所有字段正确填充。
+    """
     publisher = DiagnosticsPublisher()
     
     received_data = []
@@ -228,35 +236,37 @@ def test_diagnostics_publisher_with_full_data():
     )
     
     assert len(received_data) == 1
-    data = received_data[0]
+    diag = received_data[0]
     
-    # 验证各字段
-    assert data['state'] == int(ControllerState.NORMAL)
-    assert data['mpc_success'] == True
-    assert data['mpc_solve_time_ms'] == 5.0
+    # 验证各字段 - 直接访问 DiagnosticsV2 属性
+    assert diag.state == int(ControllerState.NORMAL)
+    assert diag.mpc_success == True
+    assert diag.mpc_solve_time_ms == 5.0
     
-    assert data['consistency']['alpha_soft'] == 0.9
-    assert data['consistency']['curvature'] == 0.95
+    assert diag.consistency_alpha_soft == 0.9
+    assert diag.consistency_curvature == 0.95
     
-    assert data['mpc_health']['kkt_residual'] == 0.001
-    # 注意: DiagnosticsV2 中使用 degradation_warning 而非 healthy
-    assert data['mpc_health']['degradation_warning'] == False
+    assert diag.mpc_health_kkt_residual == 0.001
+    assert diag.mpc_health_degradation_warning == False
     
-    assert data['estimator_health']['covariance_norm'] == 0.8
-    assert data['estimator_health']['imu_available'] == True
+    assert diag.estimator_covariance_norm == 0.8
+    assert diag.estimator_imu_available == True
     
-    assert data['tracking']['lateral_error'] == 0.05
+    assert diag.tracking_lateral_error == 0.05
     
-    assert data['cmd']['vx'] == 1.5
-    assert data['cmd']['omega'] == 0.3
+    assert diag.cmd_vx == 1.5
+    assert diag.cmd_omega == 0.3
     
-    assert data['transition_progress'] == 0.5
+    assert diag.transition_progress == 0.5
     
     print("✓ test_diagnostics_publisher_with_full_data passed")
 
 
 def test_diagnostics_publisher_get_last_published():
-    """测试获取最后发布的数据"""
+    """测试获取最后发布的数据
+    
+    验证 get_last_published() 返回 DiagnosticsV2 对象。
+    """
     publisher = DiagnosticsPublisher()
     
     cmd = ControlOutput(vx=1.0, vy=0.0, vz=0.0, omega=0.0, success=True)
@@ -282,7 +292,7 @@ def test_diagnostics_publisher_get_last_published():
     
     last = publisher.get_last_published()
     assert last is not None
-    assert last['cmd']['vx'] == 1.0
+    assert last.cmd_vx == 1.0
     
     # 发布新数据
     cmd2 = ControlOutput(vx=2.0, vy=0.0, vz=0.0, omega=0.0, success=True)
@@ -301,13 +311,16 @@ def test_diagnostics_publisher_get_last_published():
     )
     
     last = publisher.get_last_published()
-    assert last['cmd']['vx'] == 2.0  # 应该是最新的
+    assert last.cmd_vx == 2.0  # 应该是最新的
     
     print("✓ test_diagnostics_publisher_get_last_published passed")
 
 
 def test_diagnostics_publisher_prediction_error_nan():
-    """测试 prediction_error 的 NaN 语义保留"""
+    """测试 prediction_error 的 NaN 语义保留
+    
+    验证 DiagnosticsV2 对象正确处理 NaN 值。
+    """
     import math
     publisher = DiagnosticsPublisher()
     
@@ -337,7 +350,7 @@ def test_diagnostics_publisher_prediction_error_nan():
     )
     
     assert len(received_data) == 1
-    assert math.isnan(received_data[0]['tracking']['prediction_error'])
+    assert math.isnan(received_data[0].tracking_prediction_error)
     
     # 测试 2: tracking_error 存在但没有 prediction_error 时，应为 NaN
     received_data.clear()
@@ -356,7 +369,7 @@ def test_diagnostics_publisher_prediction_error_nan():
     )
     
     assert len(received_data) == 1
-    assert math.isnan(received_data[0]['tracking']['prediction_error'])
+    assert math.isnan(received_data[0].tracking_prediction_error)
     
     # 测试 3: prediction_error 显式为 NaN 时，应保留 NaN
     received_data.clear()
@@ -375,7 +388,7 @@ def test_diagnostics_publisher_prediction_error_nan():
     )
     
     assert len(received_data) == 1
-    assert math.isnan(received_data[0]['tracking']['prediction_error'])
+    assert math.isnan(received_data[0].tracking_prediction_error)
     
     # 测试 4: prediction_error 有有效值时，应正常传递
     received_data.clear()
@@ -394,7 +407,7 @@ def test_diagnostics_publisher_prediction_error_nan():
     )
     
     assert len(received_data) == 1
-    assert received_data[0]['tracking']['prediction_error'] == 0.05
+    assert received_data[0].tracking_prediction_error == 0.05
     
     print("✓ test_diagnostics_publisher_prediction_error_nan passed")
 

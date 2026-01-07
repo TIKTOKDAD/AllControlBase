@@ -20,9 +20,6 @@ import numpy as np
 from universal_controller.core.data_types import (
     Trajectory as UcTrajectory, Header, Point3D, TrajectoryConfig
 )
-from universal_controller.core.data_types import (
-    Trajectory as UcTrajectory, Header, Point3D, TrajectoryConfig
-)
 from universal_controller.core.enums import TrajectoryMode
 from .base import IMsgConverter
 
@@ -176,7 +173,6 @@ class TrajectoryAdapter(IMsgConverter):
             )
             
         # 2. 批量提取点坐标 (Bottleneck optimization)
-        # 3. 批量提取点坐标 (Bottleneck optimization)
         # 优先使用 points_flat (Zero-Copy approx)
         if hasattr(ros_msg, 'points_flat') and len(ros_msg.points_flat) > 0:
             flat_pts = ros_msg.points_flat
@@ -223,7 +219,7 @@ class TrajectoryAdapter(IMsgConverter):
                     ),
                     points=np.zeros((0, 3)),
                     velocities=None,
-                    dt_sec=self._validate_dt_sec(ros_msg.dt_sec),
+                    dt_sec=dt_sec,  # 复用已验证的值
                     confidence=0.0,
                     mode=TrajectoryMode.MODE_STOP,
                     soft_enabled=False
@@ -281,7 +277,7 @@ class TrajectoryAdapter(IMsgConverter):
         if len(points_arr_filtered) == 0:
              return UcTrajectory(
                 header=Header(stamp=self._ros_time_to_sec(ros_msg.header.stamp), frame_id=frame_id),
-                points=np.zeros((0, 3)), velocities=None, dt_sec=self._validate_dt_sec(ros_msg.dt_sec),
+                points=np.zeros((0, 3)), velocities=None, dt_sec=dt_sec,  # 复用已验证的值
                 confidence=0.0, mode=TrajectoryMode.MODE_STOP, soft_enabled=False
             )
 
@@ -305,7 +301,7 @@ class TrajectoryAdapter(IMsgConverter):
             ),
             points=final_points,
             velocities=velocities,
-            dt_sec=self._validate_dt_sec(ros_msg.dt_sec),
+            dt_sec=dt_sec,  # 复用已验证的值
             confidence=confidence,
             mode=mode,
             soft_enabled=soft_enabled

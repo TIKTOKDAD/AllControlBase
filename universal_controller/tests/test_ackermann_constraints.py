@@ -25,7 +25,12 @@ class TestAckermannConstraints(unittest.TestCase):
         self.consistency = ConsistencyResult(0.8, 1, 1, 1, True, True)
 
     def test_pure_pursuit_ackermann_reversing(self):
-        """Test that Pure Pursuit rejects in-place rotation for Ackermann vehicles when target is behind"""
+        """Test that Pure Pursuit uses reversing strategy for Ackermann vehicles when target is behind
+        
+        Ackermann vehicles cannot rotate in place, so when the target is behind,
+        the controller should use a reversing (backward driving) strategy instead
+        of attempting in-place rotation.
+        """
         pp = PurePursuitController(self.config, self.ackermann_config)
         
         # State: Stopped at origin, facing East (0)
@@ -42,13 +47,11 @@ class TestAckermannConstraints(unittest.TestCase):
         cmd = pp.compute(state, trajectory, self.consistency)
         
         # Expectation: 
-        # Since can_rotate_in_place is False, it should NOT output a pure rotation command
-        # It should return a stop command with success=False
-        self.assertEqual(cmd.vx, 0.0, "Velocity should be zero")
-        self.assertEqual(cmd.omega, 0.0, "Omega should be zero (no in-place rotation)")
-        self.assertFalse(cmd.success, "Command should be marked as failed")
-        self.assertIn('cannot_rotate_in_place', cmd.health_metrics.get('error_type', ''), 
-                      "Error type should indicate constraint violation")
+        # Since can_rotate_in_place is False, it should use reversing strategy
+        # - vx should be negative (reversing)
+        # - Command should be successful (reversing is a valid strategy)
+        self.assertLess(cmd.vx, 0.0, "Velocity should be negative (reversing)")
+        self.assertTrue(cmd.success, "Command should be successful (reversing strategy)")
         
         pp.shutdown()
 

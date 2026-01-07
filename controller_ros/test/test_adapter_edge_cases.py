@@ -202,8 +202,9 @@ class TestTrajectoryAdapterEdgeCases:
         assert uc_traj.soft_enabled
     
     def test_empty_frame_id(self):
-        """测试空 frame_id 会抛出异常 (安全性改进)"""
+        """测试空 frame_id 返回安全的 STOP 轨迹 (鲁棒性改进)"""
         from controller_ros.adapters.trajectory_adapter import TrajectoryAdapter
+        from universal_controller.core.enums import TrajectoryMode
         
         adapter = TrajectoryAdapter(DEFAULT_CONFIG)
         
@@ -211,9 +212,13 @@ class TestTrajectoryAdapterEdgeCases:
         ros_msg.header.frame_id = ""
         ros_msg.points = [MockPoint(0, 0, 0)]
         
-        # 空 frame_id 应该抛出 ValueError (安全性改进: 拒绝隐式坐标系)
-        with pytest.raises(ValueError, match="valid frame_id"):
-            adapter.to_uc(ros_msg)
+        # 空 frame_id 应该返回安全的 STOP 轨迹，而不是崩溃
+        uc_traj = adapter.to_uc(ros_msg)
+        
+        assert uc_traj.mode == TrajectoryMode.MODE_STOP
+        assert uc_traj.header.frame_id == 'base_link'  # Fallback to base_link
+        assert len(uc_traj.points) == 0
+        assert uc_traj.confidence == 0.0
     
     def test_invalid_dt_sec(self):
         """测试无效 dt_sec"""

@@ -89,10 +89,10 @@ class TestMPCOptimization(unittest.TestCase):
     @patch('universal_controller.tracker.mpc_controller.AcadosModel')
     @patch('universal_controller.tracker.mpc_controller.ca')
     def test_predicted_trajectory_output(self, mock_ca, mock_model, mock_ocp, mock_solver_cls):
-        """Test that predicted trajectory is populated in output extras when DEBUG logging is enabled"""
+        """Test that predicted trajectory is populated in output extras when visualize_prediction is enabled"""
         import logging
         
-        # Enable DEBUG logging for the mpc_controller module to trigger predicted_trajectory extraction
+        # Enable DEBUG logging for the mpc_controller module
         mpc_logger = logging.getLogger('universal_controller.tracker.mpc_controller')
         original_level = mpc_logger.level
         mpc_logger.setLevel(logging.DEBUG)
@@ -111,7 +111,12 @@ class TestMPCOptimization(unittest.TestCase):
                 return None
             mock_solver.get.side_effect = get_side_effect
             
-            mpc = MPCController(self.config, self.platform_config)
+            # Enable visualize_prediction to trigger predicted_trajectory extraction
+            config_with_viz = self.config.copy()
+            config_with_viz['mpc'] = config_with_viz.get('mpc', {}).copy()
+            config_with_viz['mpc']['visualize_prediction'] = True
+            
+            mpc = MPCController(config_with_viz, self.platform_config)
             mpc.set_horizon(20)
             
             state = np.array([0]*8)

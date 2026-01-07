@@ -28,6 +28,7 @@ from .ros_compat import (
     TF2Compat
 )
 from .tf2_injection_manager import TF2InjectionManager
+from .error_handler import ErrorHandler
 from .msg_availability import (
     CUSTOM_MSGS_AVAILABLE,
     get_msg_import_error,
@@ -73,6 +74,8 @@ __all__ = [
     'TF2Compat',
     # TF2 注入管理
     'TF2InjectionManager',
+    # 错误处理
+    'ErrorHandler',
     # 消息可用性
     'CUSTOM_MSGS_AVAILABLE',
     'get_msg_import_error',

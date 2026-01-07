@@ -217,7 +217,6 @@ class DiagnosticsPublisher:
                           emergency_stop: bool = False,
                           tracking_quality: Optional[Dict[str, Any]] = None) -> DiagnosticsV2:
         """构建 DiagnosticsV2 消息"""
-        """构建 DiagnosticsV2 消息"""
         d = DiagnosticsV2()
         
         # Header

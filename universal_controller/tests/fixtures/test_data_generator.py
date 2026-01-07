@@ -356,11 +356,14 @@ def create_local_trajectory_with_transform(
     cos_theta = math.cos(robot_theta)
     sin_theta = math.sin(robot_theta)
     
+    # local_traj.points 现在是 numpy array [N, 3]
+    points_mat = local_traj.points
     odom_points = []
-    for p in local_traj.points:
-        ox = p.x * cos_theta - p.y * sin_theta + robot_x
-        oy = p.x * sin_theta + p.y * cos_theta + robot_y
-        odom_points.append(Point3D(ox, oy, p.z))
+    for i in range(len(points_mat)):
+        px, py, pz = points_mat[i, 0], points_mat[i, 1], points_mat[i, 2]
+        ox = px * cos_theta - py * sin_theta + robot_x
+        oy = px * sin_theta + py * cos_theta + robot_y
+        odom_points.append(Point3D(ox, oy, pz))
     
     odom_velocities = None
     if local_traj.velocities is not None:
