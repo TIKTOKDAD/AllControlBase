@@ -79,3 +79,11 @@ string cmd_frame_id
 
 # 过渡进度 [0, 1]
 float32 transition_progress
+
+# 错误信息 (用于调试)
+string error_message
+uint32 consecutive_errors
+
+# 安全状态
+bool safety_check_passed
+bool emergency_stop

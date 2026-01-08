@@ -95,38 +95,59 @@ elif ROS_VERSION == 1:
 # 时间工具 (统一接口)
 # ============================================================================
 
+# SimTime 未初始化警告标志（避免重复警告）
+_simtime_warned: bool = False
+
+
 def get_time_sec(node=None) -> float:
     """
     获取当前 ROS 时间（秒）- 统一接口
     
-    支持仿真时间模式。当时钟返回 0 时（仿真时间未初始化），回退到系统时间。
+    支持仿真时间模式。当时钟返回 0 时（仿真时间未初始化），返回 0.0。
     
     Args:
         node: ROS2 节点实例 (ROS2 必需，ROS1 可选)
     
     Returns:
-        当前时间（秒）
+        当前时间（秒），仿真时间未初始化时返回 0.0
     
     Note:
         - ROS1: 不需要 node 参数，直接使用 rospy.Time.now()
         - ROS2: 需要 node 参数来获取节点时钟。如果 node 为 None，回退到系统时间。
+        - **重要变更**: SimTime 为 0 时返回 0.0 而非 wall time，避免时间源切换导致
+          数据年龄计算异常。上层代码应通过检查 waiting_for_data 或使用 max(0, age)
+          来处理此情况。
     """
+    global _simtime_warned
+    
     if ROS_VERSION == 1:
         try:
             import rospy
             ros_time = rospy.Time.now().to_sec()
             # 仿真时间模式下可能为 0
-            return ros_time if ros_time > 0 else time.time()
+            if ros_time <= 0:
+                if not _simtime_warned:
+                    logger.debug("SimTime not initialized (returning 0.0). Control loop should wait for data.")
+                    _simtime_warned = True
+                return 0.0
+            _simtime_warned = False  # 时间有效后重置警告标志
+            return ros_time
         except Exception:
-            return time.time()
+            return time.time()  # rospy 未初始化时使用 wall time
     elif ROS_VERSION == 2:
         if node is not None:
             try:
                 clock_time = node.get_clock().now().nanoseconds * 1e-9
                 # 仿真时间模式下可能为 0
-                return clock_time if clock_time > 0 else time.time()
+                if clock_time <= 0:
+                    if not _simtime_warned:
+                        logger.debug("SimTime not initialized (returning 0.0). Control loop should wait for data.")
+                        _simtime_warned = True
+                    return 0.0
+                _simtime_warned = False  # 时间有效后重置警告标志
+                return clock_time
             except Exception:
-                return time.time()
+                return time.time()  # 时钟异常时使用 wall time
         else:
             # ROS2 需要节点实例来获取时钟，回退到系统时间
             return time.time()
@@ -174,9 +195,11 @@ def sec_to_ros_time(sec: float):
         import rospy
         return rospy.Time.from_sec(sec)
     elif ROS_VERSION == 2:
+        import math
         from builtin_interfaces.msg import Time
         t = Time()
-        t.sec = int(sec)
+        # 使用 floor 确保 nanosec 始终为正 (例如 -1.5s -> sec=-2, nanosec=500000000)
+        t.sec = math.floor(sec)
         t.nanosec = int((sec - t.sec) * 1e9)
         return t
     return sec

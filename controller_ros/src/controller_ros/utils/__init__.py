@@ -19,6 +19,7 @@ from .diagnostics_publisher import (
     DiagnosticsThrottler,
     safe_float,
     safe_float_list,
+    INF_SUBSTITUTE,
 )
 from .ros_compat import (
     ROS_VERSION, ROS_AVAILABLE, TF2_AVAILABLE,
@@ -59,6 +60,7 @@ __all__ = [
     'DiagnosticsThrottler',
     'safe_float',
     'safe_float_list',
+    'INF_SUBSTITUTE',
     # ROS 兼容层
     'ROS_VERSION',
     'ROS_AVAILABLE', 

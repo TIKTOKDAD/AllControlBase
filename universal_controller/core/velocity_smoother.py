@@ -6,7 +6,25 @@
 from typing import Optional
 import numpy as np
 
+from .constants import EPSILON_SMALL
+
 from .data_types import ControlOutput
+
+
+def smooth_scalar_to_zero(value: float, max_change: float) -> float:
+    """
+    平滑标量值到零
+    
+    Args:
+        value: 当前值
+        max_change: 最大允许变化量 (必须 > 0)
+    
+    Returns:
+        朝零方向平滑后的值
+    """
+    if abs(value) <= max_change:
+        return 0.0
+    return value - max_change if value > 0 else value + max_change
 
 
 class VelocitySmoother:
@@ -141,7 +159,7 @@ class VelocitySmoother:
         if v_horizontal <= self.max_dv:
             # 可以在一步内停止
             new_vx, new_vy = 0.0, 0.0
-        elif v_horizontal > 1e-9:
+        elif v_horizontal > EPSILON_SMALL:
             # 按比例缩减，保持速度方向
             scale = (v_horizontal - self.max_dv) / v_horizontal
             new_vx = last_cmd.vx * scale
@@ -150,11 +168,6 @@ class VelocitySmoother:
             new_vx, new_vy = 0.0, 0.0
         
         # 垂直速度和角速度独立处理
-        def smooth_scalar_to_zero(value: float, max_change: float) -> float:
-            if abs(value) <= max_change:
-                return 0.0
-            return value - max_change if value > 0 else value + max_change
-        
         return ControlOutput(
             vx=new_vx,
             vy=new_vy,
@@ -163,6 +176,8 @@ class VelocitySmoother:
             frame_id=frame_id,
             success=True
         )
+
+
 
 
 def clip_velocity(vx: float, vy: float, last_vx: float, last_vy: float,

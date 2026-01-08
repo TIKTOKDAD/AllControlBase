@@ -15,6 +15,7 @@ from controller_ros.utils.diagnostics_publisher import (
     safe_float_list,
     DiagnosticsThrottler,
     fill_diagnostics_msg,
+    INF_SUBSTITUTE,
 )
 
 
@@ -52,9 +53,9 @@ class TestSafeFloat:
         assert safe_float(1.5, preserve_nan=True) == 1.5
         assert safe_float(0.0, preserve_nan=True) == 0.0
         
-        # preserve_nan=True 时，inf 仍然返回 default
-        assert safe_float(float('inf'), preserve_nan=True) == 0.0
-        assert safe_float(float('-inf'), preserve_nan=True) == 0.0
+        # preserve_nan=True 时，inf 返回 INF_SUBSTITUTE (保留符号)
+        assert safe_float(float('inf'), preserve_nan=True) == INF_SUBSTITUTE
+        assert safe_float(float('-inf'), preserve_nan=True) == -INF_SUBSTITUTE
         
         # preserve_nan=True 时，None 仍然返回 default
         assert safe_float(None, preserve_nan=True) == 0.0
@@ -64,10 +65,23 @@ class TestSafeFloat:
         assert math.isnan(result)
     
     def test_inf_value(self):
-        """测试 inf 值"""
-        assert safe_float(float('inf')) == 0.0
-        assert safe_float(float('-inf')) == 0.0
-        assert safe_float(float('inf'), default=999.0) == 999.0
+        """测试 inf 值 - 新行为：返回 INF_SUBSTITUTE 而非 default"""
+        # 正无穷 -> 正大值
+        assert safe_float(float('inf')) == INF_SUBSTITUTE
+        # 负无穷 -> 负大值
+        assert safe_float(float('-inf')) == -INF_SUBSTITUTE
+        # default 参数不影响 inf 处理（只影响 None）
+        assert safe_float(float('inf'), default=999.0) == INF_SUBSTITUTE
+    
+    def test_inf_substitute_custom(self):
+        """测试自定义 inf_substitute 参数"""
+        # 自定义替代值
+        assert safe_float(float('inf'), inf_substitute=1e6) == 1e6
+        assert safe_float(float('-inf'), inf_substitute=1e6) == -1e6
+        
+        # 设为 0.0 可恢复旧行为
+        assert safe_float(float('inf'), inf_substitute=0.0) == 0.0
+        assert safe_float(float('-inf'), inf_substitute=0.0) == 0.0
     
     def test_invalid_type(self):
         """测试无效类型"""

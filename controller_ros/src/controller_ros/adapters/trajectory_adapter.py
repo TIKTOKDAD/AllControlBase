@@ -80,10 +80,22 @@ class TrajectoryAdapter(IMsgConverter):
         如果 dt 非法 (<=0 或 超出范围)，抛出 ValueError。
         适配器不应擅自修改导致物理行为改变的关键参数。
         """
-        from universal_controller.core.constants import TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC
+        # Elegant Decoupling: Try to get limits from config, allow injection.
+        # Defaults match universal_controller constants for consistency.
+        min_dt = getattr(self._config, 'min_dt_sec', 1e-4) # Default to 0.1ms
+        max_dt = getattr(self._config, 'max_dt_sec', 1.0)  # Default to 1.0s
+        
+        # Optional: Try to import defaults if available, for consistency (Soft Dependency)
+        if not hasattr(self._config, 'min_dt_sec'):
+            try:
+                from universal_controller.core.constants import TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC
+                min_dt = TRAJECTORY_MIN_DT_SEC
+                max_dt = TRAJECTORY_MAX_DT_SEC
+            except ImportError:
+                pass
         
         # 快速检查范围
-        if TRAJECTORY_MIN_DT_SEC <= dt_sec <= TRAJECTORY_MAX_DT_SEC:
+        if min_dt <= dt_sec <= max_dt:
             return dt_sec
             
         # 错误处理
@@ -92,7 +104,7 @@ class TrajectoryAdapter(IMsgConverter):
         else:
             # 对于超出范围但正值的情况，给出警告并截断，保持系统的连续性
             # 这是为了容忍上游轻微的计算误差
-            clipped = max(TRAJECTORY_MIN_DT_SEC, min(dt_sec, TRAJECTORY_MAX_DT_SEC))
+            clipped = max(min_dt, min(dt_sec, max_dt))
             logger.warning(f"dt_sec={dt_sec} out of range, clipped to {clipped}")
             return clipped
     
@@ -249,6 +261,9 @@ class TrajectoryAdapter(IMsgConverter):
                  raise ValueError("Trajectory points elements must have x, y, z attributes")
 
         # 3. 向量化校验 (Vectorized Validation)
+        # BUG FIX: 不要静默移除无效点，这会导致时间扭曲 (Time Distortion)
+        # 策略: 严格校验。如果发现无效点，视为轨迹数据损坏，为了安全起见拒绝执行。
+        
         from universal_controller.core.constants import TRAJECTORY_MAX_COORD
         
         # 检查 NaN/Inf
@@ -256,34 +271,38 @@ class TrajectoryAdapter(IMsgConverter):
         # 检查范围
         is_in_range = np.all(np.abs(points_arr) <= TRAJECTORY_MAX_COORD, axis=1)
         
-        valid_mask = is_finite & is_in_range
+        is_valid = is_finite & is_in_range
         
-        # 统计无效点
-        n_invalid = num_raw - np.sum(valid_mask)
-        if n_invalid > 0:
-            logger.warning(f"Trajectory: {n_invalid} invalid points (NaN/Inf or OutOfRange) removed")
-            
-        # 4. 同步过滤位置和速度
+        if not np.any(is_valid):
+            logger.error(
+                "Trajectory contains only invalid points (NaN/Inf/OutOfRange). "
+                "Returning safe stop trajectory."
+            )
+            return UcTrajectory(
+                header=Header(stamp=self._ros_time_to_sec(ros_msg.header.stamp), frame_id=frame_id),
+                points=np.zeros((0, 3)), velocities=None, dt_sec=dt_sec,
+                confidence=0.0, mode=TrajectoryMode.MODE_STOP, soft_enabled=False
+            )
         
-        # 4.1 处理速度 (传入原始点数和掩码)
+        if not np.all(is_valid):
+            first_invalid_idx = np.where(~is_valid)[0][0]
+            logger.error(
+                f"Trajectory contains invalid points (NaN/Inf or OutOfRange) at index {first_invalid_idx}. "
+                f"Filtering out invalid points to preserve remaining {int(is_valid.sum())} points."
+            )
+        
+        # 4. 过滤无效点，保留有效部分
+        points_arr_filtered = points_arr[is_valid]
+        
+        # 4.1 处理速度 (同步使用掩码过滤)
         velocities, soft_enabled = self._process_velocities(
             ros_msg.velocities_flat, 
             num_raw, 
-            valid_mask, 
+            is_valid,
             ros_msg.soft_enabled
         )
         
-        # 4.2 处理位置 (应用掩码)
-        points_arr_filtered = points_arr[valid_mask]
-        
-        if len(points_arr_filtered) == 0:
-             return UcTrajectory(
-                header=Header(stamp=self._ros_time_to_sec(ros_msg.header.stamp), frame_id=frame_id),
-                points=np.zeros((0, 3)), velocities=None, dt_sec=dt_sec,  # 复用已验证的值
-                confidence=0.0, mode=TrajectoryMode.MODE_STOP, soft_enabled=False
-            )
-
-        # 5. 直接传递 Numpy 数组 (不再创建 Point3D 对象列表)
+        # 5. 直接传递 Numpy 数组
         final_points = points_arr_filtered
         
         # 6. 处理模式

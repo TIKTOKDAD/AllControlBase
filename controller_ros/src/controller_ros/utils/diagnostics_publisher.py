@@ -13,17 +13,45 @@ import math
 import threading
 
 
-def safe_float(val: Any, default: float = 0.0, preserve_nan: bool = False) -> float:
-    """安全转换为 float，处理 None、nan、inf (High Performance Optimized)"""
+# 无穷大替代值：用于替代 inf，足够大以明确表示异常，同时兼容可视化工具
+# 选择 1e9 的原因：
+# 1. 远大于任何正常控制指标（如 kkt_residual 通常 < 1e-3）
+# 2. 足够小以避免浮点溢出问题
+# 3. 在图表中能清晰显示为异常峰值
+INF_SUBSTITUTE: float = 1e9
+
+
+def safe_float(val: Any, default: float = 0.0, preserve_nan: bool = False,
+               inf_substitute: Optional[float] = None) -> float:
+    """安全转换为 float，处理 None、nan、inf (High Performance Optimized)
+    
+    Args:
+        val: 待转换的值
+        default: None 时的默认值
+        preserve_nan: 是否保留 NaN（用于 prediction_error 等特殊字段）
+        inf_substitute: inf 的替代值，None 时使用模块级 INF_SUBSTITUTE (1e9)
+                       设为 0.0 可恢复旧行为
+    
+    Returns:
+        转换后的 float 值
+        
+    Note:
+        inf 被替换为大值而非 0.0，避免掩盖 MPC 发散等严重问题。
+        下游监控系统应将 > 1e8 的值视为异常。
+    """
     if val is None:
         return default
+    
+    # 确定 inf 替代值
+    _inf_sub = inf_substitute if inf_substitute is not None else INF_SUBSTITUTE
     
     # Fast path for common types
     if isinstance(val, (float, int)):
         if not preserve_nan and math.isnan(val):
             return default
         if math.isinf(val):
-            return default
+            # 保留符号：正无穷 -> 正大值，负无穷 -> 负大值
+            return _inf_sub if val > 0 else -_inf_sub
         return float(val)
         
     # Fallback for other types (str, etc)
@@ -32,7 +60,7 @@ def safe_float(val: Any, default: float = 0.0, preserve_nan: bool = False) -> fl
         if math.isnan(f):
             return f if preserve_nan else default
         if math.isinf(f):
-            return default
+            return _inf_sub if f > 0 else -_inf_sub
         return f
     except (TypeError, ValueError):
         return default
@@ -98,7 +126,8 @@ class DiagnosticsThrottler:
             self._first_call = True
 
 
-def fill_diagnostics_msg(msg: Any, diag: Any, get_time_func: Optional[Callable] = None) -> None:
+def fill_diagnostics_msg(msg: Any, diag: Any, get_time_func: Optional[Callable] = None, 
+                         frame_id: str = 'controller') -> None:
     """
     填充 DiagnosticsV2 消息 (高性能显式赋值版)
     """
@@ -109,7 +138,7 @@ def fill_diagnostics_msg(msg: Any, diag: Any, get_time_func: Optional[Callable] 
         except AttributeError:
             pass
     try:
-        msg.header.frame_id = 'controller'
+        msg.header.frame_id = frame_id
     except AttributeError:
         pass
 

@@ -115,10 +115,12 @@ def test_mpc_health_metrics():
     
     metrics = mpc.get_health_metrics()
     
-    assert 'type' in metrics
-    assert metrics['type'] == 'mpc'
-    assert 'horizon' in metrics
-    assert 'last_solve_time_ms' in metrics
+    # 检查实际返回的健康指标字段
+    assert 'healthy' in metrics, "Expected 'healthy' in health metrics"
+    assert 'initialized' in metrics, "Expected 'initialized' in health metrics"
+    assert 'horizon' in metrics, "Expected 'horizon' in health metrics"
+    assert 'solve_time_ms' in metrics, "Expected 'solve_time_ms' in health metrics"
+    assert 'acados_available' in metrics, "Expected 'acados_available' in health metrics"
     
     mpc.shutdown()
     print("[PASS] test_mpc_health_metrics passed")
@@ -185,12 +187,13 @@ def test_pure_pursuit_lookahead():
     platform_config = PLATFORM_CONFIG['differential']
     pp = PurePursuitController(config, platform_config)
     
+    # 使用 lookahead_searcher 的 compute_lookahead_dist 方法
     # 低速时前瞻距离应该较小
-    lookahead_low = pp._compute_lookahead(0.5)
+    lookahead_low = pp.lookahead_searcher.compute_lookahead_dist(0.5)
     assert lookahead_low >= 0.5  # min_lookahead
     
     # 高速时前瞻距离应该较大
-    lookahead_high = pp._compute_lookahead(3.0)
+    lookahead_high = pp.lookahead_searcher.compute_lookahead_dist(3.0)
     assert lookahead_high <= 3.0  # max_lookahead
     
     pp.shutdown()

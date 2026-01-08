@@ -71,6 +71,9 @@ TRAJECTORY_CONFIG = {
                                       # 当速度点数少于位置点数时，如果最后速度大于此阈值，
                                       # 使用线性衰减填充；否则使用零填充
     
+    # ??????
+    'validate_enabled': True,         # ??????????
+
     # 置信度参数
     # 注意: min_confidence 和 max_confidence 是数学定义 [0, 1]，
     # 使用 core/constants.py 中的 CONFIDENCE_MIN, CONFIDENCE_MAX

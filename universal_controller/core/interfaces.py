@@ -150,11 +150,23 @@ class IStateEstimator(ILifecycleComponent):
         pass
     
     @abstractmethod
-    def update_odom(self, odom: Odometry) -> None:
+    def update_odom(self, odom: Odometry, current_time: float) -> None:
+        """更新里程计数据
+        
+        Args:
+            odom: 里程计数据
+            current_time: 当前时间戳（秒），应使用与 predict() 一致的时间源
+        """
         pass
     
     @abstractmethod
-    def update_imu(self, imu: Imu) -> None:
+    def update_imu(self, imu: Imu, current_time: float) -> None:
+        """更新 IMU 数据
+        
+        Args:
+            imu: IMU 数据
+            current_time: 当前时间戳（秒），应使用与 predict() 一致的时间源
+        """
         pass
     
     @abstractmethod
@@ -196,6 +208,21 @@ class ITrajectoryTracker(ILifecycleComponent):
         """
         pass
     
+    @property
+    def horizon(self) -> int:
+        """
+        获取当前预测时域长度
+        
+        Returns:
+            int: 当前预测时域长度
+        """
+        return getattr(self, '_horizon', 0)
+
+    @horizon.setter
+    def horizon(self, value: int):
+        self._horizon = value
+
+    # @abstractmethod removed because it has a default implementation
     def get_predicted_next_state(self) -> Optional[np.ndarray]:
         """
         获取预测的下一步状态
@@ -227,7 +254,7 @@ class ISafetyMonitor(ILifecycleComponent):
     
     @abstractmethod
     def check(self, state: np.ndarray, cmd: ControlOutput, 
-              diagnostics: 'DiagnosticsInput') -> SafetyDecision:
+              diagnostics: 'DiagnosticsInput', dt: float) -> SafetyDecision:
         pass
 
 

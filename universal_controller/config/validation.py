@@ -595,3 +595,46 @@ def validate_config_simple(
     """
     errors = validate_full_config(config, validation_rules, raise_on_error)
     return [(key, msg) for key, msg, _ in errors]
+
+
+class ConfigValidator:
+    """配置验证器包装类，提供静态访问接口"""
+    
+    @staticmethod
+    def validate(config: Dict[str, Any]) -> None:
+        """
+        执行配置验证
+        
+        Args:
+            config: 配置字典
+            
+        Raises:
+            ConfigValidationError: 当验证失败时
+        """
+        # 注意：详细的 Schema 验证通常需要规则定义。
+        # 这里我们至少执行逻辑一致性检查，作为基线验证。
+        # 如果需要更严格的 Schema 验证，应在此处传入具体的 validation_rules。
+        validation_rules = None
+        try:
+            from .default_config import CONFIG_VALIDATION_RULES
+            validation_rules = CONFIG_VALIDATION_RULES
+        except Exception:
+            validation_rules = None
+        
+        if validation_rules:
+            errors = validate_full_config(config, validation_rules, raise_on_error=False)
+        else:
+            errors = validate_logical_consistency(config)
+        
+        # 过滤出 FATAL 和 ERROR 级别的错误
+        critical_errors = [
+            f"{path}: {msg}" 
+            for path, msg, severity in errors 
+            if severity in (ValidationSeverity.FATAL, ValidationSeverity.ERROR)
+        ]
+        
+        if critical_errors:
+            raise ConfigValidationError(
+                f"Configuration validation failed with {len(critical_errors)} errors:\n" + 
+                "\n".join(f"- {e}" for e in critical_errors)
+            )

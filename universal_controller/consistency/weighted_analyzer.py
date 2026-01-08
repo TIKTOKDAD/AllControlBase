@@ -90,8 +90,11 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         # 返回值: (value, is_sufficient) - is_sufficient 表示数据是否充足
         points_mat = trajectory.get_points_matrix()
         kappa_hard, kappa_hard_sufficient = self._compute_curvature_from_points(points_mat)
+        
+        # 使用 Trajectory 自身的 low_speed_thresh，确保计算逻辑一致
+        traj_low_speed = getattr(trajectory, 'low_speed_thresh', self.low_speed_thresh)
         kappa_soft, kappa_soft_sufficient = self._compute_curvature_from_velocities(
-            soft_velocities, trajectory.dt_sec)
+            soft_velocities, trajectory.dt_sec, low_speed_thresh=traj_low_speed)
         
         if kappa_hard_sufficient and kappa_soft_sufficient:
             kappa_consistency = 1.0 - min(abs(kappa_hard - kappa_soft) / self.kappa_thresh, 1.0)
@@ -262,7 +265,8 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         
         return curvature, True
     
-    def _compute_curvature_from_velocities(self, velocities: np.ndarray, dt: float) -> Tuple[float, bool]:
+    def _compute_curvature_from_velocities(self, velocities: np.ndarray, dt: float, 
+                                          low_speed_thresh: float = None) -> Tuple[float, bool]:
         """
         从速度向量计算曲率
         
@@ -289,7 +293,8 @@ class WeightedConsistencyAnalyzer(IConsistencyChecker):
         v_norm = np.linalg.norm(v)
         
         # 低速时曲率计算不可靠
-        if v_norm < self.low_speed_thresh:
+        thresh = low_speed_thresh if low_speed_thresh is not None else self.low_speed_thresh
+        if v_norm < thresh:
             return 0.0, False
         
         cross = v[0] * a[1] - v[1] * a[0]

@@ -78,7 +78,8 @@ class TrajectoryConfig:
             max_points=traj_config.get('max_points', 100),
             max_point_distance=traj_config.get('max_point_distance', 10.0),
             velocity_decay_threshold=traj_config.get('velocity_decay_threshold', 0.1),
-            legacy_points_enabled=traj_config.get('legacy_points_enabled', False)
+            legacy_points_enabled=traj_config.get('legacy_points_enabled', False),
+            validate_enabled=traj_config.get('validate_enabled', True)
         )
 
 
@@ -156,11 +157,13 @@ class Trajectory:
 
     def __post_init__(self):
         # 初始化 version 和 cache_key
-        # 修复 Bug: 不要重置 version，如果 __setattr__ 已经设置过了
-        if not hasattr(self, '_version'):
-            object.__setattr__(self, '_version', 0)
-        if not hasattr(self, '_cache_key'):
-            object.__setattr__(self, '_cache_key', None)
+        # 直接使用 object.__setattr__ 避开 properties 机制
+        # @dataclass slots=True 机制下，fields 已经有默认值
+        # 这里显式初始化是为了确保与 __setattr__ 逻辑一致性以及防御性编程
+        if getattr(self, '_version', None) is None:
+             object.__setattr__(self, '_version', 0)
+        if getattr(self, '_cache_key', None) is None:
+             object.__setattr__(self, '_cache_key', None)
         
         # 优化: 移除已被 __setattr__ 处理过的冗余逻辑
         # 仅处理尚未被处理的情况 (例如直接调用 __init__ 而非通过属性赋值时，尽管 Dataclass 会触发 setattr)
@@ -184,27 +187,27 @@ class Trajectory:
         
         # 验证 confidence
         if self.confidence is None or not np.isfinite(self.confidence):
-            self.confidence = 0.9
+            object.__setattr__(self, 'confidence', 0.9)
         else:
-            self.confidence = np.clip(self.confidence, CONFIDENCE_MIN, CONFIDENCE_MAX)
+            object.__setattr__(self, 'confidence', np.clip(self.confidence, CONFIDENCE_MIN, CONFIDENCE_MAX))
         
         # 验证 dt_sec
         if self.dt_sec is None or not np.isfinite(self.dt_sec) or self.dt_sec <= 0:
-            self.dt_sec = 0.1
+            object.__setattr__(self, 'dt_sec', 0.1)
             
         # 验证 Velocities 维度
         num_points = len(self.points)
         if self.velocities is not None and num_points > 0:
             # 确保 velocities 也是 numpy
             if not isinstance(self.velocities, np.ndarray):
-                self.velocities = np.array(self.velocities, dtype=np.float64)
+                object.__setattr__(self, 'velocities', np.array(self.velocities, dtype=np.float64))
                  
             if len(self.velocities) != num_points:
                 if len(self.velocities) > num_points:
-                    self.velocities = self.velocities[:num_points]
+                    object.__setattr__(self, 'velocities', self.velocities[:num_points])
                 else:
                     pad_len = num_points - len(self.velocities)
-                    self.velocities = np.pad(self.velocities, ((0, pad_len), (0, 0)), 'constant')
+                    object.__setattr__(self, 'velocities', np.pad(self.velocities, ((0, pad_len), (0, 0)), 'constant'))
     
     def __setattr__(self, name: str, value: Any) -> None:
         """
@@ -293,13 +296,14 @@ class Trajectory:
                  logger.error(f"Invalid Trajectory dt_sec={self.dt_sec}. Must be positive.")
                  is_valid = False
             else:
-                 # 仅当值在合理范围内偏离时才进行 Clip (例如 0.0009 -> 0.001)
-                 # 避免极小值导致的除零风险
-                 logger.debug(
+                 # dt_sec 超出合理范围，视为不可靠数据
+                 # 不再静默修改 dt_sec，而是返回 False 以强制上游处理或降级
+                 logger.error(
                     f"Trajectory dt_sec={self.dt_sec} out of range "
-                    f"[{TRAJECTORY_MIN_DT_SEC}, {TRAJECTORY_MAX_DT_SEC}], clipping"
+                    f"[{TRAJECTORY_MIN_DT_SEC}, {TRAJECTORY_MAX_DT_SEC}]. "
+                    f"Validation failed (strict mode)."
                  )
-                 self.dt_sec = np.clip(self.dt_sec, TRAJECTORY_MIN_DT_SEC, TRAJECTORY_MAX_DT_SEC)
+                 is_valid = False
         
         # 向量化验证相邻点距离
         # 使用 get_points_matrix() 获取统一的 numpy 视图，避免处理类型差异
@@ -447,14 +451,15 @@ class Trajectory:
         if self._hard_velocities_cache is not None and self._cache_key == current_key:
             return self._hard_velocities_cache
         
-        # 获取点矩阵 (会自动更新 _points_matrix_cache 和 _cache_key)
+        # 获取点矩阵 (会自动更新 _points_matrix_cache)
+        # Note: cache_key 在最后统一更新，避免冗余赋值
         points_mat = self.get_points_matrix()
-        self._cache_key = current_key # 确保 key 同步
         n_points = len(points_mat)
         
         if n_points < 2:
             result = np.zeros((max(1, n_points), 4))
             self._hard_velocities_cache = result
+            self._cache_key = current_key  # 确保缓存键一致性
             return result
         
         # 一阶差分: V[i] = (P[i+1] - P[i]) / dt
@@ -759,12 +764,16 @@ class DiagnosticsV2:
     # 过渡进度
     transition_progress: float = 0.0
     
+    # 错误信息
+    error_message: str = ''
+    consecutive_errors: int = 0
+    
     # 安全状态
     safety_check_passed: bool = True
     emergency_stop: bool = False
     
     # 内部缓存字典，避免重复创建
-    _cached_ros_msg: Dict[str, Any] = field(default=None, repr=False, init=False)
+    _cached_ros_msg: Optional[Dict[str, Any]] = field(default=None, repr=False, init=False)
     _dirty: bool = field(default=True, repr=False, init=False)
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -775,7 +784,7 @@ class DiagnosticsV2:
         object.__setattr__(self, name, value)
 
     def to_ros_msg(self) -> Dict[str, Any]:
-        """转换为 ROS 消息格式的字典 (带缓存)"""
+        """Return a nested dict (dashboard-friendly). Use to_flat_dict() for ROS fields."""
         # 如果缓存有效且未修改，直接返回
         if not getattr(self, '_dirty', True) and getattr(self, '_cached_ros_msg', None) is not None:
             return self._cached_ros_msg
@@ -843,6 +852,8 @@ class DiagnosticsV2:
                 'frame_id': self.cmd_frame_id
             },
             'transition_progress': self.transition_progress,
+            'error_message': self.error_message,
+            'consecutive_errors': self.consecutive_errors,
             'safety_check_passed': self.safety_check_passed,
             'emergency_stop': self.emergency_stop
         }
@@ -850,6 +861,41 @@ class DiagnosticsV2:
         object.__setattr__(self, '_cached_ros_msg', msg)
         object.__setattr__(self, '_dirty', False)
         return msg
+
+    def to_flat_dict(self) -> Dict[str, Any]:
+        """Convert to a flat dict matching DiagnosticsV2.msg fields.
+        
+        使用递归扁平化算法，自动处理嵌套字典。
+        当 to_ros_msg() 结构变更时，此方法会自动适配。
+        
+        扁平化规则:
+        - 顶层标量字段保持原样 (如 'state' -> 'state')
+        - 嵌套字典字段使用下划线连接 (如 'mpc_health.kkt_residual' -> 'mpc_health_kkt_residual')
+        - 'header' 字段保持为嵌套结构（ROS 消息兼容）
+        """
+        msg = self.to_ros_msg()
+        result = {}
+        
+        # 不扁平化的顶层字段（保持原结构）
+        preserve_keys = {'header'}
+        
+        def flatten(obj: Dict[str, Any], prefix: str = '') -> None:
+            for key, value in obj.items():
+                # 构建新键名
+                new_key = f"{prefix}_{key}" if prefix else key
+                
+                if key in preserve_keys and not prefix:
+                    # 保留原结构的特殊字段
+                    result[key] = value
+                elif isinstance(value, dict):
+                    # 递归扁平化嵌套字典
+                    flatten(value, new_key)
+                else:
+                    # 标量值或列表，直接赋值
+                    result[new_key] = value
+        
+        flatten(msg)
+        return result
 
 
 # 模拟 ROS 消息类型

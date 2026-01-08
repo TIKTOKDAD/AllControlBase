@@ -189,9 +189,13 @@ def test_pure_pursuit_rear_target_consistency():
     
     cmd2 = controller.compute(state, trajectory_right, consistency)
     
-    # 由于 omega_rate_limit 和正后方处理，角速度变化应该是平滑的
+    # 检查角速度变化是否在合理范围内
+    # 由于速度平滑器的作用，角速度变化应该是有限的
     omega_change = abs(cmd2.omega - cmd1.omega)
-    max_expected_change = controller.omega_rate_limit * 2  # 允许一些变化
+    
+    # 使用 omega_max 的一定比例作为最大允许变化
+    # 由于有速度平滑器，变化应该被限制
+    max_expected_change = controller.omega_max * 0.5  # 允许一些变化
     
     assert omega_change < max_expected_change, \
         f"Omega changed too much: {cmd1.omega:.2f} -> {cmd2.omega:.2f}"

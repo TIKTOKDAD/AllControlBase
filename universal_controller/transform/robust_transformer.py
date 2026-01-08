@@ -9,6 +9,7 @@ from threading import Lock
 from ..core.interfaces import ICoordinateTransformer
 from ..core.data_types import Trajectory, Point3D, EstimatorOutput
 from ..core.enums import TransformStatus
+from ..core.indices import StateIdx
 from ..core.ros_compat import (
     TF2_AVAILABLE, Duration, Time, 
     transform_pose, get_transform_matrix, apply_transform_to_trajectory,
@@ -46,11 +47,33 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self.fallback_critical_limit = transform_config.get('fallback_critical_limit_ms', 1000) / 1000.0
         self.warn_unexpected_frame = transform_config.get('warn_unexpected_frame', True)
         
+        self.expected_source_frames = transform_config.get('expected_source_frames') or []
+        if not isinstance(self.expected_source_frames, list):
+            self.expected_source_frames = [self.expected_source_frames]
+        if self.source_frame and self.source_frame not in self.expected_source_frames:
+            self.expected_source_frames = [self.source_frame] + self.expected_source_frames
+        if '' not in self.expected_source_frames:
+            self.expected_source_frames.append('')
+        
+        self._drift_estimation_enabled = transform_config.get('drift_estimation_enabled', False)
+        self._recovery_correction_enabled = transform_config.get('recovery_correction_enabled', True)
+        self._max_accumulated_drift = transform_config.get('max_accumulated_drift', 0.0)
+        self._drift_rate = transform_config.get('drift_rate', 0.0)
+        self._drift_velocity_factor = transform_config.get('drift_velocity_factor', 0.0)
+        self._max_drift_dt = transform_config.get('max_drift_dt', 0.5)
+        self._drift_correction_thresh = transform_config.get('drift_correction_thresh', 0.0)
+        self._accumulated_drift = 0.0
+        self._last_drift_update_time: Optional[float] = None
+        
         # 状态记录
         self._last_status = TransformStatus.TF2_OK
         self.fallback_start_time: Optional[float] = None
         self._tf2_lookup_callback = None
         self._tf2_available = TF2_AVAILABLE
+        self._tf2_injected = False
+        self._last_error_message = ''
+        self._last_source_frame = self.source_frame
+        self._last_target_frame = self.default_target_frame
         
         # 记录已警告过的坐标系，避免日志刷屏
         self._warned_frames = set()
@@ -67,6 +90,9 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         self._tf2_lookup_callback = callback
         if callback:
             self._tf2_available = True
+            self._tf2_injected = callback == self._internal_lookup
+        else:
+            self._tf2_injected = False
 
     def set_tf2_available(self, available: bool):
         """手动设置 TF2 可用性 (用于测试)"""
@@ -93,20 +119,26 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             (变换后的轨迹, 状态码)
         """
         if len(traj.points) == 0:
+            self._last_status = TransformStatus.TF2_OK
+            self._last_error_message = ''
             return traj, TransformStatus.TF2_OK
             
         source_frame = traj.header.frame_id
         if not source_frame:
             source_frame = self.source_frame
+        self._last_source_frame = source_frame
+        self._last_target_frame = target_frame
             
         # 如果坐标系已经一致，直接返回
         if source_frame == target_frame:
+            self._last_status = TransformStatus.TF2_OK
+            self._last_error_message = ''
             return traj, TransformStatus.TF2_OK
             
         # 简单的坐标系验证警告
-        if self.warn_unexpected_frame and source_frame != self.source_frame:
+        if self.warn_unexpected_frame and not self._is_expected_source_frame(source_frame):
             if source_frame not in self._warned_frames:
-                logger.warning(f"Unexpected trajectory frame: {source_frame} (expected {self.source_frame})")
+                logger.warning(f"Unexpected trajectory frame: {source_frame}")
                 self._warned_frames.add(source_frame)
 
         # 尝试使用 TF2 获取变换
@@ -136,12 +168,22 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
                         logger.info(f"TF2 service recovered after {get_monotonic_time() - self.fallback_start_time:.3f}s")
                         self.fallback_start_time = None
                     self._last_status = TransformStatus.TF2_OK
+                    self._last_error_message = ''
+                    if self._drift_estimation_enabled and self._recovery_correction_enabled:
+                        if self._accumulated_drift <= self._drift_correction_thresh:
+                            self._accumulated_drift = 0.0
                     
         except Exception as e:
             logger.debug(f"TF2 lookup failed: {e}")
+            self._last_error_message = str(e)
             tf2_success = False
 
         # 如果 TF2 成功，执行变换
+        if not tf2_success and not self._last_error_message:
+            if not self._tf2_available or not self._tf2_lookup_callback:
+                self._last_error_message = 'tf2_unavailable'
+            else:
+                self._last_error_message = 'tf2_lookup_failed'
         if tf2_success and transform_matrix is not None:
             new_traj = apply_transform_to_trajectory(traj, transform_matrix, target_frame)
             return new_traj, TransformStatus.TF2_OK
@@ -164,11 +206,10 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         """
         # 验证 Frame 是否匹配估计器
         source_frame = traj.header.frame_id or self.source_frame
-        if source_frame != self.source_frame and source_frame != "" and self.source_frame != "":
-             # simple inequality check might be safe enough if we assume normalization
-            if source_frame != self.source_frame:
-                logger.error(f"RobustFallback: Source frame '{source_frame}' mismatch with configured '{self.source_frame}'. Cannot use estimator fallback.")
-                return traj, TransformStatus.FALLBACK_CRITICAL
+        if not self._is_expected_source_frame(source_frame):
+            self._last_error_message = f"unexpected_source_frame:{source_frame}"
+            logger.error(f"RobustFallback: Source frame '{source_frame}' unexpected. Cannot use estimator fallback.")
+            return traj, TransformStatus.FALLBACK_CRITICAL
 
         current_time = get_monotonic_time()
         
@@ -178,6 +219,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             logger.warning(f"TF2 unavailable. Entering fallback mode using estimator state.")
             
         fallback_duration = current_time - self.fallback_start_time
+        self._update_drift_estimate(fallback_state, current_time)
         
         # 确定状态级别
         if fallback_duration > self.fallback_critical_limit:
@@ -257,10 +299,44 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             # 严重错误：既没有 TF2 也没有 Estimator
             if fallback_duration > 1.0: # 稍微节流日志
                 logger.error("TF2 fallback active but no state estimator available. Returning EMPTY trajectory.")
+            self._last_error_message = 'estimator_unavailable'
             
             # 返回空轨迹，安全第一
             safe_traj = Trajectory(header=traj.header, points=[], velocities=None, dt_sec=traj.dt_sec)
             return safe_traj, TransformStatus.FALLBACK_CRITICAL
+
+    def _is_expected_source_frame(self, source_frame: str) -> bool:
+        if not source_frame:
+            return True
+        if not self.expected_source_frames:
+            return source_frame == self.source_frame
+        return source_frame in self.expected_source_frames
+
+    def _update_drift_estimate(self, fallback_state: Optional[EstimatorOutput], current_time: float) -> None:
+        if not self._drift_estimation_enabled:
+            return
+        if self._last_drift_update_time is None:
+            self._last_drift_update_time = current_time
+            return
+        dt = current_time - self._last_drift_update_time
+        if dt <= 0:
+            return
+        if dt > self._max_drift_dt:
+            dt = self._max_drift_dt
+
+        speed = 0.0
+        if fallback_state is not None:
+            try:
+                vx = fallback_state.state[StateIdx.VX]
+                vy = fallback_state.state[StateIdx.VY]
+                speed = float(np.hypot(vx, vy))
+            except Exception:
+                speed = 0.0
+
+        drift_inc = self._drift_rate * dt + self._drift_velocity_factor * speed * dt
+        if drift_inc > 0:
+            self._accumulated_drift = min(self._max_accumulated_drift, self._accumulated_drift + drift_inc)
+        self._last_drift_update_time = current_time
 
     def get_status(self) -> Dict[str, Any]:
         """获取状态信息"""
@@ -272,13 +348,23 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
             'status': self._last_status.name,
             'fallback_active': self.fallback_start_time is not None,
             'fallback_duration_ms': fallback_duration * 1000,
-            'tf2_available': self._tf2_available
+            'tf2_available': self._tf2_available,
+            'tf2_injected': self._tf2_injected,
+            'accumulated_drift': self._accumulated_drift,
+            'source_frame': self._last_source_frame,
+            'target_frame': self._last_target_frame,
+            'error_message': self._last_error_message
         }
 
     def reset(self) -> None:
         """重置状态"""
         self.fallback_start_time = None
         self._last_status = TransformStatus.TF2_OK
+        self._last_error_message = ''
+        self._accumulated_drift = 0.0
+        self._last_drift_update_time = None
+        self._last_source_frame = self.source_frame
+        self._last_target_frame = self.default_target_frame
         self._warned_frames.clear()
         self._stored_transforms = {}
 
@@ -312,6 +398,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         if self._tf2_lookup_callback is None:
             self._tf2_lookup_callback = self._internal_lookup
             self._tf2_available = True
+            self._tf2_injected = True
 
     def _euler_to_quaternion(self, roll: float, pitch: float, yaw: float) -> dict:
         """欧拉角转四元数"""
@@ -330,7 +417,7 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
 
     def _internal_lookup(self, target_frame: str, source_frame: str, 
                          lookup_time: float, timeout: float) -> Optional[dict]:
-        """内部变换查找"""
+        """内部变换查找 (支持全 3D 逆变换)"""
         if not hasattr(self, '_stored_transforms'):
             return None
         
@@ -342,47 +429,65 @@ class RobustCoordinateTransformer(ICoordinateTransformer):
         reverse_key = (source_frame, target_frame)
         if reverse_key in self._stored_transforms:
             t = self._stored_transforms[reverse_key]
-            # 简化的反向变换 (仅适用于 2D，假设 roll=pitch=0)
-            q = t['rotation']
             
-            # 3D 变换检测: 检查是否有显著的 roll/pitch 分量
-            # roll/pitch 会导致 qx, qy 非零
-            # 使用阈值 0.01 (~1.1度) 避免浮点误差误报
-            if abs(q['x']) > 0.01 or abs(q['y']) > 0.01:
-                if 'inverse_3d_warned' not in self._warned_frames:
-                    self._warned_frames.add('inverse_3d_warned')
-                    logger.warning(
-                        f"_internal_lookup: Inverse transform requested for non-2D rotation "
-                        f"(qx={q['x']:.3f}, qy={q['y']:.3f}). "
-                        f"Result may be inaccurate. Use TF2 for 3D transforms."
-                    )
+            # 正向变换 T = [R | t]
+            # 逆向变换 T_inv = [R^T | -R^T * t]
             
-            # 检查显著的 Z 轴平移
-            if abs(t['translation']['z']) > 0.01:
-                if 'inverse_z_warned' not in self._warned_frames:
-                    self._warned_frames.add('inverse_z_warned')
-                    logger.warning(
-                        f"_internal_lookup: Inverse transform with non-zero Z translation "
-                        f"(z={t['translation']['z']:.3f}). Using simplified 2D inverse."
-                    )
+            # 1. 旋转逆: 四元数共轭 (w, -x, -y, -z)
+            q_fgd = t['rotation'] # Forward rotation
+            q_inv = {'x': -q_fgd['x'], 'y': -q_fgd['y'], 'z': -q_fgd['z'], 'w': q_fgd['w']}
             
-            theta = 2 * np.arctan2(q['z'], q['w'])
-            cos_t, sin_t = np.cos(theta), np.sin(theta)
-            tx, ty = t['translation']['x'], t['translation']['y']
+            # 2. 平移逆: t_inv = -R^T * t_fwd
+            # R^T 对应于 q_inv
+            # 也就完全等价于: 将向量 (-t_fwd) 用 q_inv 进行旋转
             
-            # 反向平移: -R^T * t
-            inv_x = -(cos_t * tx + sin_t * ty)
-            inv_y = -(-sin_t * tx + cos_t * ty)
+            t_fwd = t['translation']
+            # v = -t_fwd
+            vx, vy, vz = -t_fwd['x'], -t_fwd['y'], -t_fwd['z']
+            
+            # Quaternion vector rotation: v' = v + 2 * cross(q_xyz, cross(q_xyz, v) + q_w * v)
+            qx, qy, qz, qw = q_inv['x'], q_inv['y'], q_inv['z'], q_inv['w']
+            
+            # cross(q_xyz, v)
+            cx = qy * vz - qz * vy
+            cy = qz * vx - qx * vz
+            cz = qx * vy - qy * vx
+            
+            # cross(q_xyz, v) + q_w * v
+            cx_w = cx + qw * vx
+            cy_w = cy + qw * vy
+            cz_w = cz + qw * vz
+            
+            # cross(q_xyz, ...)
+            final_x = qy * cz_w - qz * cy_w
+            final_y = qz * cx_w - qx * cz_w
+            final_z = qx * cy_w - qy * cx_w
+            
+            # v' = v + 2 * ...
+            t_inv_x = vx + 2.0 * final_x
+            t_inv_y = vy + 2.0 * final_y
+            t_inv_z = vz + 2.0 * final_z
             
             return {
-                'translation': {'x': inv_x, 'y': inv_y, 'z': -t['translation']['z']},
-                'rotation': {'x': -q['x'], 'y': -q['y'], 'z': -q['z'], 'w': q['w']},
+                'translation': {'x': t_inv_x, 'y': t_inv_y, 'z': t_inv_z},
+                'rotation': q_inv,
                 'stamp': t['stamp']
             }
         
         return None
 
-    # 为了保持接口兼容性，保留的方法名（但不再用于变换逻辑）
     def transform_velocity(self, velocity, heading):
-        # 速度变换通常是在 Trajectory 变换中一并处理的
-        pass
+        """
+        Transform velocity vector.
+        
+        .. deprecated::
+            This method is not implemented. Velocity transformation is handled
+            internally by apply_transform_to_trajectory() during trajectory transformation.
+            
+        Raises:
+            NotImplementedError: Always raised to prevent silent no-op behavior.
+        """
+        raise NotImplementedError(
+            "transform_velocity is deprecated. "
+            "Velocity transformation is handled by apply_transform_to_trajectory()."
+        )

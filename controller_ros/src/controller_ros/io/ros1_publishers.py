@@ -97,28 +97,29 @@ class ROS1PublisherManager:
     def _create_publishers(self):
         """创建所有发布器"""
         # 预创建可复用的诊断消息对象
-        if CUSTOM_MSGS_AVAILABLE and DiagnosticsV2 is not None:
-            self._reusable_diag_msg = DiagnosticsV2()
-        else:
-            self._reusable_diag_msg = None
+        if not CUSTOM_MSGS_AVAILABLE or DiagnosticsV2 is None:
+            raise RuntimeError(
+                "CRITICAL: DiagnosticsV2 message type missing! "
+                "Please ensure 'controller_ros_msgs' is compiled and sourced."
+            )
+        self._reusable_diag_msg = DiagnosticsV2()
         
         # 控制命令发布器
         cmd_topic = self._topics.get('cmd_unified', TOPICS_DEFAULTS['cmd_unified'])
-        if CUSTOM_MSGS_AVAILABLE and UnifiedCmd is not None:
-            self._cmd_pub = rospy.Publisher(cmd_topic, UnifiedCmd, queue_size=1)
-            rospy.loginfo(f"Publishing cmd to: {cmd_topic}")
-        else:
-            self._cmd_pub = None
-            rospy.logerr("Cannot create command publisher: UnifiedCmd not available")
+        if not CUSTOM_MSGS_AVAILABLE or UnifiedCmd is None:
+             raise RuntimeError(
+                "CRITICAL: UnifiedCmd message type missing! "
+                "Please ensure 'controller_ros_msgs' is compiled and sourced."
+            )
+
+        self._cmd_pub = rospy.Publisher(cmd_topic, UnifiedCmd, queue_size=1)
+        rospy.loginfo(f"Publishing cmd to: {cmd_topic}")
         
         # 诊断发布器
         diag_topic = self._topics.get('diagnostics', TOPICS_DEFAULTS['diagnostics'])
-        if CUSTOM_MSGS_AVAILABLE and DiagnosticsV2 is not None:
-            self._diag_pub = rospy.Publisher(diag_topic, DiagnosticsV2, queue_size=10)
-            rospy.loginfo(f"Publishing diagnostics to: {diag_topic}")
-        else:
-            self._diag_pub = None
-            rospy.logwarn("Cannot create diagnostics publisher: DiagnosticsV2 not available")
+        # 上面已经检查过 DiagnosticsV2
+        self._diag_pub = rospy.Publisher(diag_topic, DiagnosticsV2, queue_size=10)
+        rospy.loginfo(f"Publishing diagnostics to: {diag_topic}")
         
         # 状态发布器 (标准消息，始终可用)
         state_topic = self._topics.get('state', TOPICS_DEFAULTS['state'])
@@ -262,7 +263,12 @@ class ROS1PublisherManager:
             pass
 
     def _do_publish_debug_path_sync(self, trajectory: Trajectory, stamp):
-        """同步执行路径转换和发布 (Worker 线程)"""
+        """同步执行路径转换和发布 (Worker 线程)
+        
+        性能优化（与 ROS2 版本保持一致）：
+        - 缓存方法引用避免 self 查找开销
+        - 缓存 header 引用减少属性访问
+        """
         if trajectory is None:
             return
             
@@ -271,6 +277,11 @@ class ROS1PublisherManager:
             path.header.stamp = stamp
             path.header.frame_id = trajectory.header.frame_id or 'odom'
             
+            # Performance Optimization: 缓存方法和对象引用
+            # 避免在列表推导式中重复 self.xxx 查找
+            create_pose = self._create_pose_stamped
+            header = path.header
+            
             # --- CRITICAL FIX START ---
             # 处理 Numpy 数组，避免 attribute error
             if isinstance(trajectory.points, np.ndarray):
@@ -278,13 +289,13 @@ class ROS1PublisherManager:
                 # tolist() on [N, 3] array produces [[x,y,z], [x,y,z], ...]
                 points_list = trajectory.points.tolist()
                 path.poses = [
-                    self._create_pose_stamped(p[0], p[1], p[2], path.header)
+                    create_pose(p[0], p[1], p[2], header)
                     for p in points_list
                 ]
             else:
                 # Legacy List[Point3D]
                 path.poses = [
-                    self._create_pose_stamped(p.x, p.y, p.z, path.header)
+                    create_pose(p.x, p.y, p.z, header)
                     for p in trajectory.points
                 ]
             # --- CRITICAL FIX END ---
@@ -409,13 +420,13 @@ class ROS1PublisherManager:
             self._attitude_pub.unregister()
             self._attitude_pub = None
 
+        self._output_adapter = None
+        self._attitude_adapter = None
+        self._diag_throttler = None
+
     def get_stats(self) -> Dict[str, Any]:
         """Get publisher statistics"""
         return {
             'dropped_vis_frames': self._dropped_vis_frames,
             'vis_queue_size': self._vis_queue.qsize() if self._vis_queue else 0
         }
-        
-        self._output_adapter = None
-        self._attitude_adapter = None
-        self._diag_throttler = None

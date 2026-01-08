@@ -86,7 +86,7 @@ class ControllerNodeBase(LifecycleMixin, ABC):
         self._emergency_stop_time: Optional[float] = None
         
         self._is_quadrotor: bool = False
-        # self._last_attitude_cmd removed (dead code)
+        self._last_attitude_cmd: Optional[AttitudeCommand] = None
         self._attitude_yaw_mode: int = 0
 
     def _initialize(self):
@@ -181,6 +181,8 @@ class ControllerNodeBase(LifecycleMixin, ABC):
             
             self._waiting_for_data = True
             # Note: Do NOT clear emergency stop state here for safety
+            # Clear last attitude command to avoid stale outputs after reset
+            self._last_attitude_cmd = None
             
         self._log_info('Controller node reset complete (emergency stop state preserved)')
     
@@ -534,10 +536,19 @@ class ControllerNodeBase(LifecycleMixin, ABC):
             self._log_error(f"Critical: Error handler not initialized. Original error: {error}")
             return
 
-        # 1. 委托主要处理逻辑
+        # 1. 获取当前状态 (如果可用)
+        current_state = int(ControllerState.STOPPED)
+        if self._controller_bridge is not None:
+             try:
+                 current_state = int(self._controller_bridge.get_state())
+             except Exception:
+                 pass
+
+        # 2. 委托主要处理逻辑
         diag_base = self._error_handler.handle_control_error(
             error, 
-            tf2_reinjection_callback=self._try_tf2_reinjection
+            tf2_reinjection_callback=self._try_tf2_reinjection,
+            current_state=current_state
         )
         
         # 2. 收集上下文信息 (Timing, TF, Estop)

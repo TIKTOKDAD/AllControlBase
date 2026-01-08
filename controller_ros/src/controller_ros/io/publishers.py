@@ -56,6 +56,7 @@ class PublisherManager:
         self._node = node
         self._topics = topics
         self._is_quadrotor = is_quadrotor
+        self._default_frame_id = default_frame_id
         
         # 创建时间获取函数，支持仿真时间
         self._get_time_func = lambda: get_time_sec(node)
@@ -115,28 +116,32 @@ class PublisherManager:
         """创建所有发布器"""
         # 统一控制命令发布
         cmd_topic = self._topics.get('cmd_unified', TOPICS_DEFAULTS['cmd_unified'])
-        if UnifiedCmd is not None:
-            self._cmd_pub = self._node.create_publisher(
-                UnifiedCmd, cmd_topic, 10
+        if UnifiedCmd is None:
+            raise RuntimeError(
+                "CRITICAL: UnifiedCmd message type missing! "
+                "Please ensure 'controller_ros_msgs' is compiled and sourced."
             )
-            self._node.get_logger().info(f"Publishing cmd to: {cmd_topic}")
-        else:
-            self._node.get_logger().warn("UnifiedCmd message not available")
-            self._cmd_pub = None
+            
+        self._cmd_pub = self._node.create_publisher(
+            UnifiedCmd, cmd_topic, 10
+        )
+        self._node.get_logger().info(f"Publishing cmd to: {cmd_topic}")
         
         # 诊断发布
         diag_topic = self._topics.get('diagnostics', TOPICS_DEFAULTS['diagnostics'])
-        if DiagnosticsV2 is not None:
-            self._diag_pub = self._node.create_publisher(
-                DiagnosticsV2, diag_topic, 10
+        if DiagnosticsV2 is None:
+            # 诊断是系统可观测性的核心，缺失也是致命错误
+            raise RuntimeError(
+                "CRITICAL: DiagnosticsV2 message type missing! "
+                "Please ensure 'controller_ros_msgs' is compiled and sourced."
             )
-            # 预创建可复用的诊断消息对象，减少 GC 压力 (与 ROS1 实现保持一致)
-            self._reusable_diag_msg = DiagnosticsV2()
-            self._node.get_logger().info(f"Publishing diagnostics to: {diag_topic}")
-        else:
-            self._node.get_logger().warn("DiagnosticsV2 message not available")
-            self._diag_pub = None
-            self._reusable_diag_msg = None
+
+        self._diag_pub = self._node.create_publisher(
+            DiagnosticsV2, diag_topic, 10
+        )
+        # 预创建可复用的诊断消息对象，减少 GC 压力 (与 ROS1 实现保持一致)
+        self._reusable_diag_msg = DiagnosticsV2()
+        self._node.get_logger().info(f"Publishing diagnostics to: {diag_topic}")
         
         # 状态发布器 (需求文档要求)
         state_topic = self._topics.get('state', TOPICS_DEFAULTS['state'])
@@ -216,7 +221,8 @@ class PublisherManager:
             # 复用消息对象，避免每次创建新对象 (与 ROS1 实现保持一致)
             fill_diagnostics_msg(
                 self._reusable_diag_msg, diag,
-                get_time_func=lambda: self._node.get_clock().now().to_msg()
+                get_time_func=lambda: self._node.get_clock().now().to_msg(),
+                frame_id=self._default_frame_id
             )
             
             self._diag_pub.publish(self._reusable_diag_msg)
@@ -440,6 +446,11 @@ class PublisherManager:
         self._path_pub = None
         self._mpc_path_pub = None
         self._attitude_pub = None
+        
+        # 3. 清空适配器和节流器 (与 ROS1 版本保持一致)
+        self._output_adapter = None
+        self._attitude_adapter = None
+        self._diag_throttler = None
     
     def get_stats(self) -> Dict[str, Any]:
         """Get publisher statistics"""
@@ -447,8 +458,3 @@ class PublisherManager:
             'dropped_vis_frames': self._dropped_vis_frames,
             'vis_queue_size': self._vis_queue.qsize() if self._vis_queue else 0
         }
-        
-        # 3. 清空适配器和节流器 (与 ROS1 版本保持一致)
-        self._output_adapter = None
-        self._attitude_adapter = None
-        self._diag_throttler = None

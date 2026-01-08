@@ -348,7 +348,10 @@ class DiagnosticsPublisher:
             d.tracking_quality_rating = 'unknown'
             
         # 坐标变换状态
-        d.transform_tf2_available = not tf2_critical
+        tf2_available = transform_status.get('tf2_available')
+        if tf2_available is None:
+            tf2_available = not tf2_critical
+        d.transform_tf2_available = tf2_available
         d.transform_tf2_injected = transform_status.get('tf2_injected', False)
         d.transform_fallback_duration_ms = transform_status.get('fallback_duration_ms', 0.0)
         d.transform_accumulated_drift = transform_status.get('accumulated_drift', 0.0)

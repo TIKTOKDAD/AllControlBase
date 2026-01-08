@@ -17,8 +17,9 @@
     
     # 在控制循环中使用真实的 odom 和 trajectory 数据
     # data_ages 应包含数据的年龄 (秒)
+    # 注意: update 需要当前时间戳，用于时间步长与超时判定
     data_ages = {'odom': 0.01, 'trajectory': 0.1, 'imu': 0.005}
-    cmd = manager.update(real_odom, real_trajectory, data_ages)
+    cmd = manager.update(time.time(), real_odom, real_trajectory, data_ages)
 """
 import sys
 import argparse
@@ -116,7 +117,7 @@ def run_demo():
         odom = _create_demo_odom(x, y, 0.0, theta, vx, vy)
         # 演示模式假设数据新鲜
         data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
-        cmd = manager.update(odom, trajectory, data_ages)
+        cmd = manager.update(time.time(), odom, trajectory, data_ages)
         
         dt = 0.02
         if manager.platform_config.get('velocity_heading_coupled', True):
@@ -172,7 +173,7 @@ def main():
   manager = ControllerManager(DEFAULT_CONFIG.copy())
   manager.initialize_default_components()
   data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
-  cmd = manager.update(odom, trajectory, data_ages)
+  cmd = manager.update(time.time(), odom, trajectory, data_ages)
         """
     )
     

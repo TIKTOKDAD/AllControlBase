@@ -122,7 +122,7 @@ CMD_VEL_ADAPTER_DEFAULTS = {
 # 约束配置验证规则 (用于 cmd_vel_adapter 等只需要约束配置的场景)
 # =============================================================================
 CONSTRAINTS_VALIDATION_RULES = {
-    'constraints.v_max': (0.01, 100.0, '最大速度 (m/s)'),
+    'constraints.v_max': (1e-6, 100.0, '最大速度 (m/s)'),
     'constraints.v_min': (None, None, '最小速度 (m/s)'),  # 允许负值（倒车）
     'constraints.omega_max': (0.01, 50.0, '最大角速度 (rad/s)'),
     'constraints.a_max': (0.01, 50.0, '最大加速度 (m/s²)'),
@@ -304,10 +304,19 @@ class ParamLoader:
         traj_dt = traj_config.get('default_dt_sec')
         default_traj_dt = TRAJECTORY_CONFIG.get('default_dt_sec', 0.1)
         
-        # 检测逻辑：如果 trajectory.default_dt_sec 仍为默认值，
-        # 且 mpc.dt 已被配置为不同值，则继承 mpc.dt
-        # 这避免了因 DEFAULT_CONFIG 包含该键而导致检测失效的问题
-        if mpc_dt is not None and traj_dt == default_traj_dt and mpc_dt != default_traj_dt:
+        # 检测逻辑：
+        # - trajectory.default_dt_sec 缺失 / 为 None / 仍为默认值时，继承 mpc.dt
+        # - 仅当用户显式配置了非默认且与 mpc.dt 不同的值时保持不变
+        if mpc_dt is None:
+            return
+        
+        should_inherit = (
+            ('default_dt_sec' not in traj_config) or
+            (traj_dt is None) or
+            (traj_dt == default_traj_dt)
+        )
+        
+        if should_inherit and mpc_dt != default_traj_dt:
             traj_config['default_dt_sec'] = mpc_dt
             logger.debug(f"trajectory.default_dt_sec inherited from mpc.dt: {mpc_dt}")
     

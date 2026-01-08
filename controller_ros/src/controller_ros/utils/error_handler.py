@@ -51,13 +51,15 @@ class ErrorHandler:
         return self._consecutive_errors
 
     def handle_control_error(self, error: Exception, 
-                           tf2_reinjection_callback: Optional[Callable[[], None]] = None) -> Dict[str, Any]:
+                           tf2_reinjection_callback: Optional[Callable[[], None]] = None,
+                           current_state: int = int(ControllerState.STOPPED)) -> Dict[str, Any]:
         """
         Handle an exception during the control loop.
         
         Args:
             error: The captured exception
             tf2_reinjection_callback: Optional callback to trigger TF2 reinjection on repeated failures
+            current_state: The current state of the controller (default: STOPPED)
             
         Returns:
             Dictionary containing error diagnostics
@@ -90,12 +92,12 @@ class ErrorHandler:
              self._log_warn("Detected repeated failures. Attempting to update TF2 injection...")
              tf2_reinjection_callback()
         
-        return self._create_error_diagnostics(error)
+        return self._create_error_diagnostics(error, current_state)
 
-    def _create_error_diagnostics(self, error: Exception) -> Dict[str, Any]:
+    def _create_error_diagnostics(self, error: Exception, state: int = int(ControllerState.INIT)) -> Dict[str, Any]:
         """Create a diagnostics dictionary for the error state."""
         return {
-            'state': int(ControllerState.INIT),  # 错误状态使用 INIT (控制器未正常运行)
+            'state': state,
             'mpc_success': False,
             'backup_active': False,
             'error_message': str(error),

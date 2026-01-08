@@ -31,7 +31,9 @@
     manager = ControllerManager(config)
     manager.initialize_default_components()
     
-    cmd = manager.update(odom, trajectory)
+    # ControllerManager.update 需要当前时间戳与数据年龄
+    data_ages = {'odom': 0.0, 'trajectory': 0.0, 'imu': 0.0}
+    cmd = manager.update(time.time(), odom, trajectory, data_ages)
 """
 
 __version__ = "3.19.1"

@@ -76,13 +76,16 @@ class BasicSafetyMonitor(ISafetyMonitor):
         self._accel_history_z: deque = deque(maxlen=self.accel_filter_window)
         self._alpha_history: deque = deque(maxlen=self.accel_filter_window)
         
-        # 滤波后的加速度（None 表示未初始化）
+        # Filtered acceleration (None means uninitialized)
         self._filtered_ax: Optional[float] = None
         self._filtered_ay: Optional[float] = None
         self._filtered_az: Optional[float] = None
         self._filtered_alpha: Optional[float] = None
         
-        # 滤波器预热状态（在 __init__ 中初始化，避免动态创建属性）
+        # Last valid filtered acceleration (for zero-order hold)
+        self._last_filtered_accel: Optional[tuple] = None
+        
+        # Filter warmup state (initialized here to avoid dynamic attribute creation)
         self._filter_warmup_count: int = 0
         self._filter_warmup_period: int = self.accel_filter_warmup_period
     
@@ -260,17 +263,13 @@ class BasicSafetyMonitor(ISafetyMonitor):
             needs_limiting = True
         
         # 检查加速度 (使用传入的 dt，避免时间源不一致)
-        # current_time = get_monotonic_time() # Removed internal time
         if self._last_cmd is not None:
-             # dt is passed in argument
-
-            
             # 初始化加速度值为 0 或上次的值
             ax, ay, az, alpha = 0.0, 0.0, 0.0, 0.0
             should_check_accel = False
             
             # 获取当前滤波器状态 (如果有)
-            if hasattr(self, '_last_filtered_accel'):
+            if self._last_filtered_accel is not None:
                 ax, ay, az, alpha = self._last_filtered_accel
             
             # 策略：
@@ -510,5 +509,7 @@ class BasicSafetyMonitor(ISafetyMonitor):
         self._filtered_ay = None
         self._filtered_az = None
         self._filtered_alpha = None
+        # 重置零阶保持缓存，确保不使用过时的加速度值
+        self._last_filtered_accel = None
         # 重置预热状态
         self._filter_warmup_count = 0

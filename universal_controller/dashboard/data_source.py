@@ -1,64 +1,34 @@
 """
 数据源接口 - 统一数据管理
+(重构版本 - 逻辑分离到 logic 包)
 
 从 ControllerManager 获取数据并转换为统一的 DisplayData 模型。
-所有数据处理逻辑集中在此，面板只负责显示。
+所有数据处理逻辑集中在此（代理给 builder 和 statistics），面板只负责显示。
 
 注意：此模块仅用于直接访问 ControllerManager 的场景。
 ROS 模式下请使用 ros_data_source.py 中的 ROSDashboardDataSource。
 """
 
-import time
-import math
 from typing import Dict, Any, Optional
-from collections import deque
 
-from .models import (
-    DisplayData, EnvironmentStatus, PlatformConfig, ControllerStatus,
-    MPCHealthStatus, ConsistencyStatus, TimeoutStatus, TrackingStatus,
-    EstimatorStatus, TransformStatus, ControlCommand, TrajectoryData,
-    StatisticsData, SafetyStatus, ControllerStateEnum, DataAvailability
-)
+from .models import DisplayData
+from .logic.constants import PLATFORM_NAMES, STATE_INFO
+from .logic.statistics import StatisticsManager
+from .logic.builders import StatusBuilder
 
-# 尝试导入 ROS 相关模块
+# 尝试导入 ROS 相关模块 (保留兼容性)
 try:
     from ..core.ros_compat import ROS_AVAILABLE, TF2_AVAILABLE
 except ImportError:
     ROS_AVAILABLE = False
     TF2_AVAILABLE = False
 
-# 尝试导入 mock 配置
-try:
-    from ..config.mock_config import is_mock_allowed
-except ImportError:
-    def is_mock_allowed(config, module=None, feature=None):
-        return False
-
-# 尝试检测 ACADOS
+# 尝试检测 ACADOS (保留兼容性)
 try:
     from acados_template import AcadosOcp
     ACADOS_AVAILABLE = True
 except ImportError:
     ACADOS_AVAILABLE = False
-
-# 平台名称映射
-PLATFORM_NAMES = {
-    'differential': '差速车',
-    'ackermann': '阿克曼',
-    'omni': '全向车',
-    'quadrotor': '四旋翼',
-}
-
-# 状态名称映射
-STATE_INFO = {
-    0: ('INIT', '初始化'),
-    1: ('NORMAL', '正常运行'),
-    2: ('SOFT_DISABLED', 'Soft禁用'),
-    3: ('MPC_DEGRADED', 'MPC降级'),
-    4: ('BACKUP_ACTIVE', '备用激活'),
-    5: ('STOPPING', '停车中'),
-    6: ('STOPPED', '已停车'),
-}
 
 
 class DashboardDataSource:
@@ -68,8 +38,8 @@ class DashboardDataSource:
     职责：
     1. 从 ControllerManager 获取原始数据
     2. 转换为统一的 DisplayData 模型
-    3. 处理所有数据逻辑
-    4. 维护历史数据和统计信息
+    3. 处理所有数据逻辑 (通过代理类实现)
+    4. 维护历史数据和统计信息 (通过 StatisticsManager 实现)
     
     使用场景：
     - 直接嵌入到使用 ControllerManager 的应用中
@@ -89,33 +59,11 @@ class DashboardDataSource:
         """
         self.manager = controller_manager
         self.config = config or {}
-        self._start_time = time.time()
 
-        # 统计数据
-        self._total_cycles = 0
-        self._state_counts = {i: 0 for i in range(7)}
-        self._mpc_success_count = 0
-        self._backup_switch_count = 0
-        self._safety_limit_count = 0
-        self._tf2_fallback_count = 0
-        self._soft_disable_count = 0
+        # 初始化代理组件
+        self.statistics_manager = StatisticsManager()
+        self.status_builder = StatusBuilder(self.config, self.manager)
         
-        # 状态变化跟踪（用于统计计数）
-        self._last_state: int = 0  # 上一次的控制器状态
-        self._last_safety_check_passed: bool = True  # 上一次安全检查是否通过
-        self._last_tf2_fallback_active: bool = False  # 上一次 TF2 是否处于降级状态
-
-        # 历史数据
-        self._history_size = 500
-        self._solve_time_history = deque(maxlen=self._history_size)
-        self._lateral_error_history = deque(maxlen=self._history_size)
-        self._alpha_history = deque(maxlen=self._history_size)
-
-        # 周期时间统计
-        self._cycle_times = deque(maxlen=100)
-        self._last_update_time = time.time()
-
-        # 缓存的显示数据
         self._cached_data: Optional[DisplayData] = None
 
     def get_display_data(self) -> DisplayData:
@@ -129,56 +77,29 @@ class DashboardDataSource:
         # 获取原始数据
         raw_diagnostics = self._get_raw_diagnostics()
         
-        # 检查数据可用性
-        has_diagnostics = bool(raw_diagnostics)
-        
         # 更新统计
-        self._update_statistics(raw_diagnostics)
+        self.statistics_manager.update(raw_diagnostics)
 
         # 构建统一数据模型
         data = DisplayData()
         
-        # 数据可用性
-        data.availability = self._build_availability(raw_diagnostics)
-
-        # 环境状态 (统一处理 mock 模式)
-        data.environment = self._build_environment_status()
-
-        # 平台配置
-        data.platform = self._build_platform_config()
-
-        # 控制器状态
-        data.controller = self._build_controller_status(raw_diagnostics)
-
-        # MPC 健康
-        data.mpc_health = self._build_mpc_health(raw_diagnostics)
-
-        # 一致性
-        data.consistency = self._build_consistency(raw_diagnostics)
-
-        # 超时状态
-        data.timeout = self._build_timeout_status(raw_diagnostics)
-
-        # 跟踪状态
-        data.tracking = self._build_tracking_status(raw_diagnostics)
-
-        # 状态估计器
-        data.estimator = self._build_estimator_status(raw_diagnostics)
-
-        # 坐标变换
-        data.transform = self._build_transform_status(raw_diagnostics)
-
-        # 安全状态
-        data.safety = self._build_safety_status(raw_diagnostics)
-
-        # 控制命令
-        data.command = self._build_control_command(raw_diagnostics)
-
-        # 轨迹数据
-        data.trajectory = self._build_trajectory_data()
-
-        # 统计数据
-        data.statistics = self._build_statistics()
+        # 使用 StatusBuilder 构建各个状态
+        data.availability = self.status_builder.build_availability(raw_diagnostics)
+        data.environment = self.status_builder.build_environment_status()
+        data.platform = self.status_builder.build_platform_config()
+        data.controller = self.status_builder.build_controller_status(raw_diagnostics)
+        data.mpc_health = self.status_builder.build_mpc_health(raw_diagnostics)
+        data.consistency = self.status_builder.build_consistency(raw_diagnostics)
+        data.timeout = self.status_builder.build_timeout_status(raw_diagnostics)
+        data.tracking = self.status_builder.build_tracking_status(raw_diagnostics)
+        data.estimator = self.status_builder.build_estimator_status(raw_diagnostics)
+        data.transform = self.status_builder.build_transform_status(raw_diagnostics)
+        data.safety = self.status_builder.build_safety_status(raw_diagnostics)
+        data.command = self.status_builder.build_control_command(raw_diagnostics)
+        data.trajectory = self.status_builder.build_trajectory_data()
+        
+        # 从 StatisticsManager 获取统计数据
+        data.statistics = self.statistics_manager.get_statistics_data()
 
         # 元信息 - 从 __version__ 获取版本号
         from .. import __version__
@@ -188,429 +109,40 @@ class DashboardDataSource:
         self._cached_data = data
         return data
 
-    def _build_availability(self, diagnostics: Dict[str, Any]) -> DataAvailability:
-        """构建数据可用性状态"""
-        has_diag = bool(diagnostics)
-        
-        # 检查各类数据是否存在且有效
-        mpc_health = diagnostics.get('mpc_health', {})
-        consistency = diagnostics.get('consistency', {})
-        tracking = diagnostics.get('tracking', {})
-        estimator = diagnostics.get('estimator_health', {})
-        transform = diagnostics.get('transform', {})
-        timeout = diagnostics.get('timeout', {})
-        
-        # 检查轨迹数据可用性
-        # 使用超时状态判断：如果轨迹未超时且未超过宽限期，则认为轨迹可用
-        # 这比检查 lateral_error 是否存在更准确，因为 lateral_error 总是存在
-        traj_timeout = timeout.get('traj_timeout', True) if isinstance(timeout, dict) else True
-        traj_grace_exceeded = timeout.get('traj_grace_exceeded', True) if isinstance(timeout, dict) else True
-        in_startup_grace = timeout.get('in_startup_grace', False) if isinstance(timeout, dict) else False
-        # 轨迹可用条件：有诊断数据 且 (未超时 或 在启动宽限期内)
-        has_trajectory = has_diag and (not traj_timeout or in_startup_grace)
-        
-        # 检查位置数据
-        has_position = False
-        if self.manager and self.manager.state_estimator:
-            state = self.manager.state_estimator.get_state()
-            if state and hasattr(state, 'state'):
-                has_position = True
-        
-        return DataAvailability(
-            diagnostics_available=has_diag,
-            trajectory_available=has_trajectory,
-            position_available=has_position,
-            odom_available=has_diag and not timeout.get('odom_timeout', True),
-            imu_data_available=has_diag and estimator.get('imu_available', False),
-            mpc_data_available=has_diag and isinstance(mpc_health, dict) and bool(mpc_health),
-            consistency_data_available=has_diag and isinstance(consistency, dict) and bool(consistency),
-            tracking_data_available=has_diag and isinstance(tracking, dict) and bool(tracking),
-            estimator_data_available=has_diag and isinstance(estimator, dict) and bool(estimator),
-            transform_data_available=has_diag and isinstance(transform, dict) and bool(transform),
-            last_update_time=time.time(),
-            data_age_ms=0.0,
-        )
-
     def _get_raw_diagnostics(self) -> Dict[str, Any]:
         """获取原始诊断数据"""
         if self.manager:
-            return self.manager.get_last_published_diagnostics() or {}
+            diag = self.manager.get_last_published_diagnostics()
+            if diag is None:
+                return {}
+            if isinstance(diag, dict):
+                return diag
+            if hasattr(diag, 'to_dict'):
+                return diag.to_dict()
+            if hasattr(diag, 'to_ros_msg'):
+                return diag.to_ros_msg()
+            return {}
         
         # 没有 manager 时返回空数据
         return {}
 
-    def _update_statistics(self, diagnostics: Dict[str, Any]):
-        """更新统计数据
-        
-        统计计数器说明:
-        - backup_switch_count: 切换到 BACKUP_ACTIVE 状态的次数
-        - safety_limit_count: 安全检查失败的次数（从通过变为失败）
-        - tf2_fallback_count: TF2 降级激活的次数（从正常变为降级）
-        - soft_disable_count: 切换到 SOFT_DISABLED 状态的次数
-        """
-        current_time = time.time()
-
-        # 更新周期时间
-        cycle_time = current_time - self._last_update_time
-        self._cycle_times.append(cycle_time * 1000)
-        self._last_update_time = current_time
-
-        self._total_cycles += 1
-
-        if diagnostics:
-            # 状态计数
-            state = diagnostics.get('state', 0)
-            if 0 <= state < 7:
-                self._state_counts[state] += 1
-            
-            # 状态变化检测：backup_switch_count
-            # 当状态从非 BACKUP_ACTIVE 变为 BACKUP_ACTIVE (state=4) 时计数
-            if state == 4 and self._last_state != 4:
-                self._backup_switch_count += 1
-            
-            # 状态变化检测：soft_disable_count
-            # 当状态从非 SOFT_DISABLED 变为 SOFT_DISABLED (state=2) 时计数
-            if state == 2 and self._last_state != 2:
-                self._soft_disable_count += 1
-            
-            # 更新上一次状态
-            self._last_state = state
-            
-            # 安全检查失败计数
-            # 当安全检查从通过变为失败时计数
-            safety_check_passed = diagnostics.get('safety_check_passed', True)
-            if not safety_check_passed and self._last_safety_check_passed:
-                self._safety_limit_count += 1
-            self._last_safety_check_passed = safety_check_passed
-            
-            # TF2 降级计数
-            # 当 TF2 从正常变为降级时计数
-            transform = diagnostics.get('transform', {})
-            if isinstance(transform, dict):
-                fallback_ms = transform.get('fallback_duration_ms', 0)
-                tf2_fallback_active = fallback_ms > 0
-                if tf2_fallback_active and not self._last_tf2_fallback_active:
-                    self._tf2_fallback_count += 1
-                self._last_tf2_fallback_active = tf2_fallback_active
-
-            # MPC 成功计数
-            if diagnostics.get('mpc_success', False):
-                self._mpc_success_count += 1
-
-            # 历史数据
-            self._solve_time_history.append(diagnostics.get('mpc_solve_time_ms', 0))
-            
-            tracking = diagnostics.get('tracking', {})
-            if isinstance(tracking, dict):
-                self._lateral_error_history.append(tracking.get('lateral_error', 0))
-
-            consistency = diagnostics.get('consistency', {})
-            if isinstance(consistency, dict):
-                self._alpha_history.append(consistency.get('alpha_soft', 0))
-
-    def _build_environment_status(self) -> EnvironmentStatus:
-        """构建环境状态"""
-        return EnvironmentStatus(
-            ros_available=ROS_AVAILABLE,
-            tf2_available=TF2_AVAILABLE,
-            acados_available=ACADOS_AVAILABLE,
-            imu_available=True,
-            is_mock_mode=False,  # 此数据源不支持 mock 模式
-        )
-
-    def _build_platform_config(self) -> PlatformConfig:
-        """构建平台配置"""
-        platform = self.config.get('system', {}).get('platform', 'differential')
-        return PlatformConfig(
-            platform=platform,
-            platform_display=PLATFORM_NAMES.get(platform, platform),
-            ctrl_freq=self.config.get('system', {}).get('ctrl_freq', 50),
-            mpc_horizon=self.config.get('mpc', {}).get('horizon', 20),
-            mpc_horizon_degraded=self.config.get('mpc', {}).get('horizon_degraded', 10),
-            mpc_dt=self.config.get('mpc', {}).get('dt', 0.1),  # 默认值与 mpc_config.py 一致
-        )
-
-    def _build_controller_status(self, diag: Dict) -> ControllerStatus:
-        """构建控制器状态"""
-        state = diag.get('state', 0)
-        state_name, state_desc = STATE_INFO.get(state, ('UNKNOWN', '未知'))
-        
-        consistency = diag.get('consistency', {})
-        alpha = consistency.get('alpha_soft', 0) if isinstance(consistency, dict) else 0
-
-        return ControllerStatus(
-            state=ControllerStateEnum(state) if 0 <= state <= 6 else ControllerStateEnum.INIT,
-            state_name=state_name,
-            state_desc=state_desc,
-            mpc_success=diag.get('mpc_success', False),
-            backup_active=diag.get('backup_active', False),
-            current_controller='Backup' if diag.get('backup_active', False) else 'MPC',
-            soft_head_enabled=alpha > 0.1,
-            alpha_soft=alpha,
-        )
-
-    def _build_mpc_health(self, diag: Dict) -> MPCHealthStatus:
-        """构建 MPC 健康状态"""
-        health = diag.get('mpc_health', {})
-        if not isinstance(health, dict):
-            health = {}
-
-        # 获取 MPC dt 和控制周期
-        mpc_dt = self.config.get('mpc', {}).get('dt', 0.1)  # 默认值与 mpc_config.py 一致
-        ctrl_freq = self.config.get('system', {}).get('ctrl_freq', 50)
-        control_period = 1.0 / ctrl_freq if ctrl_freq > 0 else 0.02
-        
-        # 检查 dt 是否匹配（允许 10% 误差）
-        dt_mismatch = abs(mpc_dt - control_period) / control_period > 0.1 if control_period > 0 else False
-
-        # 从 MPCHealthMonitor 获取 consecutive_good
-        # 注意: 诊断数据中的 mpc_health 来自 MPCHealthMonitor.update() 返回的 MPCHealthStatus
-        # 但 MPCHealthStatus 数据类没有 consecutive_good 字段，需要从 monitor 实例获取
-        # 这里通过 manager 获取，如果不可用则使用 0
-        consecutive_good = 0
-        if self.manager and hasattr(self.manager, 'mpc_health_monitor'):
-            monitor = self.manager.mpc_health_monitor
-            if monitor and hasattr(monitor, 'consecutive_good'):
-                consecutive_good = monitor.consecutive_good
-
-        return MPCHealthStatus(
-            kkt_residual=health.get('kkt_residual', 0),
-            condition_number=health.get('condition_number', 0),
-            solve_time_ms=diag.get('mpc_solve_time_ms', 0),
-            consecutive_near_timeout=health.get('consecutive_near_timeout', 0),
-            degradation_warning=health.get('degradation_warning', False),
-            can_recover=health.get('can_recover', True),
-            healthy=diag.get('mpc_success', False) and not health.get('degradation_warning', False),
-            dt_mismatch=dt_mismatch,
-            mpc_dt=mpc_dt,
-            control_period=control_period,
-            consecutive_good=consecutive_good,
-        )
-
-    def _build_consistency(self, diag: Dict) -> ConsistencyStatus:
-        """构建一致性状态"""
-        cons = diag.get('consistency', {})
-        if not isinstance(cons, dict):
-            cons = {}
-
-        return ConsistencyStatus(
-            curvature=cons.get('curvature', 0),
-            velocity_dir=cons.get('velocity_dir', 0),
-            temporal=cons.get('temporal', 0),
-            alpha_soft=cons.get('alpha_soft', 0),
-            data_valid=cons.get('data_valid', True),
-        )
-
-    def _build_timeout_status(self, diag: Dict) -> TimeoutStatus:
-        """构建超时状态"""
-        timeout = diag.get('timeout', {})
-        if not isinstance(timeout, dict):
-            timeout = {}
-
-        return TimeoutStatus(
-            odom_timeout=timeout.get('odom_timeout', False),
-            traj_timeout=timeout.get('traj_timeout', False),
-            traj_grace_exceeded=timeout.get('traj_grace_exceeded', False),
-            imu_timeout=timeout.get('imu_timeout', False),
-            last_odom_age_ms=timeout.get('last_odom_age_ms', 0),
-            last_traj_age_ms=timeout.get('last_traj_age_ms', 0),
-            last_imu_age_ms=timeout.get('last_imu_age_ms', 0),
-            in_startup_grace=timeout.get('in_startup_grace', False),
-        )
-
-    def _build_tracking_status(self, diag: Dict) -> TrackingStatus:
-        """构建跟踪状态
-        
-        注意: prediction_error 可能为 NaN（表示无预测数据，如使用 fallback 求解器时）
-        Dashboard 显示时应检查 NaN 并显示 "N/A" 或类似提示
-        """
-        tracking = diag.get('tracking', {})
-        if not isinstance(tracking, dict):
-            tracking = {}
-
-        # 获取预测误差，保留 NaN 值（表示无数据）
-        prediction_error = tracking.get('prediction_error', float('nan'))
-        
-        return TrackingStatus(
-            lateral_error=tracking.get('lateral_error', 0),
-            longitudinal_error=tracking.get('longitudinal_error', 0),
-            heading_error=tracking.get('heading_error', 0),
-            prediction_error=prediction_error,
-        )
-
-    def _build_estimator_status(self, diag: Dict) -> EstimatorStatus:
-        """构建状态估计器状态
-        
-        功能开关说明:
-        - ekf_enabled: EKF 始终启用（核心组件）
-        - slip_detection_enabled: 打滑检测是否启用，基于 adaptive.base_slip_thresh > 0
-        - drift_correction_enabled: 漂移校正是否启用，从 transform 配置读取
-        - heading_fallback_enabled: 航向备选是否启用，从 ekf 配置读取
-        """
-        est = diag.get('estimator_health', {})
-        if not isinstance(est, dict):
-            est = {}
-
-        bias = est.get('imu_bias', [0, 0, 0])
-        if not isinstance(bias, (list, tuple)) or len(bias) < 3:
-            bias = [0, 0, 0]
-
-        # 功能开关：从配置中读取
-        ekf_config = self.config.get('ekf', {})
-        transform_config = self.config.get('transform', {})
-        adaptive_config = ekf_config.get('adaptive', {})
-        
-        # EKF 始终启用（核心组件）
-        ekf_enabled = True
-        
-        # 打滑检测：检查打滑检测阈值是否配置且大于 0
-        slip_detection_enabled = adaptive_config.get('base_slip_thresh', 0) > 0
-        
-        # 漂移校正：从 transform 配置读取
-        drift_correction_enabled = transform_config.get('recovery_correction_enabled', True)
-        
-        # 航向备选：从 ekf 配置读取
-        heading_fallback_enabled = ekf_config.get('use_odom_orientation_fallback', True)
-
-        # 新增监控指标
-        innovation_norm = est.get('innovation_norm', 0)
-        covariance_norm = est.get('covariance_norm', 0)
-        slip_probability = est.get('slip_probability', 0)
-        
-        # 阈值判断（基于 DiagnosticsAnalyzer 的分析逻辑）
-        innovation_warning = innovation_norm > 0.5  # 新息范数警告阈值
-        covariance_warning = covariance_norm > 1.0  # 协方差范数警告阈值
-        
-        # 计算高打滑率（打滑概率超过 30% 的比例）
-        high_slip_rate = 100.0 if slip_probability > 0.3 else 0.0
-
-        return EstimatorStatus(
-            covariance_norm=covariance_norm,
-            innovation_norm=innovation_norm,
-            slip_probability=slip_probability,
-            imu_drift_detected=est.get('imu_drift_detected', False),
-            imu_bias=(bias[0], bias[1], bias[2]),
-            imu_available=est.get('imu_available', False),
-            ekf_enabled=ekf_enabled,
-            slip_detection_enabled=slip_detection_enabled,
-            drift_correction_enabled=drift_correction_enabled,
-            heading_fallback_enabled=heading_fallback_enabled,
-            imu_drift_rate=0.0,  # 需要从历史数据计算
-            high_slip_rate=high_slip_rate,
-            innovation_warning=innovation_warning,
-            covariance_warning=covariance_warning,
-        )
-
-    def _build_transform_status(self, diag: Dict) -> TransformStatus:
-        """构建坐标变换状态"""
-        transform = diag.get('transform', {})
-        if not isinstance(transform, dict):
-            transform = {}
-
-        fallback_ms = transform.get('fallback_duration_ms', 0)
-
-        return TransformStatus(
-            tf2_available=TF2_AVAILABLE,
-            fallback_active=fallback_ms > 0,
-            fallback_duration_ms=fallback_ms,
-            accumulated_drift=transform.get('accumulated_drift', 0),
-            target_frame='odom',
-            output_frame='base_link',
-        )
-
-    def _build_safety_status(self, diag: Dict) -> SafetyStatus:
-        """构建安全状态"""
-        cmd = diag.get('cmd', {})
-        if not isinstance(cmd, dict):
-            cmd = {}
-
-        vx = cmd.get('vx', 0)
-        vy = cmd.get('vy', 0)
-        current_v = math.sqrt(vx ** 2 + vy ** 2)
-
-        return SafetyStatus(
-            v_max=self.config.get('constraints', {}).get('v_max', 2.0),
-            omega_max=self.config.get('constraints', {}).get('omega_max', 2.0),
-            a_max=self.config.get('constraints', {}).get('a_max', 1.5),
-            current_v=current_v,
-            current_omega=abs(cmd.get('omega', 0)),
-            low_speed_protection_active=current_v < 0.1,
-            safety_check_passed=diag.get('safety_check_passed', True),
-            emergency_stop=diag.get('emergency_stop', False),
-        )
-
-    def _build_control_command(self, diag: Dict) -> ControlCommand:
-        """构建控制命令"""
-        cmd = diag.get('cmd', {})
-        if not isinstance(cmd, dict):
-            cmd = {}
-
-        return ControlCommand(
-            vx=cmd.get('vx', 0),
-            vy=cmd.get('vy', 0),
-            vz=cmd.get('vz', 0),
-            omega=cmd.get('omega', 0),
-            frame_id=cmd.get('frame_id', 'base_link'),
-        )
-
-    def _build_trajectory_data(self) -> TrajectoryData:
-        """构建轨迹数据"""
-        if self.manager:
-            return self._get_trajectory_from_manager()
-
-        # 没有 manager 时返回空数据，面板会显示"无真实数据"
-        return TrajectoryData()
-
-    def _get_trajectory_from_manager(self) -> TrajectoryData:
-        """从 ControllerManager 获取轨迹数据
-        
-        注意: ControllerManager 不存储原始轨迹数据，只能获取当前状态信息。
-        轨迹可视化需要通过 ROS 话题订阅实现。
-        """
-        data = TrajectoryData()
-
-        # 获取当前状态（位置、航向、速度）
-        if self.manager and self.manager.state_estimator:
-            state_output = self.manager.state_estimator.get_state()
-            if state_output and hasattr(state_output, 'state'):
-                state = state_output.state
-                data.current_position = (state[0], state[1], state[2])
-                data.current_heading = state[6]
-                data.current_velocity = (state[3], state[4])
-
-        return data
-
-    def _build_statistics(self) -> StatisticsData:
-        """构建统计数据"""
-        elapsed = time.time() - self._start_time
-        hours = int(elapsed // 3600)
-        minutes = int((elapsed % 3600) // 60)
-        seconds = int(elapsed % 60)
-
-        avg_cycle = sum(self._cycle_times) / len(self._cycle_times) if self._cycle_times else 0
-        actual_freq = 1000 / avg_cycle if avg_cycle > 0 else 0
-
-        return StatisticsData(
-            elapsed_time=elapsed,
-            elapsed_time_str=f'{hours:02d}:{minutes:02d}:{seconds:02d}',
-            total_cycles=self._total_cycles,
-            actual_freq=actual_freq,
-            avg_cycle_ms=avg_cycle,
-            max_cycle_ms=max(self._cycle_times) if self._cycle_times else 0,
-            min_cycle_ms=min(self._cycle_times) if self._cycle_times else 0,
-            mpc_success_rate=(self._mpc_success_count / self._total_cycles * 100
-                             if self._total_cycles > 0 else 0),
-            state_counts=self._state_counts.copy(),
-            backup_switch_count=self._backup_switch_count,
-            safety_limit_count=self._safety_limit_count,
-            tf2_fallback_count=self._tf2_fallback_count,
-            soft_disable_count=self._soft_disable_count,
-        )
-
     def get_history(self) -> Dict[str, Any]:
         """获取历史数据 (用于曲线图)"""
-        return {
-            'solve_time': list(self._solve_time_history),
-            'lateral_error': list(self._lateral_error_history),
-            'alpha': list(self._alpha_history),
-        }
+        return self.statistics_manager.get_history()
+
+    # 为了保持向后兼容性或测试兼容性，如果需要访问内部历史 buffer:
+    @property
+    def _solve_time_history(self):
+        return self.statistics_manager._solve_time_history
+        
+    @property
+    def _lateral_error_history(self):
+        return self.statistics_manager._lateral_error_history
+        
+    @property
+    def _alpha_history(self):
+        return self.statistics_manager._alpha_history
+    
+    @property
+    def _cycle_times(self):
+        return self.statistics_manager._cycle_times
